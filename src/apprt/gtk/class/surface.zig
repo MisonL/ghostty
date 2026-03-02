@@ -614,6 +614,7 @@ pub const Surface = extern struct {
         /// The GLAarea that renders the actual surface. This is a binding
         /// to the template so it doesn't have to be unrefed manually.
         gl_area: *gtk.GLArea,
+        software_picture: *gtk.Picture,
 
         /// The labels for the left/right sides of the URL hover tooltip.
         url_left: *gtk.Label,
@@ -721,7 +722,10 @@ pub const Surface = extern struct {
         software_presenter_requested: coreconfig.SoftwareRendererPresenter = .auto,
         software_presenter_selected: coreconfig.SoftwareRendererPresenter = .@"legacy-gl",
         software_presenter_reason: SoftwarePresenterReason = .not_software_build,
+        software_snapshot_enabled: bool = false,
         software_frame_generation: u64 = 0,
+        software_frame_generation_rendered: u64 = 0,
+        software_texture: ?*gdk.Texture = null,
 
         pub var offset: c_int = 0;
     };
@@ -1812,6 +1816,8 @@ pub const Surface = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
+        self.clearSoftwareSnapshotTexture();
+        priv.software_snapshot_enabled = false;
 
         if (priv.config) |v| {
             v.unref();
@@ -2120,6 +2126,98 @@ pub const Surface = extern struct {
         self.as(gobject.Object).notifyByPspec(properties.@"error".impl.param_spec);
     }
 
+    fn softwareFrameBytesPerPixel(
+        pixel_format: apprt.surface.Message.SoftwareFramePixelFormat,
+    ) usize {
+        return switch (pixel_format) {
+            .bgra8_premul, .rgba8_premul => 4,
+        };
+    }
+
+    fn softwareFrameMemoryFormat(
+        pixel_format: apprt.surface.Message.SoftwareFramePixelFormat,
+    ) gdk.MemoryFormat {
+        return switch (pixel_format) {
+            .bgra8_premul => .b8g8r8a8_premultiplied,
+            .rgba8_premul => .r8g8b8a8_premultiplied,
+        };
+    }
+
+    fn validateSoftwareFrame(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        if (frame.width_px == 0 or frame.height_px == 0) {
+            return error.InvalidSoftwareFrame;
+        }
+
+        const width = std.math.cast(usize, frame.width_px) orelse return error.InvalidSoftwareFrame;
+        const height = std.math.cast(usize, frame.height_px) orelse return error.InvalidSoftwareFrame;
+        const stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
+        if (stride == 0) return error.InvalidSoftwareFrame;
+
+        const min_stride = std.math.mul(
+            usize,
+            width,
+            softwareFrameBytesPerPixel(frame.pixel_format),
+        ) catch return error.InvalidSoftwareFrame;
+        if (stride < min_stride) return error.InvalidSoftwareFrame;
+
+        const required_len = std.math.mul(
+            usize,
+            stride,
+            height,
+        ) catch return error.InvalidSoftwareFrame;
+
+        switch (frame.storage) {
+            .shared_cpu_bytes => {
+                if (frame.data == null) return error.InvalidSoftwareFrame;
+                if (frame.data_len < required_len) return error.InvalidSoftwareFrame;
+            },
+            .native_texture_handle => {
+                if (frame.handle == null) return error.InvalidSoftwareFrame;
+            },
+        }
+    }
+
+    fn clearSoftwareSnapshotTexture(self: *Self) void {
+        const priv = self.private();
+
+        priv.software_picture.setPaintable(null);
+        priv.software_picture.as(gtk.Widget).setVisible(0);
+
+        if (priv.software_texture) |texture| {
+            texture.unref();
+            priv.software_texture = null;
+        }
+    }
+
+    fn setSoftwareSnapshotTexture(self: *Self, texture: *gdk.Texture) void {
+        const priv = self.private();
+
+        // Set widget paintable first so GTK atomically swaps visible content.
+        priv.software_picture.setPaintable(texture.as(gdk.Paintable));
+        priv.software_picture.as(gtk.Widget).setVisible(1);
+
+        if (priv.software_texture) |old| old.unref();
+        priv.software_texture = texture;
+        priv.software_frame_generation_rendered = priv.software_frame_generation;
+        priv.software_picture.as(gtk.Widget).queueDraw();
+    }
+
+    fn setSoftwareSnapshotEnabled(self: *Self, enabled: bool) void {
+        const priv = self.private();
+        priv.software_snapshot_enabled = enabled;
+
+        if (!enabled) {
+            self.clearSoftwareSnapshotTexture();
+            priv.software_frame_generation = 0;
+            priv.software_frame_generation_rendered = 0;
+            return;
+        }
+
+        priv.software_picture.as(gtk.Widget).setVisible(@intFromBool(priv.software_texture != null));
+    }
+
     pub fn softwareFrameReady(
         self: *Self,
         frame: apprt.surface.Message.SoftwareFrameReady,
@@ -2131,20 +2229,39 @@ pub const Surface = extern struct {
             .@"legacy-gl" => return,
             .auto, .snapshot => {},
         }
+        if (!priv.software_snapshot_enabled) return;
+
+        try validateSoftwareFrame(frame);
+        if (frame.generation <= priv.software_frame_generation) return;
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
-                if (frame.data == null or frame.data_len == 0) {
-                    return error.InvalidSoftwareFrame;
-                }
+                const width = std.math.cast(c_int, frame.width_px) orelse return error.InvalidSoftwareFrame;
+                const height = std.math.cast(c_int, frame.height_px) orelse return error.InvalidSoftwareFrame;
+                const stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
+                const data = frame.data orelse return error.InvalidSoftwareFrame;
+
+                const bytes = glib.Bytes.new(data, frame.data_len);
+                defer bytes.unref();
+
+                const texture = gdk.MemoryTexture.new(
+                    width,
+                    height,
+                    softwareFrameMemoryFormat(frame.pixel_format),
+                    bytes,
+                    stride,
+                );
+
+                priv.software_frame_generation = frame.generation;
+                self.setSoftwareSnapshotTexture(texture.as(gdk.Texture));
             },
             .native_texture_handle => {
-                if (frame.handle == null) return error.InvalidSoftwareFrame;
+                log.warn(
+                    "software presenter=snapshot does not support native texture handles yet",
+                    .{},
+                );
+                return error.InvalidSoftwareFrame;
             },
-        }
-
-        if (frame.generation > priv.software_frame_generation) {
-            priv.software_frame_generation = frame.generation;
         }
     }
 
@@ -2221,11 +2338,16 @@ pub const Surface = extern struct {
             priv.software_presenter_selected != selection.selected or
             priv.software_presenter_reason != selection.reason;
 
-        if (!changed) return;
+        const snapshot_enabled = selection.selected == .snapshot;
+        if (!changed) {
+            self.setSoftwareSnapshotEnabled(snapshot_enabled);
+            return;
+        }
 
         priv.software_presenter_requested = selection.requested;
         priv.software_presenter_selected = selection.selected;
         priv.software_presenter_reason = selection.reason;
+        self.setSoftwareSnapshotEnabled(snapshot_enabled);
 
         log.info(
             "software presenter experimental={} requested={s} selected={s} reason={s}",
@@ -3624,6 +3746,7 @@ pub const Surface = extern struct {
 
             // Bindings
             class.bindTemplateChildPrivate("gl_area", .{});
+            class.bindTemplateChildPrivate("software_picture", .{});
             class.bindTemplateChildPrivate("url_left", .{});
             class.bindTemplateChildPrivate("url_right", .{});
             class.bindTemplateChildPrivate("child_exited_overlay", .{});
@@ -4139,4 +4262,48 @@ test "computeFraction" {
     try std.testing.expectEqual(1.0, computeFraction(255));
     try std.testing.expectEqual(0.0, computeFraction(0));
     try std.testing.expectEqual(0.5, computeFraction(50));
+}
+
+test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+    };
+
+    try Surface.validateSoftwareFrame(frame);
+}
+
+test "validateSoftwareFrame rejects undersized shared_cpu_bytes payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 47,
+    };
+
+    try std.testing.expectError(error.InvalidSoftwareFrame, Surface.validateSoftwareFrame(frame));
+}
+
+test "validateSoftwareFrame rejects missing native handle payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 2,
+        .height_px = 2,
+        .stride_bytes = 8,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .native_texture_handle,
+        .handle = null,
+    };
+
+    try std.testing.expectError(error.InvalidSoftwareFrame, Surface.validateSoftwareFrame(frame));
 }

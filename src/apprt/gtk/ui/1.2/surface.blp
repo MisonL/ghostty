@@ -77,6 +77,18 @@ Overlay terminal_page {
   };
 
   [overlay]
+  Picture software_picture {
+    visible: false;
+    can-shrink: true;
+    keep-aspect-ratio: false;
+    halign: fill;
+    valign: fill;
+    can-focus: false;
+    can-target: false;
+    focusable: false;
+  }
+
+  [overlay]
   Revealer {
     reveal-child: bind template.readonly;
     transition-type: crossfade;
