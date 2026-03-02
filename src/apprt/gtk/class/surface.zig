@@ -38,6 +38,7 @@ const InspectorWindow = @import("inspector_window.zig").InspectorWindow;
 const i18n = @import("../../../os/i18n.zig");
 
 const log = std.log.scoped(.gtk_ghostty_surface);
+const software_snapshot_failure_threshold: u32 = 3;
 
 pub const Surface = extern struct {
     const Self = @This();
@@ -554,6 +555,7 @@ pub const Surface = extern struct {
         experimental_disabled,
         forced_legacy_gl,
         gtk_runtime_too_old,
+        snapshot_runtime_failed,
         snapshot_selected,
     };
 
@@ -723,6 +725,9 @@ pub const Surface = extern struct {
         software_presenter_selected: coreconfig.SoftwareRendererPresenter = .@"legacy-gl",
         software_presenter_reason: SoftwarePresenterReason = .not_software_build,
         software_snapshot_enabled: bool = false,
+        software_snapshot_runtime_fallback: bool = false,
+        software_snapshot_failure_streak: u32 = 0,
+        software_snapshot_failure_total: u64 = 0,
         software_frame_generation: u64 = 0,
         software_frame_generation_rendered: u64 = 0,
         software_texture: ?*gdk.Texture = null,
@@ -2212,10 +2217,64 @@ pub const Surface = extern struct {
             self.clearSoftwareSnapshotTexture();
             priv.software_frame_generation = 0;
             priv.software_frame_generation_rendered = 0;
+            if (!priv.software_snapshot_runtime_fallback) {
+                priv.software_snapshot_failure_streak = 0;
+            }
             return;
         }
 
         priv.software_picture.as(gtk.Widget).setVisible(@intFromBool(priv.software_texture != null));
+    }
+
+    fn recordSoftwareSnapshotSuccess(self: *Self, generation: u64) void {
+        const priv = self.private();
+        priv.software_frame_generation = generation;
+        priv.software_snapshot_failure_streak = 0;
+    }
+
+    fn recordSoftwareSnapshotFailure(
+        self: *Self,
+        generation: u64,
+        context: []const u8,
+        err: ?anyerror,
+    ) void {
+        const priv = self.private();
+        priv.software_snapshot_failure_total +%= 1;
+        priv.software_snapshot_failure_streak +%= 1;
+        if (generation > priv.software_frame_generation) {
+            priv.software_frame_generation = generation;
+        }
+
+        if (err) |e| {
+            log.warn(
+                "software snapshot frame rejected context={s} streak={} total={} err={}",
+                .{
+                    context,
+                    priv.software_snapshot_failure_streak,
+                    priv.software_snapshot_failure_total,
+                    e,
+                },
+            );
+        } else {
+            log.warn(
+                "software snapshot frame rejected context={s} streak={} total={}",
+                .{
+                    context,
+                    priv.software_snapshot_failure_streak,
+                    priv.software_snapshot_failure_total,
+                },
+            );
+        }
+
+        if (priv.software_snapshot_runtime_fallback) return;
+        if (priv.software_snapshot_failure_streak < software_snapshot_failure_threshold) return;
+
+        priv.software_snapshot_runtime_fallback = true;
+        log.warn(
+            "software snapshot presenter disabled for this session after {} consecutive failures; falling back to legacy-gl",
+            .{software_snapshot_failure_threshold},
+        );
+        self.refreshSoftwarePresenterSelection();
     }
 
     pub fn softwareFrameReady(
@@ -2231,13 +2290,30 @@ pub const Surface = extern struct {
         }
         if (!priv.software_snapshot_enabled) return;
 
-        try validateSoftwareFrame(frame);
+        validateSoftwareFrame(frame) catch |err| {
+            self.recordSoftwareSnapshotFailure(frame.generation, "validate", err);
+            return err;
+        };
         if (frame.generation <= priv.software_frame_generation) return;
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
-                const width = std.math.cast(c_int, frame.width_px) orelse return error.InvalidSoftwareFrame;
-                const height = std.math.cast(c_int, frame.height_px) orelse return error.InvalidSoftwareFrame;
+                const width = std.math.cast(c_int, frame.width_px) orelse {
+                    self.recordSoftwareSnapshotFailure(
+                        frame.generation,
+                        "width_cast",
+                        error.InvalidSoftwareFrame,
+                    );
+                    return error.InvalidSoftwareFrame;
+                };
+                const height = std.math.cast(c_int, frame.height_px) orelse {
+                    self.recordSoftwareSnapshotFailure(
+                        frame.generation,
+                        "height_cast",
+                        error.InvalidSoftwareFrame,
+                    );
+                    return error.InvalidSoftwareFrame;
+                };
                 const stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
                 const data = frame.data orelse return error.InvalidSoftwareFrame;
 
@@ -2252,21 +2328,28 @@ pub const Surface = extern struct {
                     stride,
                 );
 
-                priv.software_frame_generation = frame.generation;
+                self.recordSoftwareSnapshotSuccess(frame.generation);
                 self.setSoftwareSnapshotTexture(texture.as(gdk.Texture));
             },
             .native_texture_handle => {
-                log.warn(
-                    "software presenter=snapshot does not support native texture handles yet",
-                    .{},
+                self.recordSoftwareSnapshotFailure(
+                    frame.generation,
+                    "native_texture_handle_unsupported",
+                    null,
                 );
                 return error.InvalidSoftwareFrame;
             },
         }
     }
 
-    fn softwarePresenterSelection(self: *Self) SoftwarePresenterSelection {
-        if (comptime build_config.renderer != .software) {
+    fn softwarePresenterSelectionFor(
+        is_software_build: bool,
+        experimental: bool,
+        requested: coreconfig.SoftwareRendererPresenter,
+        gtk_runtime_ok: bool,
+        runtime_fallback: bool,
+    ) SoftwarePresenterSelection {
+        if (!is_software_build) {
             return .{
                 .requested = .@"legacy-gl",
                 .selected = .@"legacy-gl",
@@ -2275,18 +2358,6 @@ pub const Surface = extern struct {
             };
         }
 
-        const priv = self.private();
-        const config = if (priv.config) |c| c.get() else {
-            return .{
-                .requested = .auto,
-                .selected = .@"legacy-gl",
-                .reason = .experimental_disabled,
-                .experimental = false,
-            };
-        };
-
-        const experimental = config.@"software-renderer-experimental";
-        const requested = config.@"software-renderer-presenter";
         if (!experimental) {
             return .{
                 .requested = requested,
@@ -2305,7 +2376,7 @@ pub const Surface = extern struct {
             };
         }
 
-        if (!gtk_version.runtimeAtLeast(4, 6, 0)) {
+        if (!gtk_runtime_ok) {
             return .{
                 .requested = requested,
                 .selected = .@"legacy-gl",
@@ -2314,17 +2385,42 @@ pub const Surface = extern struct {
             };
         }
 
-        const selected: coreconfig.SoftwareRendererPresenter = switch (requested) {
-            .auto, .snapshot => .snapshot,
-            .@"legacy-gl" => unreachable,
-        };
+        if (runtime_fallback) {
+            return .{
+                .requested = requested,
+                .selected = .@"legacy-gl",
+                .reason = .snapshot_runtime_failed,
+                .experimental = true,
+            };
+        }
 
         return .{
             .requested = requested,
-            .selected = selected,
+            .selected = .snapshot,
             .reason = .snapshot_selected,
             .experimental = true,
         };
+    }
+
+    fn softwarePresenterSelection(self: *Self) SoftwarePresenterSelection {
+        const is_software_build = comptime build_config.renderer == .software;
+        const priv = self.private();
+        const requested: coreconfig.SoftwareRendererPresenter = if (priv.config) |c|
+            c.get().@"software-renderer-presenter"
+        else
+            .auto;
+        const experimental = if (priv.config) |c|
+            c.get().@"software-renderer-experimental"
+        else
+            false;
+
+        return softwarePresenterSelectionFor(
+            is_software_build,
+            experimental,
+            requested,
+            gtk_version.runtimeAtLeast(4, 6, 0),
+            priv.software_snapshot_runtime_fallback,
+        );
     }
 
     fn refreshSoftwarePresenterSelection(self: *Self) void {
@@ -2350,12 +2446,15 @@ pub const Surface = extern struct {
         self.setSoftwareSnapshotEnabled(snapshot_enabled);
 
         log.info(
-            "software presenter experimental={} requested={s} selected={s} reason={s}",
+            "software presenter experimental={} requested={s} selected={s} reason={s} runtime_fallback={} failure_streak={} failure_total={}",
             .{
                 selection.experimental,
                 @tagName(selection.requested),
                 @tagName(selection.selected),
                 @tagName(selection.reason),
+                priv.software_snapshot_runtime_fallback,
+                priv.software_snapshot_failure_streak,
+                priv.software_snapshot_failure_total,
             },
         );
 
@@ -2367,6 +2466,12 @@ pub const Surface = extern struct {
                         .{},
                     );
                 }
+            },
+            .snapshot_runtime_failed => {
+                log.warn(
+                    "requested snapshot presenter disabled for current session due to repeated failures; using legacy-gl",
+                    .{},
+                );
             },
             else => {},
         }
@@ -4306,4 +4411,33 @@ test "validateSoftwareFrame rejects missing native handle payload" {
     };
 
     try std.testing.expectError(error.InvalidSoftwareFrame, Surface.validateSoftwareFrame(frame));
+}
+
+test "softwarePresenterSelectionFor chooses runtime fallback when snapshot repeatedly fails" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        true,
+        true,
+    );
+
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.snapshot, selection.requested);
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.selected);
+    try std.testing.expectEqual(Surface.SoftwarePresenterReason.snapshot_runtime_failed, selection.reason);
+    try std.testing.expect(selection.experimental);
+}
+
+test "softwarePresenterSelectionFor keeps explicit legacy request highest priority" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .@"legacy-gl",
+        true,
+        true,
+    );
+
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.requested);
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.selected);
+    try std.testing.expectEqual(Surface.SoftwarePresenterReason.forced_legacy_gl, selection.reason);
 }
