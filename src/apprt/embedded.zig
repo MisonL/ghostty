@@ -10,11 +10,13 @@ const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const objc = @import("objc");
 const apprt = @import("../apprt.zig");
+const build_config = @import("../build_config.zig");
 const font = @import("../font/main.zig");
 const input = @import("../input.zig");
 const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
 const terminal = @import("../terminal/main.zig");
+const software_presenter = @import("software_presenter.zig");
 const CoreApp = @import("../App.zig");
 const CoreInspector = @import("../inspector/main.zig").Inspector;
 const CoreSurface = @import("../Surface.zig");
@@ -24,6 +26,25 @@ const Config = configpkg.Config;
 const log = std.log.scoped(.embedded_window);
 
 pub const resourcesDir = internal_os.resourcesDir;
+
+fn softwarePresenterDecisionForEmbeddedConfig(
+    is_software_build: bool,
+    experimental: bool,
+    requested: Config.SoftwareRendererPresenter,
+    platform_tag: PlatformTag,
+) software_presenter.Decision {
+    const availability: software_presenter.Availability = switch (platform_tag) {
+        .macos => .runtime_capability_missing,
+        .ios => .platform_route_unavailable,
+    };
+    return software_presenter.decide(.{
+        .is_software_build = is_software_build,
+        .experimental = experimental,
+        .requested = requested,
+        .availability = availability,
+        .runtime_fallback = false,
+    });
+}
 
 pub const App = struct {
     /// Because we only expect the embedding API to be used in embedded
@@ -418,6 +439,14 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// Runtime presenter decision tracking for software renderer compatibility.
+    software_presenter_requested: Config.SoftwareRendererPresenter = .auto,
+    software_presenter_selected: Config.SoftwareRendererPresenter = .@"legacy-gl",
+    software_presenter_reason: software_presenter.Reason = .not_software_build,
+    software_frame_publishing_enabled: bool = false,
+    software_frame_publishing_initialized: bool = false,
+    software_frame_unavailable_logged: bool = false,
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -580,6 +609,69 @@ pub const Surface = struct {
             var font_size = self.core_surface.font_size;
             font_size.points = opts.font_size;
             try self.core_surface.setFontSize(font_size);
+        }
+
+        self.refreshSoftwarePresenterSupport(&config);
+    }
+
+    fn refreshSoftwarePresenterSupport(self: *Surface, config: *const Config) void {
+        if (comptime build_config.renderer != .software) return;
+
+        const decision = softwarePresenterDecisionForEmbeddedConfig(
+            true,
+            config.@"software-renderer-experimental",
+            config.@"software-renderer-presenter",
+            switch (self.platform) {
+                .macos => .macos,
+                .ios => .ios,
+            },
+        );
+
+        const changed =
+            self.software_presenter_requested != decision.requested or
+            self.software_presenter_selected != decision.selected or
+            self.software_presenter_reason != decision.reason;
+        const publish_changed =
+            !self.software_frame_publishing_initialized or
+            self.software_frame_publishing_enabled != decision.can_publish_software_frame;
+
+        self.software_presenter_requested = decision.requested;
+        self.software_presenter_selected = decision.selected;
+        self.software_presenter_reason = decision.reason;
+        self.software_frame_publishing_enabled = decision.can_publish_software_frame;
+        if (publish_changed) {
+            self.software_frame_publishing_initialized = true;
+            self.core_surface.setSoftwareFramePublishingEnabled(decision.can_publish_software_frame);
+        }
+
+        if (!changed and !publish_changed) return;
+
+        log.info(
+            "software presenter runtime=embedded requested={s} selected={s} reason={s} can_publish={}",
+            .{
+                @tagName(decision.requested),
+                @tagName(decision.selected),
+                @tagName(decision.reason),
+                decision.can_publish_software_frame,
+            },
+        );
+
+        switch (decision.reason) {
+            .runtime_too_old, .runtime_capability_missing, .platform_route_unavailable => {
+                if (decision.requested == .snapshot) {
+                    log.warn(
+                        "requested presenter=snapshot is unavailable for embedded runtime, forcing legacy-gl compatibility path",
+                        .{},
+                    );
+                }
+            },
+            .runtime_failed_session_fallback => {
+                log.warn(
+                    "software presenter runtime fallback active for embedded runtime; forcing legacy-gl compatibility path",
+                    .{},
+                );
+            },
+            else => {},
         }
     }
 
@@ -766,7 +858,6 @@ pub const Surface = struct {
         self: *Surface,
         frame: apprt.surface.Message.SoftwareFrameReady,
     ) error{InvalidSoftwareFrame}!void {
-        _ = self;
         switch (frame.storage) {
             .shared_cpu_bytes => {
                 if (frame.data == null or frame.data_len == 0) {
@@ -776,6 +867,19 @@ pub const Surface = struct {
             .native_texture_handle => {
                 if (frame.handle == null) return error.InvalidSoftwareFrame;
             },
+        }
+
+        if (self.software_frame_publishing_enabled) {
+            self.software_frame_publishing_enabled = false;
+            self.software_frame_publishing_initialized = true;
+            self.core_surface.setSoftwareFramePublishingEnabled(false);
+        }
+        if (!self.software_frame_unavailable_logged) {
+            self.software_frame_unavailable_logged = true;
+            log.warn(
+                "embedded runtime received software frame but has no presenter implementation; disabled software frame publishing for this surface",
+                .{},
+            );
         }
     }
 
@@ -1592,6 +1696,7 @@ pub const CAPI = struct {
             log.err("error updating config err={}", .{err});
             return;
         };
+        surface.refreshSoftwarePresenterSupport(config);
     }
 
     /// Returns true if the surface needs to confirm quitting.
@@ -2235,3 +2340,37 @@ pub const CAPI = struct {
         }
     };
 };
+
+test "software presenter decision for embedded runtime disables publishing on macOS" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .macos,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime respects experimental disabled" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        false,
+        .snapshot,
+        .macos,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.experimental_disabled,
+        decision.reason,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}

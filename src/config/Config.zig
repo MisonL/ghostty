@@ -2022,6 +2022,12 @@ keybind: Keybinds = .{},
 /// If the requested presenter is unavailable at runtime, Ghostty will
 /// fall back to `legacy-gl` and log the reason.
 ///
+/// Runtime compatibility notes:
+///
+/// * GTK runtime: `snapshot` currently requires GTK 4.6+.
+/// * Embedded runtime (macOS/iOS libghostty): `snapshot` is currently
+///   unavailable and Ghostty will use the legacy compatibility path.
+///
 /// This setting is only used when `software-renderer-experimental=true`.
 @"software-renderer-presenter": SoftwareRendererPresenter = .auto,
 

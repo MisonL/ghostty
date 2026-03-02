@@ -17,6 +17,7 @@ const input = @import("../../../input.zig");
 const internal_os = @import("../../../os/main.zig");
 const renderer = @import("../../../renderer.zig");
 const terminal = @import("../../../terminal/main.zig");
+const software_presenter = @import("../../software_presenter.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const gresource = @import("../build/gresource.zig");
 const ext = @import("../ext.zig");
@@ -550,21 +551,8 @@ pub const Surface = extern struct {
         };
     };
 
-    const SoftwarePresenterReason = enum {
-        not_software_build,
-        experimental_disabled,
-        forced_legacy_gl,
-        gtk_runtime_too_old,
-        snapshot_runtime_failed,
-        snapshot_selected,
-    };
-
-    const SoftwarePresenterSelection = struct {
-        requested: coreconfig.SoftwareRendererPresenter,
-        selected: coreconfig.SoftwareRendererPresenter,
-        reason: SoftwarePresenterReason,
-        experimental: bool,
-    };
+    const SoftwarePresenterReason = software_presenter.Reason;
+    const SoftwarePresenterSelection = software_presenter.Decision;
 
     const Private = struct {
         /// The configuration that this surface is using.
@@ -2371,57 +2359,16 @@ pub const Surface = extern struct {
         gtk_runtime_ok: bool,
         runtime_fallback: bool,
     ) SoftwarePresenterSelection {
-        if (!is_software_build) {
-            return .{
-                .requested = .@"legacy-gl",
-                .selected = .@"legacy-gl",
-                .reason = .not_software_build,
-                .experimental = false,
-            };
-        }
-
-        if (!experimental) {
-            return .{
-                .requested = requested,
-                .selected = .@"legacy-gl",
-                .reason = .experimental_disabled,
-                .experimental = false,
-            };
-        }
-
-        if (requested == .@"legacy-gl") {
-            return .{
-                .requested = requested,
-                .selected = .@"legacy-gl",
-                .reason = .forced_legacy_gl,
-                .experimental = true,
-            };
-        }
-
-        if (!gtk_runtime_ok) {
-            return .{
-                .requested = requested,
-                .selected = .@"legacy-gl",
-                .reason = .gtk_runtime_too_old,
-                .experimental = true,
-            };
-        }
-
-        if (runtime_fallback) {
-            return .{
-                .requested = requested,
-                .selected = .@"legacy-gl",
-                .reason = .snapshot_runtime_failed,
-                .experimental = true,
-            };
-        }
-
-        return .{
+        return software_presenter.decide(.{
+            .is_software_build = is_software_build,
+            .experimental = experimental,
             .requested = requested,
-            .selected = .snapshot,
-            .reason = .snapshot_selected,
-            .experimental = true,
-        };
+            .availability = if (gtk_runtime_ok)
+                .available
+            else
+                .runtime_too_old,
+            .runtime_fallback = runtime_fallback,
+        });
     }
 
     fn shouldResetSoftwareSnapshotRuntimeFallback(
@@ -2498,7 +2445,7 @@ pub const Surface = extern struct {
         );
 
         switch (selection.reason) {
-            .gtk_runtime_too_old => {
+            .runtime_too_old, .runtime_capability_missing, .platform_route_unavailable => {
                 if (selection.requested == .snapshot) {
                     log.warn(
                         "requested presenter=snapshot but unavailable, falling back to legacy-gl",
@@ -2506,7 +2453,7 @@ pub const Surface = extern struct {
                     );
                 }
             },
-            .snapshot_runtime_failed => {
+            .runtime_failed_session_fallback => {
                 log.warn(
                     "requested snapshot presenter disabled for current session due to repeated failures; using legacy-gl",
                     .{},
@@ -4464,7 +4411,7 @@ test "softwarePresenterSelectionFor chooses runtime fallback when snapshot repea
 
     try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.snapshot, selection.requested);
     try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.selected);
-    try std.testing.expectEqual(Surface.SoftwarePresenterReason.snapshot_runtime_failed, selection.reason);
+    try std.testing.expectEqual(Surface.SoftwarePresenterReason.runtime_failed_session_fallback, selection.reason);
     try std.testing.expect(selection.experimental);
 }
 
