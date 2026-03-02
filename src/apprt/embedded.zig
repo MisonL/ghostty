@@ -762,6 +762,23 @@ pub const Surface = struct {
         };
     }
 
+    pub fn softwareFrameReady(
+        self: *Surface,
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        _ = self;
+        switch (frame.storage) {
+            .shared_cpu_bytes => {
+                if (frame.data == null or frame.data_len == 0) {
+                    return error.InvalidSoftwareFrame;
+                }
+            },
+            .native_texture_handle => {
+                if (frame.handle == null) return error.InvalidSoftwareFrame;
+            },
+        }
+    }
+
     pub fn updateContentScale(self: *Surface, x: f64, y: f64) void {
         // We are an embedded API so the caller can send us all sorts of
         // garbage. We want to make sure that the float values are valid

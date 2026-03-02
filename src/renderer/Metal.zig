@@ -8,6 +8,7 @@ const builtin = @import("builtin");
 const objc = @import("objc");
 const macos = @import("macos");
 const graphics = macos.graphics;
+const IOSurface = macos.iosurface.IOSurface;
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
 const configpkg = @import("../config.zig");
@@ -60,6 +61,9 @@ max_texture_size: u32,
 
 /// We start an AutoreleasePool before `drawFrame` and end it afterwards.
 autorelease_pool: ?*objc.AutoreleasePool = null,
+
+/// Monotonic generation for software frame publication.
+software_generation: u64 = 0,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
     comptime switch (builtin.os.tag) {
@@ -261,6 +265,53 @@ pub inline fn present(self: *Metal, target: Target, sync: bool) !void {
 /// Present the last presented target again. (noop for Metal)
 pub inline fn presentLastTarget(self: *Metal) !void {
     _ = self;
+}
+
+fn softwareFrameReleaseIOSurface(
+    ctx: ?*anyopaque,
+    data: ?[*]const u8,
+    data_len: usize,
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    _ = data;
+    _ = data_len;
+    _ = handle;
+
+    const ptr = ctx orelse return;
+    const surface: *IOSurface = @ptrCast(@alignCast(ptr));
+    surface.release();
+}
+
+/// Publish the current render target as a software frame payload.
+pub fn publishSoftwareFrame(
+    self: *Metal,
+    target: *const Target,
+    screen: rendererpkg.ScreenSize,
+) !?apprt.surface.Message.SoftwareFrameReady {
+    _ = screen;
+
+    if (target.width == 0 or target.height == 0) return null;
+
+    const width_u32 = std.math.cast(u32, target.width) orelse return error.OutOfMemory;
+    const height_u32 = std.math.cast(u32, target.height) orelse return error.OutOfMemory;
+    const stride_bytes = std.math.mul(u32, width_u32, 4) catch return error.OutOfMemory;
+
+    target.surface.retain();
+    self.software_generation +%= 1;
+
+    return .{
+        .width_px = width_u32,
+        .height_px = height_u32,
+        .stride_bytes = stride_bytes,
+        .generation = self.software_generation,
+        .pixel_format = .bgra8_premul,
+        .storage = .native_texture_handle,
+        .data = null,
+        .data_len = 0,
+        .handle = @ptrCast(target.surface),
+        .release_ctx = @ptrCast(target.surface),
+        .release_fn = &softwareFrameReleaseIOSurface,
+    };
 }
 
 /// Returns the options to use when constructing buffers.

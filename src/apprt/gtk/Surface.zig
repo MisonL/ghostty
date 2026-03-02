@@ -101,3 +101,10 @@ pub fn defaultTermioEnv(self: *Self) !std.process.EnvMap {
 pub fn redrawInspector(self: *Self) void {
     self.surface.redrawInspector();
 }
+
+pub fn softwareFrameReady(
+    self: *Self,
+    frame: apprt.surface.Message.SoftwareFrameReady,
+) !void {
+    return self.surface.softwareFrameReady(frame);
+}

@@ -45,6 +45,9 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
+/// Monotonic generation for software frame publication.
+software_generation: u64 = 0,
+
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
 ///       can't actually fail.
@@ -57,6 +60,18 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!OpenGL {
 
 pub fn deinit(self: *OpenGL) void {
     self.* = undefined;
+}
+
+fn softwareFrameReleaseMalloc(
+    ctx: ?*anyopaque,
+    data: ?[*]const u8,
+    data_len: usize,
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    _ = data;
+    _ = data_len;
+    _ = handle;
+    if (ctx) |ptr| std.c.free(ptr);
 }
 
 /// 32-bit windows cross-compilation breaks with `.c` for some reason, so...
@@ -333,6 +348,58 @@ pub fn present(self: *OpenGL, target: Target) !void {
 /// Present the last presented target again.
 pub fn presentLastTarget(self: *OpenGL) !void {
     if (self.last_target) |target| try self.present(target);
+}
+
+/// Publish the current render target as a software frame payload.
+pub fn publishSoftwareFrame(
+    self: *OpenGL,
+    target: *const Target,
+    screen: rendererpkg.ScreenSize,
+) !?apprt.surface.Message.SoftwareFrameReady {
+    _ = screen;
+
+    if (target.width == 0 or target.height == 0) return null;
+
+    const width_u32 = std.math.cast(u32, target.width) orelse return error.OutOfMemory;
+    const height_u32 = std.math.cast(u32, target.height) orelse return error.OutOfMemory;
+    const stride_bytes = std.math.mul(u32, width_u32, 4) catch return error.OutOfMemory;
+    const stride_usize: usize = @intCast(stride_bytes);
+    const height_usize: usize = @intCast(height_u32);
+    const data_len = std.math.mul(usize, stride_usize, height_usize) catch return error.OutOfMemory;
+
+    const raw = std.c.malloc(data_len) orelse return error.OutOfMemory;
+    errdefer std.c.free(raw);
+
+    const fbobind = try target.framebuffer.bind(.read);
+    defer fbobind.unbind();
+
+    gl.glad.context.ReadBuffer.?(gl.c.GL_COLOR_ATTACHMENT0);
+    gl.glad.context.PixelStorei.?(gl.c.GL_PACK_ALIGNMENT, 1);
+    gl.glad.context.ReadPixels.?(
+        0,
+        0,
+        @intCast(width_u32),
+        @intCast(height_u32),
+        gl.c.GL_BGRA,
+        gl.c.GL_UNSIGNED_BYTE,
+        raw,
+    );
+
+    self.software_generation +%= 1;
+
+    return .{
+        .width_px = width_u32,
+        .height_px = height_u32,
+        .stride_bytes = stride_bytes,
+        .generation = self.software_generation,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrCast(raw),
+        .data_len = data_len,
+        .handle = null,
+        .release_ctx = raw,
+        .release_fn = &softwareFrameReleaseMalloc,
+    };
 }
 
 /// Returns the options to use when constructing buffers.

@@ -554,7 +554,7 @@ pub const Surface = extern struct {
         experimental_disabled,
         forced_legacy_gl,
         gtk_runtime_too_old,
-        snapshot_unimplemented,
+        snapshot_selected,
     };
 
     const SoftwarePresenterSelection = struct {
@@ -721,6 +721,7 @@ pub const Surface = extern struct {
         software_presenter_requested: coreconfig.SoftwareRendererPresenter = .auto,
         software_presenter_selected: coreconfig.SoftwareRendererPresenter = .@"legacy-gl",
         software_presenter_reason: SoftwarePresenterReason = .not_software_build,
+        software_frame_generation: u64 = 0,
 
         pub var offset: c_int = 0;
     };
@@ -2119,6 +2120,34 @@ pub const Surface = extern struct {
         self.as(gobject.Object).notifyByPspec(properties.@"error".impl.param_spec);
     }
 
+    pub fn softwareFrameReady(
+        self: *Self,
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        if (comptime build_config.renderer != .software) return;
+
+        const priv = self.private();
+        switch (priv.software_presenter_selected) {
+            .@"legacy-gl" => return,
+            .auto, .snapshot => {},
+        }
+
+        switch (frame.storage) {
+            .shared_cpu_bytes => {
+                if (frame.data == null or frame.data_len == 0) {
+                    return error.InvalidSoftwareFrame;
+                }
+            },
+            .native_texture_handle => {
+                if (frame.handle == null) return error.InvalidSoftwareFrame;
+            },
+        }
+
+        if (frame.generation > priv.software_frame_generation) {
+            priv.software_frame_generation = frame.generation;
+        }
+    }
+
     fn softwarePresenterSelection(self: *Self) SoftwarePresenterSelection {
         if (comptime build_config.renderer != .software) {
             return .{
@@ -2168,11 +2197,15 @@ pub const Surface = extern struct {
             };
         }
 
-        // NOTE: Snapshot presenter path is not wired end-to-end yet.
+        const selected: coreconfig.SoftwareRendererPresenter = switch (requested) {
+            .auto, .snapshot => .snapshot,
+            .@"legacy-gl" => unreachable,
+        };
+
         return .{
             .requested = requested,
-            .selected = .@"legacy-gl",
-            .reason = .snapshot_unimplemented,
+            .selected = selected,
+            .reason = .snapshot_selected,
             .experimental = true,
         };
     }
@@ -2205,7 +2238,7 @@ pub const Surface = extern struct {
         );
 
         switch (selection.reason) {
-            .gtk_runtime_too_old, .snapshot_unimplemented => {
+            .gtk_runtime_too_old => {
                 if (selection.requested == .snapshot) {
                     log.warn(
                         "requested presenter=snapshot but unavailable, falling back to legacy-gl",

@@ -143,6 +143,16 @@ pub const Message = union(enum) {
         native_texture_handle,
     };
 
+    /// Optional callback to release any owned payload associated with a
+    /// software frame once it has been consumed.
+    pub const SoftwareFrameReleaseFn =
+        *const fn (
+            ctx: ?*anyopaque,
+            data: ?[*]const u8,
+            data_len: usize,
+            handle: ?*anyopaque,
+        ) callconv(.c) void;
+
     pub const SoftwareFrameReady = extern struct {
         width_px: u32,
         height_px: u32,
@@ -157,6 +167,17 @@ pub const Message = union(enum) {
 
         /// Optional native handle payload when storage is native_texture_handle.
         handle: ?*anyopaque = null,
+
+        /// Optional callback context and function used to release `data` and/or
+        /// `handle` ownership after delivery to apprt.
+        release_ctx: ?*anyopaque = null,
+        release_fn: ?SoftwareFrameReleaseFn = null,
+
+        /// Release any owned resources associated with this frame.
+        pub inline fn release(self: SoftwareFrameReady) void {
+            const release_fn = self.release_fn orelse return;
+            release_fn(self.release_ctx, self.data, self.data_len, self.handle);
+        }
     };
 };
 
@@ -196,6 +217,43 @@ pub fn shouldInheritWorkingDirectory(context: NewSurfaceContext, config: *const 
         .tab => config.@"tab-inherit-working-directory",
         .split => config.@"split-inherit-working-directory",
     };
+}
+
+test "SoftwareFrameReady.release invokes callback" {
+    const testing = std.testing;
+    var released = false;
+
+    const cb = struct {
+        fn release(
+            ctx: ?*anyopaque,
+            data: ?[*]const u8,
+            data_len: usize,
+            handle: ?*anyopaque,
+        ) callconv(.c) void {
+            _ = data;
+            _ = data_len;
+            _ = handle;
+            const flag_ptr: *bool = @ptrCast(@alignCast(ctx.?));
+            flag_ptr.* = true;
+        }
+    }.release;
+
+    const frame: Message.SoftwareFrameReady = .{
+        .width_px = 1,
+        .height_px = 1,
+        .stride_bytes = 4,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = null,
+        .data_len = 0,
+        .handle = null,
+        .release_ctx = @ptrCast(&released),
+        .release_fn = &cb,
+    };
+
+    frame.release();
+    try testing.expect(released);
 }
 
 /// Returns a new config for a surface for the given app that should be

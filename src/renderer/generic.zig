@@ -1723,7 +1723,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
             }
 
-            if (@hasDecl(GraphicsAPI, "publishSoftwareFrame")) {
+            const publish_software_frame =
+                self.config.software_renderer_experimental and
+                self.config.software_renderer_presenter != .@"legacy-gl";
+            if (publish_software_frame and @hasDecl(GraphicsAPI, "publishSoftwareFrame")) {
                 if (try self.api.publishSoftwareFrame(
                     &frame.target,
                     self.size.screen,
