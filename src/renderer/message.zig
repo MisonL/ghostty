@@ -52,6 +52,12 @@ pub const Message = union(enum) {
         impl: *renderer.Renderer.DerivedConfig,
     },
 
+    /// Enable or disable software frame publishing to the apprt.
+    ///
+    /// This is used for runtime-controlled presenter fallback paths
+    /// where renderer config alone is insufficient.
+    software_frame_publishing: bool,
+
     /// Matches for the current viewport from the search thread. These happen
     /// async so they may be off for a frame or two from the actually rendered
     /// viewport. The renderer must handle this gracefully.

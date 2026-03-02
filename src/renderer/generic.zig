@@ -115,6 +115,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// True if the window is focused
         focused: bool,
 
+        /// Runtime gate for publishing software frames to apprt.
+        ///
+        /// This is controlled by apprt runtime capability/fallback state and
+        /// complements config-level toggles.
+        software_frame_publishing: bool = true,
+
         /// Flag to indicate that our focus state changed for custom
         /// shaders to update their state.
         custom_shader_focused_changed: bool = false,
@@ -1068,6 +1074,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
+        /// Enable or disable publishing software frames to apprt.
+        ///
+        /// Must be called on the render thread.
+        pub fn setSoftwareFramePublishing(self: *Self, enabled: bool) void {
+            self.draw_mutex.lock();
+            defer self.draw_mutex.unlock();
+            self.software_frame_publishing = enabled;
+        }
+
         /// Set the new font grid.
         ///
         /// Must be called on the render thread.
@@ -1724,6 +1739,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             const publish_software_frame =
+                self.software_frame_publishing and
                 self.config.software_renderer_experimental and
                 self.config.software_renderer_presenter != .@"legacy-gl";
             if (publish_software_frame and @hasDecl(GraphicsAPI, "publishSoftwareFrame")) {

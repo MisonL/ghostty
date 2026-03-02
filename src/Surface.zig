@@ -3261,6 +3261,22 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
     try self.queueRender();
 }
 
+/// Enable or disable publishing software frames from the renderer.
+///
+/// This is a runtime control used by apprt capability and fallback decisions.
+pub fn setSoftwareFramePublishingEnabled(self: *Surface, enabled: bool) void {
+    _ = self.renderer_thread.mailbox.push(.{
+        .software_frame_publishing = enabled,
+    }, .{ .forever = {} });
+
+    self.queueRender() catch |err| {
+        log.warn(
+            "failed to wake renderer for software frame publishing change err={}",
+            .{err},
+        );
+    };
+}
+
 pub fn focusCallback(self: *Surface, focused: bool) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();

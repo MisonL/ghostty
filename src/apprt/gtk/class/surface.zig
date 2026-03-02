@@ -1821,8 +1821,7 @@ pub const Surface = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
-        self.clearSoftwareSnapshotTexture();
-        priv.software_snapshot_enabled = false;
+        self.setSoftwareSnapshotEnabled(false);
 
         if (priv.config) |v| {
             v.unref();
@@ -2209,6 +2208,12 @@ pub const Surface = extern struct {
         priv.software_picture.as(gtk.Widget).queueDraw();
     }
 
+    fn syncSoftwareFramePublishing(self: *Self) void {
+        if (comptime build_config.renderer != .software) return;
+        const core_surface = self.core() orelse return;
+        core_surface.setSoftwareFramePublishingEnabled(self.private().software_snapshot_enabled);
+    }
+
     fn setSoftwareSnapshotEnabled(self: *Self, enabled: bool) void {
         const priv = self.private();
         priv.software_snapshot_enabled = enabled;
@@ -2220,10 +2225,27 @@ pub const Surface = extern struct {
             if (!priv.software_snapshot_runtime_fallback) {
                 priv.software_snapshot_failure_streak = 0;
             }
+            self.syncSoftwareFramePublishing();
             return;
         }
 
         priv.software_picture.as(gtk.Widget).setVisible(@intFromBool(priv.software_texture != null));
+        self.syncSoftwareFramePublishing();
+    }
+
+    fn resetSoftwareSnapshotRuntimeFallback(self: *Self, reason: []const u8) void {
+        const priv = self.private();
+        if (!priv.software_snapshot_runtime_fallback) return;
+
+        priv.software_snapshot_runtime_fallback = false;
+        priv.software_snapshot_failure_streak = 0;
+        log.info(
+            "software snapshot runtime fallback reset reason={s} failure_total={}",
+            .{
+                reason,
+                priv.software_snapshot_failure_total,
+            },
+        );
     }
 
     fn recordSoftwareSnapshotSuccess(self: *Self, generation: u64) void {
@@ -2402,6 +2424,14 @@ pub const Surface = extern struct {
         };
     }
 
+    fn shouldResetSoftwareSnapshotRuntimeFallback(
+        runtime_fallback: bool,
+        selection: SoftwarePresenterSelection,
+    ) bool {
+        if (!runtime_fallback) return false;
+        return !selection.experimental or selection.requested == .@"legacy-gl";
+    }
+
     fn softwarePresenterSelection(self: *Self) SoftwarePresenterSelection {
         const is_software_build = comptime build_config.renderer == .software;
         const priv = self.private();
@@ -2427,7 +2457,16 @@ pub const Surface = extern struct {
         if (comptime build_config.renderer != .software) return;
 
         const priv = self.private();
-        const selection = self.softwarePresenterSelection();
+        var selection = self.softwarePresenterSelection();
+        if (shouldResetSoftwareSnapshotRuntimeFallback(
+            priv.software_snapshot_runtime_fallback,
+            selection,
+        )) {
+            self.resetSoftwareSnapshotRuntimeFallback(
+                if (selection.experimental) "requested_legacy_gl" else "experimental_disabled",
+            );
+            selection = self.softwarePresenterSelection();
+        }
 
         const changed =
             priv.software_presenter_requested != selection.requested or
@@ -3694,6 +3733,7 @@ pub const Surface = extern struct {
 
         // Store it!
         priv.core_surface = surface;
+        self.syncSoftwareFramePublishing();
 
         // Emit the signal that we initialized the surface.
         Surface.signals.init.impl.emit(
@@ -4440,4 +4480,40 @@ test "softwarePresenterSelectionFor keeps explicit legacy request highest priori
     try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.requested);
     try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.selected);
     try std.testing.expectEqual(Surface.SoftwarePresenterReason.forced_legacy_gl, selection.reason);
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback resets when experimental is disabled" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        false,
+        .snapshot,
+        true,
+        true,
+    );
+
+    try std.testing.expect(Surface.shouldResetSoftwareSnapshotRuntimeFallback(true, selection));
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback resets when legacy presenter is requested" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .@"legacy-gl",
+        true,
+        true,
+    );
+
+    try std.testing.expect(Surface.shouldResetSoftwareSnapshotRuntimeFallback(true, selection));
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback keeps fallback when snapshot is still requested" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        true,
+        true,
+    );
+
+    try std.testing.expect(!Surface.shouldResetSoftwareSnapshotRuntimeFallback(true, selection));
 }

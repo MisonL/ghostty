@@ -456,6 +456,12 @@ fn drainMailbox(self: *Thread) !void {
                 self.syncDrawTimer();
             },
 
+            .software_frame_publishing => |enabled| {
+                if (@hasDecl(rendererpkg.Renderer, "setSoftwareFramePublishing")) {
+                    self.renderer.setSoftwareFramePublishing(enabled);
+                }
+            },
+
             .search_viewport_matches => |v| {
                 // Note we don't free the new value because we expect our
                 // allocators to match.
