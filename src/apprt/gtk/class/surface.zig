@@ -716,6 +716,7 @@ pub const Surface = extern struct {
         software_snapshot_runtime_fallback: bool = false,
         software_snapshot_failure_streak: u32 = 0,
         software_snapshot_failure_total: u64 = 0,
+        software_native_handle_unsupported_logged: bool = false,
         software_frame_generation: u64 = 0,
         software_frame_generation_rendered: u64 = 0,
         software_texture: ?*gdk.Texture = null,
@@ -2210,6 +2211,7 @@ pub const Surface = extern struct {
             self.clearSoftwareSnapshotTexture();
             priv.software_frame_generation = 0;
             priv.software_frame_generation_rendered = 0;
+            priv.software_native_handle_unsupported_logged = false;
             if (!priv.software_snapshot_runtime_fallback) {
                 priv.software_snapshot_failure_streak = 0;
             }
@@ -2227,6 +2229,7 @@ pub const Surface = extern struct {
 
         priv.software_snapshot_runtime_fallback = false;
         priv.software_snapshot_failure_streak = 0;
+        priv.software_native_handle_unsupported_logged = false;
         log.info(
             "software snapshot runtime fallback reset reason={s} failure_total={}",
             .{
@@ -2234,6 +2237,21 @@ pub const Surface = extern struct {
                 priv.software_snapshot_failure_total,
             },
         );
+    }
+
+    fn activateSoftwareSnapshotRuntimeFallback(
+        self: *Self,
+        context: []const u8,
+    ) void {
+        const priv = self.private();
+        if (priv.software_snapshot_runtime_fallback) return;
+
+        priv.software_snapshot_runtime_fallback = true;
+        log.warn(
+            "software snapshot presenter disabled for this session context={s}; falling back to legacy-gl",
+            .{context},
+        );
+        self.refreshSoftwarePresenterSelection();
     }
 
     fn recordSoftwareSnapshotSuccess(self: *Self, generation: u64) void {
@@ -2279,12 +2297,7 @@ pub const Surface = extern struct {
         if (priv.software_snapshot_runtime_fallback) return;
         if (priv.software_snapshot_failure_streak < software_snapshot_failure_threshold) return;
 
-        priv.software_snapshot_runtime_fallback = true;
-        log.warn(
-            "software snapshot presenter disabled for this session after {} consecutive failures; falling back to legacy-gl",
-            .{software_snapshot_failure_threshold},
-        );
-        self.refreshSoftwarePresenterSelection();
+        self.activateSoftwareSnapshotRuntimeFallback("consecutive_failures");
     }
 
     pub fn softwareFrameReady(
@@ -2342,10 +2355,20 @@ pub const Surface = extern struct {
                 self.setSoftwareSnapshotTexture(texture.as(gdk.Texture));
             },
             .native_texture_handle => {
-                self.recordSoftwareSnapshotFailure(
-                    frame.generation,
+                priv.software_snapshot_failure_total +%= 1;
+                priv.software_snapshot_failure_streak +%= 1;
+                if (frame.generation > priv.software_frame_generation) {
+                    priv.software_frame_generation = frame.generation;
+                }
+                if (!priv.software_native_handle_unsupported_logged) {
+                    priv.software_native_handle_unsupported_logged = true;
+                    log.warn(
+                        "software snapshot frame rejected context=native_texture_handle_unsupported generation={}; runtime does not currently import native handles",
+                        .{frame.generation},
+                    );
+                }
+                self.activateSoftwareSnapshotRuntimeFallback(
                     "native_texture_handle_unsupported",
-                    null,
                 );
                 return error.InvalidSoftwareFrame;
             },

@@ -17,6 +17,7 @@ pub const Backend = @import("renderer/backend.zig").Backend;
 pub const GenericRenderer = @import("renderer/generic.zig").Renderer;
 pub const Metal = @import("renderer/Metal.zig");
 pub const OpenGL = @import("renderer/OpenGL.zig");
+pub const CPU = @import("renderer/CPU.zig").CPU;
 pub const Software = @import("renderer/Software.zig").Software;
 pub const WebGL = @import("renderer/WebGL.zig");
 pub const Options = @import("renderer/Options.zig");
@@ -58,6 +59,7 @@ pub const Health = enum(c_int) {
 test {
     // Our comptime-chosen renderer
     _ = Renderer;
+    _ = CPU;
 
     _ = cursor;
     _ = message;

@@ -34,6 +34,7 @@ sentry: bool = true,
 simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
+software_renderer_cpu_mvp: bool = false,
 
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
@@ -139,6 +140,12 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "renderer",
         "The app runtime to use. Not all values supported on all platforms.",
     ) orelse RendererBackend.default(target.result, wasm_target);
+
+    config.software_renderer_cpu_mvp = b.option(
+        bool,
+        "software-renderer-cpu-mvp",
+        "Enable the CPU software renderer MVP scaffold route. Disabled by default.",
+    ) orelse false;
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -480,6 +487,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "sentry", self.sentry);
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
+    step.addOption(bool, "software_renderer_cpu_mvp", self.software_renderer_cpu_mvp);
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -559,6 +567,7 @@ pub fn fromOptions() Config {
         .font_backend = std.meta.stringToEnum(FontBackend, @tagName(options.font_backend)).?,
         .renderer = std.meta.stringToEnum(RendererBackend, @tagName(options.renderer)).?,
         .snap = options.snap,
+        .software_renderer_cpu_mvp = options.software_renderer_cpu_mvp,
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,

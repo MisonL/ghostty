@@ -17,6 +17,7 @@ const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
 const terminal = @import("../terminal/main.zig");
 const software_presenter = @import("software_presenter.zig");
+const lib = @import("../lib/main.zig");
 const CoreApp = @import("../App.zig");
 const CoreInspector = @import("../inspector/main.zig").Inspector;
 const CoreSurface = @import("../Surface.zig");
@@ -67,6 +68,23 @@ fn runtimeSoftwareFrameStorageSupported(
     return support & softwareFrameStorageSupportMask(storage) != 0;
 }
 
+fn softwarePresenterRequiredStorageForEmbeddedConfig(
+    platform_tag: PlatformTag,
+) apprt.surface.Message.SoftwareFrameStorage {
+    if (comptime build_config.software_renderer_cpu_mvp) {
+        return .shared_cpu_bytes;
+    }
+
+    const os_tag: std.Target.Os.Tag = switch (platform_tag) {
+        .macos => .macos,
+        .ios => .ios,
+    };
+    return switch (renderer.Backend.softwareRouteForOsTag(os_tag)) {
+        .metal => .native_texture_handle,
+        else => .shared_cpu_bytes,
+    };
+}
+
 fn softwarePresenterAvailabilityForEmbeddedConfig(
     platform_tag: PlatformTag,
     software_frame_cb: ?App.Options.SoftwareFrameCallback,
@@ -78,9 +96,10 @@ fn softwarePresenterAvailabilityForEmbeddedConfig(
     }
 
     if (software_frame_cb == null) return .runtime_capability_missing;
+    const required_storage = softwarePresenterRequiredStorageForEmbeddedConfig(platform_tag);
     if (!runtimeSoftwareFrameStorageSupported(
         software_frame_storage_support,
-        .native_texture_handle,
+        required_storage,
     )) {
         return .runtime_capability_missing;
     }
@@ -761,7 +780,10 @@ pub const Surface = struct {
         }
     }
 
-    fn disableSoftwareFramePublishingUnavailable(self: *Surface) void {
+    fn disableSoftwareFramePublishingUnavailable(
+        self: *Surface,
+        context: []const u8,
+    ) void {
         if (self.software_frame_publishing_enabled) {
             self.software_frame_publishing_enabled = false;
             self.software_frame_publishing_initialized = true;
@@ -771,8 +793,8 @@ pub const Surface = struct {
         if (self.software_frame_unavailable_logged) return;
         self.software_frame_unavailable_logged = true;
         log.warn(
-            "embedded runtime received software frame but has no presenter implementation; disabled software frame publishing for this surface",
-            .{},
+            "embedded runtime received software frame but capability is unavailable context={s}; disabled software frame publishing for this surface",
+            .{context},
         );
     }
 
@@ -991,7 +1013,7 @@ pub const Surface = struct {
         if (!self.software_frame_publishing_enabled) return;
 
         const software_frame_cb = self.app.opts.software_frame_cb orelse {
-            self.disableSoftwareFramePublishingUnavailable();
+            self.disableSoftwareFramePublishingUnavailable("callback_missing");
             return;
         };
 
@@ -2497,11 +2519,53 @@ pub const CAPI = struct {
     };
 };
 
+test "ghostty.h RuntimeSoftwareFramePixelFormat" {
+    try lib.checkGhosttyHEnum(
+        CAPI.RuntimeSoftwareFramePixelFormat,
+        "GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_",
+    );
+}
+
+test "ghostty.h RuntimeSoftwareFrameStorage" {
+    try lib.checkGhosttyHEnum(
+        CAPI.RuntimeSoftwareFrameStorage,
+        "GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_",
+    );
+}
+
+test "ghostty.h RuntimeSoftwareFrameStorageSupport" {
+    try lib.checkGhosttyHEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport,
+        "GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_",
+    );
+}
+
+test "ghostty.h RuntimeSoftwareFrame size matches" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        @sizeOf(c.ghostty_runtime_software_frame_s),
+        @sizeOf(CAPI.RuntimeSoftwareFrame),
+    );
+}
+
 fn testSoftwareFrameCallbackSuccess(
     _: ?*anyopaque,
     _: *const CAPI.RuntimeSoftwareFrame,
 ) callconv(.c) bool {
     return true;
+}
+
+fn testRequiredStorageSupportMaskForMacos() u32 {
+    return softwareFrameStorageSupportMask(
+        softwarePresenterRequiredStorageForEmbeddedConfig(.macos),
+    );
+}
+
+fn testUnsupportedStorageSupportMaskForMacos() u32 {
+    return switch (softwarePresenterRequiredStorageForEmbeddedConfig(.macos)) {
+        .shared_cpu_bytes => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        .native_texture_handle => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes),
+    };
 }
 
 test "software presenter decision for embedded runtime returns runtime_capability_missing without callback on macOS" {
@@ -2511,7 +2575,7 @@ test "software presenter decision for embedded runtime returns runtime_capabilit
         .snapshot,
         .macos,
         null,
-        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        testRequiredStorageSupportMaskForMacos(),
         false,
     );
 
@@ -2526,14 +2590,14 @@ test "software presenter decision for embedded runtime returns runtime_capabilit
     try std.testing.expect(!decision.can_publish_software_frame);
 }
 
-test "software presenter decision for embedded runtime selects snapshot with callback and native handle support" {
+test "software presenter decision for embedded runtime selects snapshot with callback and required storage support" {
     const decision = softwarePresenterDecisionForEmbeddedConfig(
         true,
         true,
         .snapshot,
         .macos,
         &testSoftwareFrameCallbackSuccess,
-        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        testRequiredStorageSupportMaskForMacos(),
         false,
     );
 
@@ -2555,7 +2619,7 @@ test "software presenter decision for embedded runtime applies runtime_failed_se
         .snapshot,
         .macos,
         &testSoftwareFrameCallbackSuccess,
-        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        testRequiredStorageSupportMaskForMacos(),
         true,
     );
 
@@ -2577,13 +2641,35 @@ test "software presenter decision for embedded runtime respects experimental dis
         .snapshot,
         .macos,
         &testSoftwareFrameCallbackSuccess,
-        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        testRequiredStorageSupportMaskForMacos(),
         false,
     );
 
     try std.testing.expectEqual(
         software_presenter.Reason.experimental_disabled,
         decision.reason,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime returns runtime_capability_missing when required storage support is absent" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .macos,
+        &testSoftwareFrameCallbackSuccess,
+        testUnsupportedStorageSupportMaskForMacos(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
     );
     try std.testing.expect(!decision.can_publish_software_frame);
 }
