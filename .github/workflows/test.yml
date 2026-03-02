@@ -1,5 +1,7 @@
 on:
-  push: {}
+  push:
+    branches-ignore:
+      - feature/software-renderer-core-foundation
   pull_request: {}
   workflow_dispatch: {}
 
