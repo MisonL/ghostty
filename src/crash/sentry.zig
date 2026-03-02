@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
 const build_options = @import("build_options");
+const RendererBackend = @import("../renderer/backend.zig").Backend;
 const sentry = if (build_options.sentry) @import("sentry");
 const internal_os = @import("../os/main.zig");
 const crash = @import("main.zig");
@@ -149,6 +150,8 @@ fn initThread(gpa: Allocator) !void {
     sentry.setTag("app-runtime", @tagName(build_config.app_runtime));
     sentry.setTag("font-backend", @tagName(build_config.font_backend));
     sentry.setTag("renderer", @tagName(build_config.renderer));
+    const renderer_effective: RendererBackend = build_config.renderer.effective(builtin.target);
+    sentry.setTag("renderer-effective", @tagName(renderer_effective));
 
     // Log some information about sentry
     log.debug("sentry initialized database={s}", .{cache_dir});

@@ -137,6 +137,12 @@ pub const GlobalState = struct {
             std.log.info("dependency fontconfig={d}", .{fontconfig.version()});
         }
         std.log.info("renderer={}", .{renderer.Renderer});
+        std.log.info("renderer build={s}", .{@tagName(build_config.renderer)});
+        if (comptime build_config.renderer == .software) {
+            std.log.info("renderer effective={s}", .{
+                @tagName(renderer.Backend.softwareRouteForOsTag(builtin.os.tag)),
+            });
+        }
         std.log.info("libxev default backend={t}", .{xev.backend});
 
         // As early as possible, initialize our resource limits.

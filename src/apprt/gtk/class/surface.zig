@@ -3111,6 +3111,12 @@ pub const Surface = extern struct {
             log.warn("failed to make GL context current: {s}", .{err.f_message orelse "(no message)"});
             log.warn("this error is almost always due to a library, driver, or GTK issue", .{});
             log.warn("this is a common cause of this issue: https://ghostty.org/docs/help/gtk-opengl-context", .{});
+            if (comptime build_config.renderer == .software) {
+                log.warn(
+                    "renderer=software currently routes through GTK OpenGL while the CPU path is still in progress",
+                    .{},
+                );
+            }
             self.setError(true);
             return;
         }
@@ -3258,6 +3264,12 @@ pub const Surface = extern struct {
             log.warn("failed to make GL context current: {s}", .{err.f_message orelse "(no message)"});
             log.warn("this error is usually due to a driver or gtk bug", .{});
             log.warn("this is a common cause of this issue: https://gitlab.gnome.org/GNOME/gtk/-/issues/4950", .{});
+            if (comptime build_config.renderer == .software) {
+                log.warn(
+                    "renderer=software currently routes through GTK OpenGL while the CPU path is still in progress",
+                    .{},
+                );
+            }
             return error.GLAreaError;
         }
 

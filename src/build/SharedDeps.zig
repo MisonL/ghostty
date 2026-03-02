@@ -450,7 +450,8 @@ pub fn add(
             );
         }
 
-        if (self.config.renderer == .opengl) {
+        const effective_renderer = self.config.renderer.effective(target.result);
+        if (effective_renderer == .opengl and target.result.os.tag == .macos) {
             step.linkFramework("OpenGL");
         }
 
