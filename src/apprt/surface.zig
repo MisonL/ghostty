@@ -63,6 +63,9 @@ pub const Message = union(enum) {
     /// Health status change for the renderer.
     renderer_health: renderer.Health,
 
+    /// A software-rendered frame is ready to be presented by the apprt.
+    software_frame_ready: SoftwareFrameReady,
+
     /// Tell the surface to present itself to the user. This may require raising
     /// a window and switching tabs.
     present_surface: void,
@@ -128,6 +131,32 @@ pub const Message = union(enum) {
 
             .none => void,
         };
+    };
+
+    pub const SoftwareFramePixelFormat = enum(c_int) {
+        bgra8_premul,
+        rgba8_premul,
+    };
+
+    pub const SoftwareFrameStorage = enum(c_int) {
+        shared_cpu_bytes,
+        native_texture_handle,
+    };
+
+    pub const SoftwareFrameReady = extern struct {
+        width_px: u32,
+        height_px: u32,
+        stride_bytes: u32,
+        generation: u64,
+        pixel_format: SoftwareFramePixelFormat,
+        storage: SoftwareFrameStorage,
+
+        /// Optional bytes payload when storage is shared_cpu_bytes.
+        data: ?[*]const u8 = null,
+        data_len: usize = 0,
+
+        /// Optional native handle payload when storage is native_texture_handle.
+        handle: ?*anyopaque = null,
     };
 };
 

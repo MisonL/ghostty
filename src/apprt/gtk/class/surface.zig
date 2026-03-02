@@ -10,6 +10,7 @@ const gtk = @import("gtk");
 
 const apprt = @import("../../../apprt.zig");
 const build_config = @import("../../../build_config.zig");
+const coreconfig = @import("../../../config.zig").Config;
 const datastruct = @import("../../../datastruct/main.zig");
 const font = @import("../../../font/main.zig");
 const input = @import("../../../input.zig");
@@ -21,6 +22,7 @@ const gresource = @import("../build/gresource.zig");
 const ext = @import("../ext.zig");
 const gsettings = @import("../gsettings.zig");
 const gtk_key = @import("../key.zig");
+const gtk_version = @import("../gtk_version.zig");
 const ApprtSurface = @import("../Surface.zig");
 const Common = @import("../class.zig").Common;
 const Application = @import("application.zig").Application;
@@ -547,6 +549,21 @@ pub const Surface = extern struct {
         };
     };
 
+    const SoftwarePresenterReason = enum {
+        not_software_build,
+        experimental_disabled,
+        forced_legacy_gl,
+        gtk_runtime_too_old,
+        snapshot_unimplemented,
+    };
+
+    const SoftwarePresenterSelection = struct {
+        requested: coreconfig.SoftwareRendererPresenter,
+        selected: coreconfig.SoftwareRendererPresenter,
+        reason: SoftwarePresenterReason,
+        experimental: bool,
+    };
+
     const Private = struct {
         /// The configuration that this surface is using.
         config: ?*Config = null,
@@ -699,6 +716,11 @@ pub const Surface = extern struct {
         /// Timer to reset the amount of horizontal scroll if the user
         /// stops scrolling.
         pending_horizontal_scroll_reset: ?c_uint = null,
+
+        /// The selected presentation strategy for software renderer mode.
+        software_presenter_requested: coreconfig.SoftwareRendererPresenter = .auto,
+        software_presenter_selected: coreconfig.SoftwareRendererPresenter = .@"legacy-gl",
+        software_presenter_reason: SoftwarePresenterReason = .not_software_build,
 
         pub var offset: c_int = 0;
     };
@@ -1763,6 +1785,7 @@ pub const Surface = extern struct {
         self.as(gtk.Widget).setCursorFromName("text");
 
         // Initialize our config
+        self.refreshSoftwarePresenterSelection();
         self.propConfig(undefined, null);
     }
 
@@ -2096,6 +2119,104 @@ pub const Surface = extern struct {
         self.as(gobject.Object).notifyByPspec(properties.@"error".impl.param_spec);
     }
 
+    fn softwarePresenterSelection(self: *Self) SoftwarePresenterSelection {
+        if (comptime build_config.renderer != .software) {
+            return .{
+                .requested = .@"legacy-gl",
+                .selected = .@"legacy-gl",
+                .reason = .not_software_build,
+                .experimental = false,
+            };
+        }
+
+        const priv = self.private();
+        const config = if (priv.config) |c| c.get() else {
+            return .{
+                .requested = .auto,
+                .selected = .@"legacy-gl",
+                .reason = .experimental_disabled,
+                .experimental = false,
+            };
+        };
+
+        const experimental = config.@"software-renderer-experimental";
+        const requested = config.@"software-renderer-presenter";
+        if (!experimental) {
+            return .{
+                .requested = requested,
+                .selected = .@"legacy-gl",
+                .reason = .experimental_disabled,
+                .experimental = false,
+            };
+        }
+
+        if (requested == .@"legacy-gl") {
+            return .{
+                .requested = requested,
+                .selected = .@"legacy-gl",
+                .reason = .forced_legacy_gl,
+                .experimental = true,
+            };
+        }
+
+        if (!gtk_version.runtimeAtLeast(4, 6, 0)) {
+            return .{
+                .requested = requested,
+                .selected = .@"legacy-gl",
+                .reason = .gtk_runtime_too_old,
+                .experimental = true,
+            };
+        }
+
+        // NOTE: Snapshot presenter path is not wired end-to-end yet.
+        return .{
+            .requested = requested,
+            .selected = .@"legacy-gl",
+            .reason = .snapshot_unimplemented,
+            .experimental = true,
+        };
+    }
+
+    fn refreshSoftwarePresenterSelection(self: *Self) void {
+        if (comptime build_config.renderer != .software) return;
+
+        const priv = self.private();
+        const selection = self.softwarePresenterSelection();
+
+        const changed =
+            priv.software_presenter_requested != selection.requested or
+            priv.software_presenter_selected != selection.selected or
+            priv.software_presenter_reason != selection.reason;
+
+        if (!changed) return;
+
+        priv.software_presenter_requested = selection.requested;
+        priv.software_presenter_selected = selection.selected;
+        priv.software_presenter_reason = selection.reason;
+
+        log.info(
+            "software presenter experimental={} requested={s} selected={s} reason={s}",
+            .{
+                selection.experimental,
+                @tagName(selection.requested),
+                @tagName(selection.selected),
+                @tagName(selection.reason),
+            },
+        );
+
+        switch (selection.reason) {
+            .gtk_runtime_too_old, .snapshot_unimplemented => {
+                if (selection.requested == .snapshot) {
+                    log.warn(
+                        "requested presenter=snapshot but unavailable, falling back to legacy-gl",
+                        .{},
+                    );
+                }
+            },
+            else => {},
+        }
+    }
+
     pub fn setSearchActive(self: *Self, active: bool, needle: [:0]const u8) void {
         const priv = self.private();
         var value = gobject.ext.Value.newFrom(active);
@@ -2128,6 +2249,8 @@ pub const Surface = extern struct {
         _: *gobject.ParamSpec,
         _: ?*anyopaque,
     ) callconv(.c) void {
+        self.refreshSoftwarePresenterSelection();
+
         const priv = self.private();
         const config = if (priv.config) |c| c.get() else return;
 

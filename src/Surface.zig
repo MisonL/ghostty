@@ -1070,6 +1070,14 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
 
         .renderer_health => |health| self.updateRendererHealth(health),
 
+        .software_frame_ready => |frame| {
+            if (@hasDecl(apprt.runtime.Surface, "softwareFrameReady")) {
+                self.rt_surface.softwareFrameReady(frame) catch |err| {
+                    log.warn("failed handling software frame err={}", .{err});
+                };
+            }
+        },
+
         .scrollbar => |scrollbar| self.updateScrollbar(scrollbar),
 
         .present_surface => try self.presentSurface(),

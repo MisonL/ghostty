@@ -569,6 +569,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             colorspace: configpkg.Config.WindowColorspace,
             blending: configpkg.Config.AlphaBlending,
             background_blur: configpkg.Config.BackgroundBlur,
+            software_renderer_experimental: bool,
+            software_renderer_presenter: configpkg.Config.SoftwareRendererPresenter,
             scroll_to_bottom_on_output: bool,
 
             pub fn init(
@@ -643,6 +645,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .colorspace = config.@"window-colorspace",
                     .blending = config.@"alpha-blending",
                     .background_blur = config.@"background-blur",
+                    .software_renderer_experimental = config.@"software-renderer-experimental",
+                    .software_renderer_presenter = config.@"software-renderer-presenter",
                     .scroll_to_bottom_on_output = config.@"scroll-to-bottom".output,
                     .arena = arena,
                 };
@@ -1716,6 +1720,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             .vertex_count = 3,
                         },
                     });
+                }
+            }
+
+            if (@hasDecl(GraphicsAPI, "publishSoftwareFrame")) {
+                if (try self.api.publishSoftwareFrame(
+                    &frame.target,
+                    self.size.screen,
+                )) |software_frame| {
+                    _ = self.surface_mailbox.push(.{
+                        .software_frame_ready = software_frame,
+                    }, .instant);
                 }
             }
         }

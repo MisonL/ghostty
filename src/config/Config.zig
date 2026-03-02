@@ -2003,6 +2003,28 @@ keybind: Keybinds = .{},
 /// This setting is only supported currently on macOS.
 @"window-vsync": bool = true,
 
+/// Enables experimental software-renderer presentation paths.
+///
+/// When this is `false` (default), Ghostty uses the stable legacy
+/// presentation path even if `renderer=software` is selected at build time.
+///
+/// This can be changed at runtime and will affect new frames.
+@"software-renderer-experimental": bool = false,
+
+/// Select the presentation backend to use with the software renderer.
+///
+/// Valid values are:
+///
+/// * `auto` - Choose the best available path at runtime.
+/// * `legacy-gl` - Force the legacy OpenGL presentation path.
+/// * `snapshot` - Prefer a GTK snapshot/texture presentation path.
+///
+/// If the requested presenter is unavailable at runtime, Ghostty will
+/// fall back to `legacy-gl` and log the reason.
+///
+/// This setting is only used when `software-renderer-experimental=true`.
+@"software-renderer-presenter": SoftwareRendererPresenter = .auto,
+
 /// If true, new windows will inherit the working directory of the
 /// previously focused window. If no window was previously focused, the default
 /// working directory will be used (the `working-directory` option).
@@ -5179,6 +5201,13 @@ pub const CustomShaderAnimation = enum(c_int) {
     false,
     true,
     always,
+};
+
+/// Valid values for software-renderer-presenter
+pub const SoftwareRendererPresenter = enum {
+    auto,
+    @"legacy-gl",
+    snapshot,
 };
 
 /// Valid values for macos-non-native-fullscreen
