@@ -979,6 +979,40 @@ typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
 typedef bool (*ghostty_runtime_action_cb)(ghostty_app_t,
                                           ghostty_target_s,
                                           ghostty_action_s);
+typedef enum {
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_BGRA8_PREMUL,
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_RGBA8_PREMUL,
+} ghostty_runtime_software_frame_pixel_format_e;
+
+typedef enum {
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SHARED_CPU_BYTES,
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_NATIVE_TEXTURE_HANDLE,
+} ghostty_runtime_software_frame_storage_e;
+
+typedef uint32_t ghostty_runtime_software_frame_storage_support_t;
+
+typedef enum {
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_NONE = 0,
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_SHARED_CPU_BYTES = 1 << 0,
+  GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_NATIVE_TEXTURE_HANDLE =
+      1 << 1,
+} ghostty_runtime_software_frame_storage_support_e;
+
+typedef struct {
+  uint32_t width_px;
+  uint32_t height_px;
+  uint32_t stride_bytes;
+  uint64_t generation;
+  ghostty_runtime_software_frame_pixel_format_e pixel_format;
+  ghostty_runtime_software_frame_storage_e storage;
+  const uint8_t* data;
+  size_t data_len;
+  void* handle;
+} ghostty_runtime_software_frame_s;
+
+typedef bool (*ghostty_runtime_software_frame_cb)(
+    void*,
+    const ghostty_runtime_software_frame_s*);
 
 typedef struct {
   void* userdata;
@@ -988,6 +1022,8 @@ typedef struct {
   ghostty_runtime_read_clipboard_cb read_clipboard_cb;
   ghostty_runtime_confirm_read_clipboard_cb confirm_read_clipboard_cb;
   ghostty_runtime_write_clipboard_cb write_clipboard_cb;
+  ghostty_runtime_software_frame_storage_support_t software_frame_storage_support;
+  ghostty_runtime_software_frame_cb software_frame_cb;
   ghostty_runtime_close_surface_cb close_surface_cb;
 } ghostty_runtime_config_s;
 

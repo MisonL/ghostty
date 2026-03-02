@@ -57,17 +57,24 @@ extension Ghostty {
 
             // Create our "runtime" config. The "runtime" is the configuration that ghostty
             // uses to interface with the application runtime environment.
-            var runtime_cfg = ghostty_runtime_config_s(
-                userdata: Unmanaged.passUnretained(self).toOpaque(),
-                supports_selection_clipboard: true,
-                wakeup_cb: { userdata in App.wakeup(userdata) },
-                action_cb: { app, target, action in App.action(app!, target: target, action: action) },
-                read_clipboard_cb: { userdata, loc, state in App.readClipboard(userdata, location: loc, state: state) },
-                confirm_read_clipboard_cb: { userdata, str, state, request in App.confirmReadClipboard(userdata, string: str, state: state, request: request ) },
-                write_clipboard_cb: { userdata, loc, content, len, confirm in
-                    App.writeClipboard(userdata, location: loc, content: content, len: len, confirm: confirm) },
-                close_surface_cb: { userdata, processAlive in App.closeSurface(userdata, processAlive: processAlive) }
-            )
+            var runtime_cfg = ghostty_runtime_config_s()
+            runtime_cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
+            runtime_cfg.supports_selection_clipboard = true
+            runtime_cfg.wakeup_cb = { userdata in App.wakeup(userdata) }
+            runtime_cfg.action_cb = { app, target, action in App.action(app!, target: target, action: action) }
+            runtime_cfg.read_clipboard_cb = { userdata, loc, state in
+                App.readClipboard(userdata, location: loc, state: state)
+            }
+            runtime_cfg.confirm_read_clipboard_cb = { userdata, str, state, request in
+                App.confirmReadClipboard(userdata, string: str, state: state, request: request)
+            }
+            runtime_cfg.write_clipboard_cb = { userdata, loc, content, len, confirm in
+                App.writeClipboard(userdata, location: loc, content: content, len: len, confirm: confirm)
+            }
+            runtime_cfg.close_surface_cb = { userdata, processAlive in
+                App.closeSurface(userdata, processAlive: processAlive)
+            }
+            App.configureSoftwareFrameRuntimeCallbacks(&runtime_cfg)
 
             // Create the ghostty app.
             guard let app = ghostty_app_new(&runtime_cfg, config.config) else {
@@ -109,6 +116,23 @@ extension Ghostty {
 #if os(macOS)
             NotificationCenter.default.removeObserver(self)
 #endif
+        }
+
+        static private func configureSoftwareFrameRuntimeCallbacks(_ runtimeConfig: inout ghostty_runtime_config_s) {
+            // Keep software frame capability disabled by default until the macOS presenter path is implemented.
+            runtimeConfig.software_frame_storage_support = 0
+            runtimeConfig.software_frame_cb = { userdata, frame in
+                App.softwareFramePlaceholder(userdata, frame: frame)
+            }
+        }
+
+        static private func softwareFramePlaceholder(
+            _ userdata: UnsafeMutableRawPointer?,
+            frame: UnsafePointer<ghostty_runtime_software_frame_s>?
+        ) -> Bool {
+            _ = userdata
+            _ = frame
+            return false
         }
 
         // MARK: App Operations

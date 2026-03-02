@@ -32,18 +32,69 @@ fn softwarePresenterDecisionForEmbeddedConfig(
     experimental: bool,
     requested: Config.SoftwareRendererPresenter,
     platform_tag: PlatformTag,
+    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_storage_support: u32,
+    runtime_fallback: bool,
 ) software_presenter.Decision {
-    const availability: software_presenter.Availability = switch (platform_tag) {
-        .macos => .runtime_capability_missing,
-        .ios => .platform_route_unavailable,
-    };
+    const availability = softwarePresenterAvailabilityForEmbeddedConfig(
+        platform_tag,
+        software_frame_cb,
+        software_frame_storage_support,
+    );
+
     return software_presenter.decide(.{
         .is_software_build = is_software_build,
         .experimental = experimental,
         .requested = requested,
         .availability = availability,
-        .runtime_fallback = false,
+        .runtime_fallback = runtime_fallback,
     });
+}
+
+fn softwareFrameStorageSupportMask(
+    storage: apprt.surface.Message.SoftwareFrameStorage,
+) u32 {
+    return switch (storage) {
+        .shared_cpu_bytes => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes),
+        .native_texture_handle => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+    };
+}
+
+fn runtimeSoftwareFrameStorageSupported(
+    support: u32,
+    storage: apprt.surface.Message.SoftwareFrameStorage,
+) bool {
+    return support & softwareFrameStorageSupportMask(storage) != 0;
+}
+
+fn softwarePresenterAvailabilityForEmbeddedConfig(
+    platform_tag: PlatformTag,
+    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_storage_support: u32,
+) software_presenter.Availability {
+    switch (platform_tag) {
+        .ios => return .platform_route_unavailable,
+        .macos => {},
+    }
+
+    if (software_frame_cb == null) return .runtime_capability_missing;
+    if (!runtimeSoftwareFrameStorageSupported(
+        software_frame_storage_support,
+        .native_texture_handle,
+    )) {
+        return .runtime_capability_missing;
+    }
+
+    return .available;
+}
+
+fn shouldResetSoftwareSnapshotRuntimeFallback(
+    runtime_fallback: bool,
+    experimental: bool,
+    requested: Config.SoftwareRendererPresenter,
+) bool {
+    if (!runtime_fallback) return false;
+    return !experimental or requested == .@"legacy-gl";
 }
 
 pub const App = struct {
@@ -57,6 +108,9 @@ pub const App = struct {
         /// more obvious what values will be sent.
         const AppUD = ?*anyopaque;
         const SurfaceUD = ?*anyopaque;
+        const SoftwareFrameStorageSupport = u32;
+        const SoftwareFrameCallback =
+            *const fn (SurfaceUD, *const CAPI.RuntimeSoftwareFrame) callconv(.c) bool;
 
         /// Userdata that is passed to all the callbacks.
         userdata: AppUD = null,
@@ -94,6 +148,10 @@ pub const App = struct {
             usize,
             bool,
         ) callconv(.c) void,
+
+        /// Software frame storage support bitmask and callback bridge.
+        software_frame_storage_support: SoftwareFrameStorageSupport = 0,
+        software_frame_cb: ?SoftwareFrameCallback = null,
 
         /// Close the current surface given by this function.
         close_surface: ?*const fn (SurfaceUD, bool) callconv(.c) void = null,
@@ -440,9 +498,11 @@ pub const Surface = struct {
     title: ?[:0]const u8 = null,
 
     /// Runtime presenter decision tracking for software renderer compatibility.
+    software_presenter_experimental: bool = false,
     software_presenter_requested: Config.SoftwareRendererPresenter = .auto,
     software_presenter_selected: Config.SoftwareRendererPresenter = .@"legacy-gl",
     software_presenter_reason: software_presenter.Reason = .not_software_build,
+    software_snapshot_runtime_fallback: bool = false,
     software_frame_publishing_enabled: bool = false,
     software_frame_publishing_initialized: bool = false,
     software_frame_unavailable_logged: bool = false,
@@ -615,19 +675,42 @@ pub const Surface = struct {
     }
 
     fn refreshSoftwarePresenterSupport(self: *Surface, config: *const Config) void {
+        self.refreshSoftwarePresenterSupportValues(
+            config.@"software-renderer-experimental",
+            config.@"software-renderer-presenter",
+        );
+    }
+
+    fn refreshSoftwarePresenterSupportValues(
+        self: *Surface,
+        experimental: bool,
+        requested: Config.SoftwareRendererPresenter,
+    ) void {
         if (comptime build_config.renderer != .software) return;
+
+        if (shouldResetSoftwareSnapshotRuntimeFallback(
+            self.software_snapshot_runtime_fallback,
+            experimental,
+            requested,
+        )) {
+            self.software_snapshot_runtime_fallback = false;
+        }
 
         const decision = softwarePresenterDecisionForEmbeddedConfig(
             true,
-            config.@"software-renderer-experimental",
-            config.@"software-renderer-presenter",
+            experimental,
+            requested,
             switch (self.platform) {
                 .macos => .macos,
                 .ios => .ios,
             },
+            self.app.opts.software_frame_cb,
+            self.app.opts.software_frame_storage_support,
+            self.software_snapshot_runtime_fallback,
         );
 
         const changed =
+            self.software_presenter_experimental != experimental or
             self.software_presenter_requested != decision.requested or
             self.software_presenter_selected != decision.selected or
             self.software_presenter_reason != decision.reason;
@@ -635,6 +718,7 @@ pub const Surface = struct {
             !self.software_frame_publishing_initialized or
             self.software_frame_publishing_enabled != decision.can_publish_software_frame;
 
+        self.software_presenter_experimental = experimental;
         self.software_presenter_requested = decision.requested;
         self.software_presenter_selected = decision.selected;
         self.software_presenter_reason = decision.reason;
@@ -647,11 +731,13 @@ pub const Surface = struct {
         if (!changed and !publish_changed) return;
 
         log.info(
-            "software presenter runtime=embedded requested={s} selected={s} reason={s} can_publish={}",
+            "software presenter runtime=embedded experimental={} requested={s} selected={s} reason={s} runtime_fallback={} can_publish={}",
             .{
+                decision.experimental,
                 @tagName(decision.requested),
                 @tagName(decision.selected),
                 @tagName(decision.reason),
+                self.software_snapshot_runtime_fallback,
                 decision.can_publish_software_frame,
             },
         );
@@ -673,6 +759,39 @@ pub const Surface = struct {
             },
             else => {},
         }
+    }
+
+    fn disableSoftwareFramePublishingUnavailable(self: *Surface) void {
+        if (self.software_frame_publishing_enabled) {
+            self.software_frame_publishing_enabled = false;
+            self.software_frame_publishing_initialized = true;
+            self.core_surface.setSoftwareFramePublishingEnabled(false);
+        }
+
+        if (self.software_frame_unavailable_logged) return;
+        self.software_frame_unavailable_logged = true;
+        log.warn(
+            "embedded runtime received software frame but has no presenter implementation; disabled software frame publishing for this surface",
+            .{},
+        );
+    }
+
+    fn activateSoftwareFrameSessionFallback(
+        self: *Surface,
+        context: []const u8,
+    ) void {
+        if (comptime build_config.renderer != .software) return;
+        if (self.software_snapshot_runtime_fallback) return;
+
+        self.software_snapshot_runtime_fallback = true;
+        log.warn(
+            "embedded runtime software frame callback failed context={s}; falling back to legacy-gl for this session",
+            .{context},
+        );
+        self.refreshSoftwarePresenterSupportValues(
+            self.software_presenter_experimental,
+            self.software_presenter_requested,
+        );
     }
 
     pub fn deinit(self: *Surface) void {
@@ -869,17 +988,34 @@ pub const Surface = struct {
             },
         }
 
-        if (self.software_frame_publishing_enabled) {
-            self.software_frame_publishing_enabled = false;
-            self.software_frame_publishing_initialized = true;
-            self.core_surface.setSoftwareFramePublishingEnabled(false);
+        if (!self.software_frame_publishing_enabled) return;
+
+        const software_frame_cb = self.app.opts.software_frame_cb orelse {
+            self.disableSoftwareFramePublishingUnavailable();
+            return;
+        };
+
+        if (!runtimeSoftwareFrameStorageSupported(
+            self.app.opts.software_frame_storage_support,
+            frame.storage,
+        )) {
+            self.activateSoftwareFrameSessionFallback("storage_unsupported");
+            return error.InvalidSoftwareFrame;
         }
-        if (!self.software_frame_unavailable_logged) {
-            self.software_frame_unavailable_logged = true;
-            log.warn(
-                "embedded runtime received software frame but has no presenter implementation; disabled software frame publishing for this surface",
-                .{},
-            );
+
+        const c_frame: CAPI.RuntimeSoftwareFrame = .{
+            .width_px = frame.width_px,
+            .height_px = frame.height_px,
+            .stride_bytes = frame.stride_bytes,
+            .generation = frame.generation,
+            .pixel_format = frame.pixel_format,
+            .storage = frame.storage,
+            .data = frame.data,
+            .data_len = frame.data_len,
+            .handle = frame.handle,
+        };
+        if (!software_frame_cb(self.userdata, &c_frame)) {
+            self.activateSoftwareFrameSessionFallback("callback_returned_false");
         }
     }
 
@@ -1395,6 +1531,26 @@ pub const CAPI = struct {
     const ClipboardContent = extern struct {
         mime: [*:0]const u8,
         data: [*:0]const u8,
+    };
+
+    // ghostty_runtime_software_frame_* C ABI mirrors.
+    const RuntimeSoftwareFramePixelFormat = apprt.surface.Message.SoftwareFramePixelFormat;
+    const RuntimeSoftwareFrameStorage = apprt.surface.Message.SoftwareFrameStorage;
+    const RuntimeSoftwareFrameStorageSupport = enum(u32) {
+        none = 0,
+        shared_cpu_bytes = 1 << 0,
+        native_texture_handle = 1 << 1,
+    };
+    const RuntimeSoftwareFrame = extern struct {
+        width_px: u32,
+        height_px: u32,
+        stride_bytes: u32,
+        generation: u64,
+        pixel_format: RuntimeSoftwareFramePixelFormat,
+        storage: RuntimeSoftwareFrameStorage,
+        data: ?[*]const u8 = null,
+        data_len: usize = 0,
+        handle: ?*anyopaque = null,
     };
 
     // ghostty_text_s
@@ -2341,16 +2497,70 @@ pub const CAPI = struct {
     };
 };
 
-test "software presenter decision for embedded runtime disables publishing on macOS" {
+fn testSoftwareFrameCallbackSuccess(
+    _: ?*anyopaque,
+    _: *const CAPI.RuntimeSoftwareFrame,
+) callconv(.c) bool {
+    return true;
+}
+
+test "software presenter decision for embedded runtime returns runtime_capability_missing without callback on macOS" {
     const decision = softwarePresenterDecisionForEmbeddedConfig(
         true,
         true,
         .snapshot,
         .macos,
+        null,
+        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        false,
     );
 
     try std.testing.expectEqual(
         software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime selects snapshot with callback and native handle support" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .macos,
+        &testSoftwareFrameCallbackSuccess,
+        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.snapshot_selected,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.snapshot,
+        decision.selected,
+    );
+    try std.testing.expect(decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime applies runtime_failed_session_fallback after callback failure" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .macos,
+        &testSoftwareFrameCallbackSuccess,
+        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        true,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_failed_session_fallback,
         decision.reason,
     );
     try std.testing.expectEqual(
@@ -2366,6 +2576,9 @@ test "software presenter decision for embedded runtime respects experimental dis
         false,
         .snapshot,
         .macos,
+        &testSoftwareFrameCallbackSuccess,
+        @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
+        false,
     );
 
     try std.testing.expectEqual(
