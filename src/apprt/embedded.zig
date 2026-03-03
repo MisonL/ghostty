@@ -25,6 +25,9 @@ const configpkg = @import("../config.zig");
 const Config = configpkg.Config;
 
 const log = std.log.scoped(.embedded_window);
+const software_presenter_context_callback_missing = "callback_missing";
+const software_presenter_context_native_unsupported = "native_unsupported";
+const software_presenter_context_runtime_fallback = "runtime_fallback";
 
 pub const resourcesDir = internal_os.resourcesDir;
 
@@ -66,6 +69,15 @@ fn runtimeSoftwareFrameStorageSupported(
     storage: apprt.surface.Message.SoftwareFrameStorage,
 ) bool {
     return support & softwareFrameStorageSupportMask(storage) != 0;
+}
+
+fn softwareFrameStorageUnsupportedContext(
+    storage: apprt.surface.Message.SoftwareFrameStorage,
+) []const u8 {
+    return switch (storage) {
+        .shared_cpu_bytes => "storage_unsupported",
+        .native_texture_handle => software_presenter_context_native_unsupported,
+    };
 }
 
 const EmbeddedSoftwareRendererCpuFlags = struct {
@@ -130,6 +142,42 @@ fn softwarePresenterAvailabilityForEmbeddedConfig(
     }
 
     return .available;
+}
+
+fn softwarePresenterCapabilityMissingContextForEmbeddedConfig(
+    platform_tag: PlatformTag,
+    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_storage_support: u32,
+) []const u8 {
+    if (software_frame_cb == null) return software_presenter_context_callback_missing;
+
+    const required_storage = softwarePresenterRequiredStorageForEmbeddedConfig(platform_tag);
+    if (!runtimeSoftwareFrameStorageSupported(
+        software_frame_storage_support,
+        required_storage,
+    )) {
+        return softwareFrameStorageUnsupportedContext(required_storage);
+    }
+
+    return "runtime_capability_missing";
+}
+
+fn softwarePresenterUnavailableContextForEmbeddedConfig(
+    reason: software_presenter.Reason,
+    platform_tag: PlatformTag,
+    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_storage_support: u32,
+) []const u8 {
+    return switch (reason) {
+        .runtime_too_old => "runtime_too_old",
+        .runtime_capability_missing => softwarePresenterCapabilityMissingContextForEmbeddedConfig(
+            platform_tag,
+            software_frame_cb,
+            software_frame_storage_support,
+        ),
+        .platform_route_unavailable => "platform_route_unavailable",
+        else => "unavailable",
+    };
 }
 
 fn softwarePresenterStorageSupportedForEmbeddedConfig(
@@ -765,6 +813,11 @@ pub const Surface = struct {
     ) void {
         if (comptime build_config.renderer != .software) return;
 
+        const platform_tag: PlatformTag = switch (self.platform) {
+            .macos => .macos,
+            .ios => .ios,
+        };
+
         if (shouldResetSoftwareSnapshotRuntimeFallback(
             self.software_snapshot_runtime_fallback,
             experimental,
@@ -777,10 +830,7 @@ pub const Surface = struct {
             true,
             experimental,
             requested,
-            switch (self.platform) {
-                .macos => .macos,
-                .ios => .ios,
-            },
+            platform_tag,
             self.app.opts.software_frame_cb,
             self.app.opts.software_frame_storage_support,
             self.software_snapshot_runtime_fallback,
@@ -822,17 +872,20 @@ pub const Surface = struct {
         switch (decision.reason) {
             .runtime_too_old, .runtime_capability_missing, .platform_route_unavailable => {
                 if (decision.requested == .snapshot) {
+                    const context = softwarePresenterUnavailableContextForEmbeddedConfig(
+                        decision.reason,
+                        platform_tag,
+                        self.app.opts.software_frame_cb,
+                        self.app.opts.software_frame_storage_support,
+                    );
                     log.warn(
-                        "requested presenter=snapshot is unavailable for embedded runtime, forcing legacy-gl compatibility path",
-                        .{},
+                        "requested presenter=snapshot unavailable reason={s} context={s}; forcing legacy-gl compatibility path",
+                        .{
+                            @tagName(decision.reason),
+                            context,
+                        },
                     );
                 }
-            },
-            .runtime_failed_session_fallback => {
-                log.warn(
-                    "software presenter runtime fallback active for embedded runtime; forcing legacy-gl compatibility path",
-                    .{},
-                );
             },
             else => {},
         }
@@ -851,7 +904,7 @@ pub const Surface = struct {
         if (self.software_frame_unavailable_logged) return;
         self.software_frame_unavailable_logged = true;
         log.warn(
-            "embedded runtime received software frame but capability is unavailable context={s}; disabled software frame publishing for this surface",
+            "embedded runtime software frame capability unavailable reason=runtime_capability_missing context={s}; disabled software frame publishing for this surface",
             .{context},
         );
     }
@@ -865,8 +918,11 @@ pub const Surface = struct {
 
         self.software_snapshot_runtime_fallback = true;
         log.warn(
-            "embedded runtime software frame callback failed context={s}; falling back to legacy-gl for this session",
-            .{context},
+            "embedded runtime software presenter fallback reason={s} context={s}; forcing legacy-gl for this session",
+            .{
+                software_presenter_context_runtime_fallback,
+                context,
+            },
         );
         self.refreshSoftwarePresenterSupportValues(
             self.software_presenter_experimental,
@@ -1071,7 +1127,7 @@ pub const Surface = struct {
         if (!self.software_frame_publishing_enabled) return;
 
         const software_frame_cb = self.app.opts.software_frame_cb orelse {
-            self.disableSoftwareFramePublishingUnavailable("callback_missing");
+            self.disableSoftwareFramePublishingUnavailable(software_presenter_context_callback_missing);
             return;
         };
 
@@ -1079,7 +1135,9 @@ pub const Surface = struct {
             self.app.opts.software_frame_storage_support,
             frame.storage,
         )) {
-            self.activateSoftwareFrameSessionFallback("storage_unsupported");
+            self.activateSoftwareFrameSessionFallback(
+                softwareFrameStorageUnsupportedContext(frame.storage),
+            );
             return error.InvalidSoftwareFrame;
         }
 

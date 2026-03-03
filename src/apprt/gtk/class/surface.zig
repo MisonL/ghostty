@@ -42,6 +42,8 @@ const macos = if (builtin.target.os.tag.isDarwin()) @import("macos") else void;
 
 const log = std.log.scoped(.gtk_ghostty_surface);
 const software_snapshot_failure_threshold: u32 = 3;
+const software_presenter_context_native_unsupported = "native_unsupported";
+const software_presenter_context_runtime_fallback = "runtime_fallback";
 
 pub const Surface = extern struct {
     const Self = @This();
@@ -2148,7 +2150,7 @@ pub const Surface = extern struct {
         err: SoftwareSnapshotNativeHandleImportError,
     ) []const u8 {
         return switch (err) {
-            error.UnsupportedSoftwareFrameNativeHandle => "native_texture_handle_unsupported",
+            error.UnsupportedSoftwareFrameNativeHandle => software_presenter_context_native_unsupported,
             error.InvalidSoftwareFrame,
             error.UnsupportedSoftwareFramePixelFormat,
             => "native_texture_handle_import_failed",
@@ -2323,8 +2325,11 @@ pub const Surface = extern struct {
 
         priv.software_snapshot_runtime_fallback = true;
         log.warn(
-            "software snapshot presenter disabled for this session context={s}; falling back to legacy-gl",
-            .{context},
+            "software snapshot presenter fallback reason={s} context={s}; falling back to legacy-gl",
+            .{
+                software_presenter_context_runtime_fallback,
+                context,
+            },
         );
         self.refreshSoftwarePresenterSelection();
     }
@@ -2340,6 +2345,7 @@ pub const Surface = extern struct {
         generation: u64,
         context: []const u8,
         err: ?anyerror,
+        log_warning: bool,
     ) void {
         const priv = self.private();
         priv.software_snapshot_failure_total +%= 1;
@@ -2348,25 +2354,27 @@ pub const Surface = extern struct {
             priv.software_frame_generation = generation;
         }
 
-        if (err) |e| {
-            log.warn(
-                "software snapshot frame rejected context={s} streak={} total={} err={}",
-                .{
-                    context,
-                    priv.software_snapshot_failure_streak,
-                    priv.software_snapshot_failure_total,
-                    e,
-                },
-            );
-        } else {
-            log.warn(
-                "software snapshot frame rejected context={s} streak={} total={}",
-                .{
-                    context,
-                    priv.software_snapshot_failure_streak,
-                    priv.software_snapshot_failure_total,
-                },
-            );
+        if (log_warning) {
+            if (err) |e| {
+                log.warn(
+                    "software snapshot frame rejected context={s} streak={} total={} err={}",
+                    .{
+                        context,
+                        priv.software_snapshot_failure_streak,
+                        priv.software_snapshot_failure_total,
+                        e,
+                    },
+                );
+            } else {
+                log.warn(
+                    "software snapshot frame rejected context={s} streak={} total={}",
+                    .{
+                        context,
+                        priv.software_snapshot_failure_streak,
+                        priv.software_snapshot_failure_total,
+                    },
+                );
+            }
         }
 
         if (priv.software_snapshot_runtime_fallback) return;
@@ -2389,7 +2397,7 @@ pub const Surface = extern struct {
         if (!priv.software_snapshot_enabled) return;
 
         validateSoftwareFrame(frame) catch |err| {
-            self.recordSoftwareSnapshotFailure(frame.generation, "validate", err);
+            self.recordSoftwareSnapshotFailure(frame.generation, "validate", err, true);
             return err;
         };
         if (frame.generation <= priv.software_frame_generation) return;
@@ -2401,6 +2409,7 @@ pub const Surface = extern struct {
                         frame.generation,
                         "width_cast",
                         error.InvalidSoftwareFrame,
+                        true,
                     );
                     return error.InvalidSoftwareFrame;
                 };
@@ -2409,6 +2418,7 @@ pub const Surface = extern struct {
                         frame.generation,
                         "height_cast",
                         error.InvalidSoftwareFrame,
+                        true,
                     );
                     return error.InvalidSoftwareFrame;
                 };
@@ -2432,6 +2442,8 @@ pub const Surface = extern struct {
             .native_texture_handle => {
                 const texture = importSoftwareSnapshotNativeTexture(frame) catch |err| {
                     const context = softwareSnapshotNativeHandleFailureContext(err);
+                    const one_shot_native_unsupported =
+                        err == error.UnsupportedSoftwareFrameNativeHandle;
                     if (err == error.UnsupportedSoftwareFrameNativeHandle and
                         !priv.software_native_handle_unsupported_logged)
                     {
@@ -2441,7 +2453,12 @@ pub const Surface = extern struct {
                             .{ context, frame.generation },
                         );
                     }
-                    self.recordSoftwareSnapshotFailure(frame.generation, context, err);
+                    self.recordSoftwareSnapshotFailure(
+                        frame.generation,
+                        context,
+                        err,
+                        !one_shot_native_unsupported,
+                    );
                     return error.InvalidSoftwareFrame;
                 };
 
@@ -2547,16 +2564,10 @@ pub const Surface = extern struct {
             .runtime_too_old, .runtime_capability_missing, .platform_route_unavailable => {
                 if (selection.requested == .snapshot) {
                     log.warn(
-                        "requested presenter=snapshot but unavailable, falling back to legacy-gl",
-                        .{},
+                        "requested presenter=snapshot unavailable reason={s}; falling back to legacy-gl",
+                        .{@tagName(selection.reason)},
                     );
                 }
-            },
-            .runtime_failed_session_fallback => {
-                log.warn(
-                    "requested snapshot presenter disabled for current session due to repeated failures; using legacy-gl",
-                    .{},
-                );
             },
             else => {},
         }
@@ -4472,7 +4483,7 @@ test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
 
 test "softwareSnapshotNativeHandleFailureContext maps unsupported runtime" {
     try std.testing.expectEqualStrings(
-        "native_texture_handle_unsupported",
+        "native_unsupported",
         Surface.softwareSnapshotNativeHandleFailureContext(
             error.UnsupportedSoftwareFrameNativeHandle,
         ),
