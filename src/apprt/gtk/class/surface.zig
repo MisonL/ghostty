@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const assert = @import("../../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
@@ -37,6 +38,7 @@ const TitleDialog = @import("title_dialog.zig").TitleDialog;
 const Window = @import("window.zig").Window;
 const InspectorWindow = @import("inspector_window.zig").InspectorWindow;
 const i18n = @import("../../../os/i18n.zig");
+const macos = if (builtin.target.os.tag.isDarwin()) @import("macos") else void;
 
 const log = std.log.scoped(.gtk_ghostty_surface);
 const software_snapshot_failure_threshold: u32 = 3;
@@ -2136,6 +2138,79 @@ pub const Surface = extern struct {
         };
     }
 
+    const SoftwareSnapshotNativeHandleImportError = error{
+        InvalidSoftwareFrame,
+        UnsupportedSoftwareFrameNativeHandle,
+        UnsupportedSoftwareFramePixelFormat,
+    };
+
+    fn softwareSnapshotNativeHandleFailureContext(
+        err: SoftwareSnapshotNativeHandleImportError,
+    ) []const u8 {
+        return switch (err) {
+            error.UnsupportedSoftwareFrameNativeHandle => "native_texture_handle_unsupported",
+            error.InvalidSoftwareFrame,
+            error.UnsupportedSoftwareFramePixelFormat,
+            => "native_texture_handle_import_failed",
+        };
+    }
+
+    fn importSoftwareSnapshotNativeTexture(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) SoftwareSnapshotNativeHandleImportError!*gdk.Texture {
+        if (comptime !builtin.target.os.tag.isDarwin()) {
+            return error.UnsupportedSoftwareFrameNativeHandle;
+        }
+
+        const width = std.math.cast(c_int, frame.width_px) orelse return error.InvalidSoftwareFrame;
+        const height = std.math.cast(c_int, frame.height_px) orelse return error.InvalidSoftwareFrame;
+        const width_usize = std.math.cast(usize, frame.width_px) orelse return error.InvalidSoftwareFrame;
+        const height_usize = std.math.cast(usize, frame.height_px) orelse return error.InvalidSoftwareFrame;
+        const frame_stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
+
+        const handle = frame.handle orelse return error.InvalidSoftwareFrame;
+        const surface: *macos.iosurface.IOSurface = @ptrCast(@alignCast(handle));
+        const surface_stride = surface.getBytesPerRow();
+
+        if (surface.getWidth() < width_usize) return error.InvalidSoftwareFrame;
+        if (surface.getHeight() < height_usize) return error.InvalidSoftwareFrame;
+        if (surface_stride < frame_stride) return error.InvalidSoftwareFrame;
+        const required_len = std.math.mul(
+            usize,
+            surface_stride,
+            height_usize,
+        ) catch return error.InvalidSoftwareFrame;
+
+        switch (frame.pixel_format) {
+            .bgra8_premul => {
+                if (surface.getPixelFormat() != .@"32BGRA") {
+                    return error.UnsupportedSoftwareFramePixelFormat;
+                }
+            },
+            .rgba8_premul => {
+                if (surface.getPixelFormat() != .@"32RGBA") {
+                    return error.UnsupportedSoftwareFramePixelFormat;
+                }
+            },
+        }
+
+        surface.lock();
+        defer surface.unlock();
+
+        const data = surface.getBaseAddress() orelse return error.InvalidSoftwareFrame;
+        const bytes = glib.Bytes.new(data, required_len);
+        defer bytes.unref();
+
+        const texture = gdk.MemoryTexture.new(
+            width,
+            height,
+            softwareFrameMemoryFormat(frame.pixel_format),
+            bytes,
+            surface_stride,
+        );
+        return texture.as(gdk.Texture);
+    }
+
     fn validateSoftwareFrame(
         frame: apprt.surface.Message.SoftwareFrameReady,
     ) error{InvalidSoftwareFrame}!void {
@@ -2355,22 +2430,23 @@ pub const Surface = extern struct {
                 self.setSoftwareSnapshotTexture(texture.as(gdk.Texture));
             },
             .native_texture_handle => {
-                priv.software_snapshot_failure_total +%= 1;
-                priv.software_snapshot_failure_streak +%= 1;
-                if (frame.generation > priv.software_frame_generation) {
-                    priv.software_frame_generation = frame.generation;
-                }
-                if (!priv.software_native_handle_unsupported_logged) {
-                    priv.software_native_handle_unsupported_logged = true;
-                    log.warn(
-                        "software snapshot frame rejected context=native_texture_handle_unsupported generation={}; runtime does not currently import native handles",
-                        .{frame.generation},
-                    );
-                }
-                self.activateSoftwareSnapshotRuntimeFallback(
-                    "native_texture_handle_unsupported",
-                );
-                return error.InvalidSoftwareFrame;
+                const texture = importSoftwareSnapshotNativeTexture(frame) catch |err| {
+                    const context = softwareSnapshotNativeHandleFailureContext(err);
+                    if (err == error.UnsupportedSoftwareFrameNativeHandle and
+                        !priv.software_native_handle_unsupported_logged)
+                    {
+                        priv.software_native_handle_unsupported_logged = true;
+                        log.warn(
+                            "software snapshot frame rejected context={s} generation={}; runtime native handle import unavailable",
+                            .{ context, frame.generation },
+                        );
+                    }
+                    self.recordSoftwareSnapshotFailure(frame.generation, context, err);
+                    return error.InvalidSoftwareFrame;
+                };
+
+                self.recordSoftwareSnapshotSuccess(frame.generation);
+                self.setSoftwareSnapshotTexture(texture);
             },
         }
     }
@@ -4392,6 +4468,68 @@ test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
     };
 
     try Surface.validateSoftwareFrame(frame);
+}
+
+test "softwareSnapshotNativeHandleFailureContext maps unsupported runtime" {
+    try std.testing.expectEqualStrings(
+        "native_texture_handle_unsupported",
+        Surface.softwareSnapshotNativeHandleFailureContext(
+            error.UnsupportedSoftwareFrameNativeHandle,
+        ),
+    );
+}
+
+test "softwareSnapshotNativeHandleFailureContext maps import failures" {
+    try std.testing.expectEqualStrings(
+        "native_texture_handle_import_failed",
+        Surface.softwareSnapshotNativeHandleFailureContext(
+            error.InvalidSoftwareFrame,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "native_texture_handle_import_failed",
+        Surface.softwareSnapshotNativeHandleFailureContext(
+            error.UnsupportedSoftwareFramePixelFormat,
+        ),
+    );
+}
+
+test "importSoftwareSnapshotNativeTexture reports unsupported runtime on non-darwin" {
+    if (comptime builtin.target.os.tag.isDarwin()) return error.SkipZigTest;
+
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 2,
+        .height_px = 2,
+        .stride_bytes = 8,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .native_texture_handle,
+        .handle = @ptrFromInt(1),
+    };
+
+    try std.testing.expectError(
+        error.UnsupportedSoftwareFrameNativeHandle,
+        Surface.importSoftwareSnapshotNativeTexture(frame),
+    );
+}
+
+test "importSoftwareSnapshotNativeTexture rejects missing handle on darwin" {
+    if (comptime !builtin.target.os.tag.isDarwin()) return error.SkipZigTest;
+
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 2,
+        .height_px = 2,
+        .stride_bytes = 8,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .native_texture_handle,
+        .handle = null,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.importSoftwareSnapshotNativeTexture(frame),
+    );
 }
 
 test "validateSoftwareFrame rejects undersized shared_cpu_bytes payload" {

@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import UserNotifications
 import GhosttyKit
@@ -1276,5 +1277,77 @@ extension Ghostty.SurfaceView {
         init(from startSearch: Ghostty.Action.StartSearch) {
             self.needle = startSearch.needle ?? ""
         }
+    }
+}
+
+// MARK: Software Frames
+
+extension Ghostty.SurfaceView {
+    struct SharedCPUBytesSoftwareFrame {
+        let width: Int
+        let height: Int
+        let stride: Int
+        let pixelFormat: ghostty_runtime_software_frame_pixel_format_e
+        let bytes: Data
+    }
+
+    @discardableResult
+    func consumeSoftwareFrame(_ frame: ghostty_runtime_software_frame_s) -> Bool {
+        if frame.generation <= softwareFrameGeneration {
+            return true
+        }
+
+        let consumed: Bool
+        switch frame.storage {
+        case GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SHARED_CPU_BYTES:
+            guard let sharedCPUFrame = Self.makeSharedCPUBytesSoftwareFrame(from: frame) else {
+                return false
+            }
+            consumed = consumeSharedCPUBytesSoftwareFrame(sharedCPUFrame)
+
+        case GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_NATIVE_TEXTURE_HANDLE:
+            consumed = consumeNativeTextureHandleSoftwareFrame(frame)
+
+        default:
+            consumed = false
+        }
+
+        if consumed {
+            softwareFrameGeneration = frame.generation
+        }
+
+        return consumed
+    }
+
+    private static func makeSharedCPUBytesSoftwareFrame(
+        from frame: ghostty_runtime_software_frame_s
+    ) -> SharedCPUBytesSoftwareFrame? {
+        let width = UInt64(frame.width_px)
+        let height = UInt64(frame.height_px)
+        let stride = UInt64(frame.stride_bytes)
+        guard width > 0, height > 0, let data = frame.data else { return nil }
+
+        let (minStride, minStrideOverflow) = width.multipliedReportingOverflow(by: 4)
+        guard !minStrideOverflow, stride >= minStride else { return nil }
+
+        let (requiredLen, requiredLenOverflow) = stride.multipliedReportingOverflow(by: height)
+        guard !requiredLenOverflow else { return nil }
+        guard UInt64(frame.data_len) >= requiredLen else { return nil }
+
+        guard
+            let widthInt = Int(exactly: width),
+            let heightInt = Int(exactly: height),
+            let strideInt = Int(exactly: stride),
+            let requiredLenInt = Int(exactly: requiredLen)
+        else { return nil }
+
+        let bytes = Data(bytes: data, count: requiredLenInt)
+        return .init(
+            width: widthInt,
+            height: heightInt,
+            stride: strideInt,
+            pixelFormat: frame.pixel_format,
+            bytes: bytes
+        )
     }
 }

@@ -1,3 +1,4 @@
+import CoreGraphics
 import SwiftUI
 import GhosttyKit
 
@@ -62,6 +63,12 @@ extension Ghostty {
             return ghostty_surface_size(surface)
         }
 
+        /// Most recent software frame generation consumed by this surface.
+        var softwareFrameGeneration: UInt64 = 0
+
+        /// Overlay used to present software frames.
+        private var softwareFrameImageView: UIImageView?
+
         private(set) var surface: ghostty_surface_t?
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
@@ -117,6 +124,83 @@ extension Ghostty {
                 UInt32(size.width * scale),
                 UInt32(size.height * scale)
             )
+        }
+
+        func consumeSharedCPUBytesSoftwareFrame(_ frame: SharedCPUBytesSoftwareFrame) -> Bool {
+            guard
+                let bitmapInfo = softwareFrameBitmapInfo(for: frame.pixelFormat),
+                let provider = CGDataProvider(data: frame.bytes as CFData),
+                let cgImage = CGImage(
+                    width: frame.width,
+                    height: frame.height,
+                    bitsPerComponent: 8,
+                    bitsPerPixel: 32,
+                    bytesPerRow: frame.stride,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: bitmapInfo,
+                    provider: provider,
+                    decode: nil,
+                    shouldInterpolate: false,
+                    intent: .defaultIntent
+                )
+            else {
+                return false
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let image = UIImage(
+                    cgImage: cgImage,
+                    scale: self.contentScaleFactor,
+                    orientation: .up
+                )
+                let imageView = self.ensureSoftwareFrameImageView()
+                imageView.image = image
+            }
+
+            return true
+        }
+
+        func consumeNativeTextureHandleSoftwareFrame(_ frame: ghostty_runtime_software_frame_s) -> Bool {
+            // Native handle import is not implemented yet.
+            // Return false so the runtime can switch away from software-frame
+            // publishing instead of silently reporting success with no output.
+            guard frame.width_px > 0, frame.height_px > 0, frame.handle != nil else {
+                return false
+            }
+            return false
+        }
+
+        private func softwareFrameBitmapInfo(
+            for pixelFormat: ghostty_runtime_software_frame_pixel_format_e
+        ) -> CGBitmapInfo? {
+            let alphaFirst = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            let alphaLast = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+
+            switch pixelFormat {
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_BGRA8_PREMUL:
+                return alphaFirst.union(.byteOrder32Little)
+
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_RGBA8_PREMUL:
+                return alphaLast.union(.byteOrder32Big)
+
+            default:
+                return nil
+            }
+        }
+
+        private func ensureSoftwareFrameImageView() -> UIImageView {
+            if let softwareFrameImageView {
+                return softwareFrameImageView
+            }
+
+            let imageView = UIImageView(frame: bounds)
+            imageView.contentMode = .scaleToFill
+            imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            imageView.isUserInteractionEnabled = false
+            addSubview(imageView)
+            softwareFrameImageView = imageView
+            return imageView
         }
 
         // MARK: UIView

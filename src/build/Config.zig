@@ -35,6 +35,7 @@ simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
 software_renderer_cpu_mvp: bool = false,
+software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
@@ -146,6 +147,12 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-mvp",
         "Enable the CPU software renderer MVP scaffold route. Disabled by default.",
     ) orelse false;
+
+    config.software_frame_transport_mode = b.option(
+        SoftwareFrameTransportMode,
+        "software-frame-transport-mode",
+        "Software frame transport mode for software renderer: auto/shared/native (shared may fallback).",
+    ) orelse .auto;
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -488,6 +495,11 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
     step.addOption(bool, "software_renderer_cpu_mvp", self.software_renderer_cpu_mvp);
+    step.addOption(
+        SoftwareFrameTransportMode,
+        "software_frame_transport_mode",
+        self.software_frame_transport_mode,
+    );
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -568,6 +580,10 @@ pub fn fromOptions() Config {
         .renderer = std.meta.stringToEnum(RendererBackend, @tagName(options.renderer)).?,
         .snap = options.snap,
         .software_renderer_cpu_mvp = options.software_renderer_cpu_mvp,
+        .software_frame_transport_mode = std.meta.stringToEnum(
+            SoftwareFrameTransportMode,
+            @tagName(options.software_frame_transport_mode),
+        ).?,
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
@@ -633,6 +649,18 @@ pub const ExeEntrypoint = enum {
     webgen_config,
     webgen_actions,
     webgen_commands,
+};
+
+/// Controls how software frames are transported from the renderer.
+pub const SoftwareFrameTransportMode = enum {
+    /// Preserve the historical runtime-selected transport behavior.
+    auto,
+
+    /// Prefer shared CPU bytes transport when available; otherwise fallback.
+    shared,
+
+    /// Force native handle transport (backend support required).
+    native,
 };
 
 /// The release channel for the build.

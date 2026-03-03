@@ -7,6 +7,7 @@ const builtin = @import("builtin");
 const gl = @import("opengl");
 const shadertoy = @import("shadertoy.zig");
 const apprt = @import("../apprt.zig");
+const build_config = @import("../build_config.zig");
 const font = @import("../font/main.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
@@ -48,6 +49,9 @@ last_target: ?Target = null,
 /// Monotonic generation for software frame publication.
 software_generation: u64 = 0,
 
+/// One-shot warning guard when a forced transport mode is unsupported.
+software_transport_mode_warned: bool = false,
+
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
 ///       can't actually fail.
@@ -72,6 +76,12 @@ fn softwareFrameReleaseMalloc(
     _ = data_len;
     _ = handle;
     if (ctx) |ptr| std.c.free(ptr);
+}
+
+fn softwareFrameTransportDisabledForOpenGL(
+    mode: build_config.SoftwareFrameTransportMode,
+) bool {
+    return mode == .native;
 }
 
 /// 32-bit windows cross-compilation breaks with `.c` for some reason, so...
@@ -358,6 +368,17 @@ pub fn publishSoftwareFrame(
 ) !?apprt.surface.Message.SoftwareFrameReady {
     _ = screen;
 
+    if (softwareFrameTransportDisabledForOpenGL(build_config.software_frame_transport_mode)) {
+        if (!self.software_transport_mode_warned) {
+            self.software_transport_mode_warned = true;
+            log.warn(
+                "software frame transport native requested but OpenGL only supports shared CPU bytes; publication disabled for this session",
+                .{},
+            );
+        }
+        return null;
+    }
+
     if (target.width == 0 or target.height == 0) return null;
 
     const width_u32 = std.math.cast(u32, target.width) orelse return error.OutOfMemory;
@@ -417,6 +438,12 @@ pub const fgBufferOptions = bufferOptions;
 pub const bgBufferOptions = bufferOptions;
 pub const imageBufferOptions = bufferOptions;
 pub const bgImageBufferOptions = bufferOptions;
+
+test "softwareFrameTransportDisabledForOpenGL honors mode" {
+    try std.testing.expect(!softwareFrameTransportDisabledForOpenGL(.auto));
+    try std.testing.expect(!softwareFrameTransportDisabledForOpenGL(.shared));
+    try std.testing.expect(softwareFrameTransportDisabledForOpenGL(.native));
+}
 
 /// Returns the options to use when constructing textures.
 pub inline fn textureOptions(self: OpenGL) Texture.Options {

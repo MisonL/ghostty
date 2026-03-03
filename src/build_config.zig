@@ -12,6 +12,7 @@ const rendererpkg = @import("renderer.zig");
 const BuildConfig = @import("build/Config.zig");
 
 pub const ReleaseChannel = BuildConfig.ReleaseChannel;
+pub const SoftwareFrameTransportMode = BuildConfig.SoftwareFrameTransportMode;
 
 /// The semantic version of this build.
 pub const version = options.app_version;
@@ -42,6 +43,7 @@ pub const app_runtime: apprt.Runtime = config.app_runtime;
 pub const font_backend: font.Backend = config.font_backend;
 pub const renderer: rendererpkg.Backend = config.renderer;
 pub const software_renderer_cpu_mvp: bool = config.software_renderer_cpu_mvp;
+pub const software_frame_transport_mode: SoftwareFrameTransportMode = config.software_frame_transport_mode;
 pub const i18n: bool = config.i18n;
 
 /// The bundle ID for the app. This is used in many places and is currently

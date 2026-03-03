@@ -10,6 +10,7 @@ const macos = @import("macos");
 const graphics = macos.graphics;
 const IOSurface = macos.iosurface.IOSurface;
 const apprt = @import("../apprt.zig");
+const build_config = @import("../build_config.zig");
 const font = @import("../font/main.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
@@ -64,6 +65,9 @@ autorelease_pool: ?*objc.AutoreleasePool = null,
 
 /// Monotonic generation for software frame publication.
 software_generation: u64 = 0,
+
+/// One-shot guard for shared-transport fallback warning noise.
+software_shared_fallback_warned: bool = false,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
     comptime switch (builtin.os.tag) {
@@ -282,20 +286,46 @@ fn softwareFrameReleaseIOSurface(
     surface.release();
 }
 
-/// Publish the current render target as a software frame payload.
-pub fn publishSoftwareFrame(
+fn softwareFrameSharedCpuBytesAvailable(
+    self: *const Metal,
+    target: *const Target,
+) bool {
+    if (!build_config.software_renderer_cpu_mvp) return false;
+
+    _ = self;
+    _ = target;
+
+    // NOTE: publishSoftwareFrame is called before the current command buffer is
+    // committed/completed (see renderer/generic.zig drawFrame). Exposing IOSurface
+    // CPU bytes here would race with in-flight GPU writes and may read stale or
+    // undefined contents. Keep the shared path explicitly disabled until frame
+    // publication is moved to a completion-safe point or an explicit readback/sync
+    // path is added.
+    return false;
+}
+
+fn softwareFrameTransportMode() build_config.SoftwareFrameTransportMode {
+    return build_config.software_frame_transport_mode;
+}
+
+fn softwareFrameShouldTryShared(
+    mode: build_config.SoftwareFrameTransportMode,
+    shared_available: bool,
+) bool {
+    return switch (mode) {
+        .native => false,
+        .auto => shared_available,
+        .shared => true,
+    };
+}
+
+fn publishSoftwareFrameNativeHandle(
     self: *Metal,
     target: *const Target,
-    screen: rendererpkg.ScreenSize,
-) !?apprt.surface.Message.SoftwareFrameReady {
-    _ = screen;
-
-    if (target.width == 0 or target.height == 0) return null;
-
-    const width_u32 = std.math.cast(u32, target.width) orelse return error.OutOfMemory;
-    const height_u32 = std.math.cast(u32, target.height) orelse return error.OutOfMemory;
-    const stride_bytes = std.math.mul(u32, width_u32, 4) catch return error.OutOfMemory;
-
+    width_u32: u32,
+    height_u32: u32,
+    stride_bytes: u32,
+) apprt.surface.Message.SoftwareFrameReady {
     target.surface.retain();
     self.software_generation +%= 1;
 
@@ -312,6 +342,68 @@ pub fn publishSoftwareFrame(
         .release_ctx = @ptrCast(target.surface),
         .release_fn = &softwareFrameReleaseIOSurface,
     };
+}
+
+fn publishSoftwareFrameSharedCpuBytes(
+    self: *Metal,
+    target: *const Target,
+    width_u32: u32,
+    height_u32: u32,
+    stride_bytes: u32,
+) ?apprt.surface.Message.SoftwareFrameReady {
+    _ = self;
+    _ = target;
+    _ = width_u32;
+    _ = height_u32;
+    _ = stride_bytes;
+
+    // NOTE: shared CPU byte publication for Metal needs explicit synchronization
+    // with GPU completion. This function is intentionally a conservative stub
+    // until a completion-safe readback path is implemented.
+    return null;
+}
+
+/// Publish the current render target as a software frame payload.
+pub fn publishSoftwareFrame(
+    self: *Metal,
+    target: *const Target,
+    screen: rendererpkg.ScreenSize,
+) !?apprt.surface.Message.SoftwareFrameReady {
+    _ = screen;
+
+    if (target.width == 0 or target.height == 0) return null;
+
+    const width_u32 = std.math.cast(u32, target.width) orelse return error.OutOfMemory;
+    const height_u32 = std.math.cast(u32, target.height) orelse return error.OutOfMemory;
+    const stride_bytes = std.math.mul(u32, width_u32, 4) catch return error.OutOfMemory;
+    const transport_mode = softwareFrameTransportMode();
+    const shared_available = softwareFrameSharedCpuBytesAvailable(self, target);
+
+    if (softwareFrameShouldTryShared(transport_mode, shared_available)) {
+        if (publishSoftwareFrameSharedCpuBytes(
+            self,
+            target,
+            width_u32,
+            height_u32,
+            stride_bytes,
+        )) |frame| return frame;
+
+        if (transport_mode == .shared and !self.software_shared_fallback_warned) {
+            self.software_shared_fallback_warned = true;
+            log.warn(
+                "software frame transport shared requested but unavailable; falling back to native handles",
+                .{},
+            );
+        }
+    }
+
+    return publishSoftwareFrameNativeHandle(
+        self,
+        target,
+        width_u32,
+        height_u32,
+        stride_bytes,
+    );
 }
 
 /// Returns the options to use when constructing buffers.
@@ -332,6 +424,15 @@ pub const fgBufferOptions = bufferOptions;
 pub const bgBufferOptions = bufferOptions;
 pub const imageBufferOptions = bufferOptions;
 pub const bgImageBufferOptions = bufferOptions;
+
+test "softwareFrameShouldTryShared honors transport mode" {
+    try std.testing.expect(!softwareFrameShouldTryShared(.native, false));
+    try std.testing.expect(!softwareFrameShouldTryShared(.native, true));
+    try std.testing.expect(!softwareFrameShouldTryShared(.auto, false));
+    try std.testing.expect(softwareFrameShouldTryShared(.auto, true));
+    try std.testing.expect(softwareFrameShouldTryShared(.shared, false));
+    try std.testing.expect(softwareFrameShouldTryShared(.shared, true));
+}
 
 /// Returns the options to use when constructing textures.
 pub inline fn textureOptions(self: Metal) Texture.Options {

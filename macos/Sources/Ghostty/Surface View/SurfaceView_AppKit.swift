@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 import CoreText
+import IOSurface
 import UserNotifications
 import GhosttyKit
 
@@ -9,6 +10,12 @@ extension Ghostty {
     /// The NSView implementation for a terminal surface.
     class SurfaceView: OSView, ObservableObject, Codable, Identifiable {
         typealias ID = UUID
+
+        private final class SoftwareFrameImageView: NSImageView {
+            override func hitTest(_ point: NSPoint) -> NSView? {
+                nil
+            }
+        }
 
         /// Unique ID per surface
         let id: UUID
@@ -241,6 +248,12 @@ extension Ghostty {
 
         /// Event monitor (see individual events for why)
         private var eventMonitor: Any?
+
+        /// Most recent software frame generation consumed by this surface.
+        var softwareFrameGeneration: UInt64 = 0
+
+        /// Overlay used to present software frames.
+        private var softwareFrameImageView: NSImageView?
 
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
@@ -483,6 +496,120 @@ extension Ghostty {
                 // thread. This caused a crash on macOS <= 14.
                 self.surfaceSize = size
             }
+        }
+
+        func consumeSharedCPUBytesSoftwareFrame(_ frame: SharedCPUBytesSoftwareFrame) -> Bool {
+            guard
+                let bitmapInfo = softwareFrameBitmapInfo(for: frame.pixelFormat),
+                let provider = CGDataProvider(data: frame.bytes as CFData),
+                let image = CGImage(
+                    width: frame.width,
+                    height: frame.height,
+                    bitsPerComponent: 8,
+                    bitsPerPixel: 32,
+                    bytesPerRow: frame.stride,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: bitmapInfo,
+                    provider: provider,
+                    decode: nil,
+                    shouldInterpolate: false,
+                    intent: .defaultIntent
+                )
+            else {
+                return false
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let imageView = self.ensureSoftwareFrameImageView()
+                imageView.image = NSImage(
+                    cgImage: image,
+                    size: NSSize(width: frame.width, height: frame.height)
+                )
+            }
+
+            return true
+        }
+
+        func consumeNativeTextureHandleSoftwareFrame(_ frame: ghostty_runtime_software_frame_s) -> Bool {
+            guard
+                frame.width_px > 0,
+                frame.height_px > 0,
+                let handle = frame.handle
+            else {
+                return false
+            }
+
+            let width = Int(frame.width_px)
+            let height = Int(frame.height_px)
+            let frameStride = Int(frame.stride_bytes)
+            guard frameStride >= width * 4 else { return false }
+            let (requiredLen, requiredLenOverflow) = frameStride.multipliedReportingOverflow(by: height)
+            guard !requiredLenOverflow else { return false }
+
+            let surface = unsafeBitCast(handle, to: IOSurfaceRef.self)
+            guard IOSurfaceLock(surface, IOSurfaceLockOptions(rawValue: 0), nil) == 0 else {
+                return false
+            }
+            defer { _ = IOSurfaceUnlock(surface, IOSurfaceLockOptions(rawValue: 0), nil) }
+
+            let baseAddress = IOSurfaceGetBaseAddress(surface)
+            guard IOSurfaceGetWidth(surface) >= width, IOSurfaceGetHeight(surface) >= height else {
+                return false
+            }
+
+            let surfaceStride = IOSurfaceGetBytesPerRow(surface)
+            guard surfaceStride >= frameStride else { return false }
+            guard surfaceStride <= Int.max / height else { return false }
+
+            var bytes = Data(count: requiredLen)
+            bytes.withUnsafeMutableBytes { dstRaw in
+                guard let dstBase = dstRaw.baseAddress else { return }
+                for row in 0..<height {
+                    let srcRow = baseAddress.advanced(by: row * surfaceStride)
+                    let dstRow = dstBase.advanced(by: row * frameStride)
+                    memcpy(dstRow, srcRow, frameStride)
+                }
+            }
+
+            return consumeSharedCPUBytesSoftwareFrame(.init(
+                width: width,
+                height: height,
+                stride: frameStride,
+                pixelFormat: frame.pixel_format,
+                bytes: bytes
+            ))
+        }
+
+        private func softwareFrameBitmapInfo(
+            for pixelFormat: ghostty_runtime_software_frame_pixel_format_e
+        ) -> CGBitmapInfo? {
+            let alphaFirst = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            let alphaLast = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+
+            switch pixelFormat {
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_BGRA8_PREMUL:
+                return alphaFirst.union(.byteOrder32Little)
+
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_PIXEL_FORMAT_RGBA8_PREMUL:
+                return alphaLast.union(.byteOrder32Big)
+
+            default:
+                return nil
+            }
+        }
+
+        private func ensureSoftwareFrameImageView() -> NSImageView {
+            if let softwareFrameImageView {
+                return softwareFrameImageView
+            }
+
+            let imageView = SoftwareFrameImageView(frame: bounds)
+            imageView.imageScaling = .scaleAxesIndependently
+            imageView.autoresizingMask = [.width, .height]
+            addSubview(imageView)
+            softwareFrameImageView = imageView
+            return imageView
         }
 
         func setCursorShape(_ shape: ghostty_action_mouse_shape_e) {

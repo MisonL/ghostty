@@ -981,7 +981,17 @@ jobs:
         run: nix develop -c zig build test --system ${{ steps.deps.outputs.deps }}
 
   test-software-renderer-linux:
-    name: Test software renderer (linux cpu-mvp)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - transport_label: auto
+            transport_mode: auto
+          - transport_label: shared-preferred
+            transport_mode: shared
+          - transport_label: native-forced
+            transport_mode: native
+    name: Test software renderer (linux cpu-mvp, ${{ matrix.transport_label }})
     runs-on: namespace-profile-ghostty-sm
     needs: test
     env:
@@ -1014,10 +1024,21 @@ jobs:
             -Dapp-runtime=none \
             -Drenderer=software \
             -Dsoftware-renderer-cpu-mvp=true \
+            -Dsoftware-frame-transport-mode=${{ matrix.transport_mode }} \
             -Demit-macos-app=false
 
   test-software-renderer-macos:
-    name: Test software renderer (macos cpu-mvp)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - transport_label: auto
+            transport_mode: auto
+          - transport_label: shared-preferred
+            transport_mode: shared
+          - transport_label: native-forced
+            transport_mode: native
+    name: Test software renderer (macos cpu-mvp, ${{ matrix.transport_label }})
     runs-on: namespace-profile-ghostty-macos-tahoe
     needs: test
     env:
@@ -1061,6 +1082,7 @@ jobs:
             --system ${{ steps.deps.outputs.deps }} \
             -Drenderer=software \
             -Dsoftware-renderer-cpu-mvp=true \
+            -Dsoftware-frame-transport-mode=${{ matrix.transport_mode }} \
             -Demit-macos-app=false
 
   test-i18n:
