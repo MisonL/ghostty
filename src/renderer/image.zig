@@ -90,6 +90,26 @@ pub const State = struct {
         return success;
     }
 
+    pub const CpuPixels = struct {
+        width: u32,
+        height: u32,
+        rgba: []const u8,
+    };
+
+    /// Returns read-only RGBA pixels for the image id, if available.
+    ///
+    /// This prefers pending image data (including replace.pending), so CPU
+    /// rendering can access fresh pixels before GPU upload completes.
+    pub fn cpuPixels(self: *const State, id: Id) ?CpuPixels {
+        const image = self.images.get(id) orelse return null;
+        const pixels = image.image.cpuPixelsRgba() orelse return null;
+        return .{
+            .width = pixels.width,
+            .height = pixels.height,
+            .rgba = pixels.rgba,
+        };
+    }
+
     pub const DrawPlacements = enum {
         kitty_below_bg,
         kitty_below_text,
@@ -528,11 +548,14 @@ pub const State = struct {
         transmit_time: std.time.Instant,
         pending: Image.Pending,
     ) PrepImageError!void {
-        // If this image exists and its transmit time is the same we assume
-        // it is the identical image so we don't need to send it to the GPU.
+        // If this image exists and has the same transmit time, we can only
+        // skip work if we still have pending pixel data. Without pending data
+        // (for example a fully uploaded texture), CPU routes need us to
+        // repopulate pending pixels for read-only access.
         const gop = try self.images.getOrPut(alloc, id);
         if (gop.found_existing and
-            gop.value_ptr.transmit_time.order(transmit_time) == .eq)
+            gop.value_ptr.transmit_time.order(transmit_time) == .eq and
+            gop.value_ptr.image.getPending() != null)
         {
             return;
         }
@@ -718,6 +741,12 @@ pub const Image = union(enum) {
         pending: Pending,
     };
 
+    pub const CpuPixels = struct {
+        width: u32,
+        height: u32,
+        rgba: []const u8,
+    };
+
     /// Pending image data that needs to be uploaded to the GPU.
     pub const Pending = struct {
         height: u32,
@@ -841,6 +870,17 @@ pub const Image = union(enum) {
         };
     }
 
+    /// Returns read-only RGBA pixels when pending data is available.
+    pub fn cpuPixelsRgba(self: Image) ?CpuPixels {
+        const pending = self.getPending() orelse return null;
+        if (pending.pixel_format != .rgba) return null;
+        return .{
+            .width = pending.width,
+            .height = pending.height,
+            .rgba = pending.dataSlice(),
+        };
+    }
+
     /// Converts the image data to a format that can be uploaded to the GPU.
     /// If the data is already in a format that can be uploaded, this is a
     /// no-op.
@@ -956,3 +996,124 @@ pub const Image = union(enum) {
         };
     }
 };
+
+test "renderer.image: cpuPixels returns pending pixels and can repopulate same transmit_time" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer {
+        // We manually clean up this test because it uses a zeroed texture
+        // placeholder to avoid requiring a real graphics API texture.
+        if (state.images.getPtr(.overlay)) |entry| {
+            if (entry.image.getPending()) |p| alloc.free(p.dataSlice());
+            _ = state.images.remove(.overlay);
+        }
+        state.images.deinit(alloc);
+        state.kitty_placements.deinit(alloc);
+        state.overlay_placements.deinit(alloc);
+    }
+
+    const transmit_time = try std.time.Instant.now();
+
+    var first_pixels = [_]u8{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 2,
+            .pixel_format = .rgba,
+            .data = &first_pixels,
+        },
+    );
+
+    const first = state.cpuPixels(.overlay).?;
+    try testing.expectEqual(@as(u32, 1), first.width);
+    try testing.expectEqual(@as(u32, 2), first.height);
+    try testing.expectEqualSlices(u8, &first_pixels, first.rgba);
+
+    // Simulate "same transmit_time but no pending pixels".
+    const existing = state.images.getPtr(.overlay).?;
+    alloc.free(existing.image.getPending().?.dataSlice());
+    existing.image = .{ .ready = std.mem.zeroes(Texture) };
+
+    var second_pixels = [_]u8{ 9, 10, 11, 12 };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 1,
+            .pixel_format = .rgba,
+            .data = &second_pixels,
+        },
+    );
+
+    const second = state.cpuPixels(.overlay).?;
+    try testing.expectEqual(@as(u32, 1), second.width);
+    try testing.expectEqual(@as(u32, 1), second.height);
+    try testing.expectEqualSlices(u8, &second_pixels, second.rgba);
+}
+
+test "renderer.image: deinit frees pending image data" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer state.deinit(alloc);
+
+    const transmit_time = try std.time.Instant.now();
+    var pixels = [_]u8{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 2,
+            .pixel_format = .rgba,
+            .data = &pixels,
+        },
+    );
+
+    try testing.expectEqual(@as(usize, 1), state.images.count());
+}
+
+test "renderer.image: upload unload path deallocates pending images" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer state.deinit(alloc);
+
+    const transmit_time = try std.time.Instant.now();
+    var pixels = [_]u8{
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 2,
+            .pixel_format = .rgba,
+            .data = &pixels,
+        },
+    );
+
+    state.images.getPtr(.overlay).?.image.markForUnload();
+    var api: GraphicsAPI = undefined;
+    _ = state.upload(alloc, &api);
+    try testing.expectEqual(@as(usize, 0), state.images.count());
+}
