@@ -13,6 +13,7 @@ Usage:
     [--cpu-shader-timeout-ms <u32>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
+    [--expect-full-custom-shader-bypass <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
     [--expected-host-os <linux|macos>] \
@@ -29,6 +30,10 @@ Examples:
     --target x86_64-macos.13.0.0 \
     --allow-legacy-os true \
     --system /path/to/deps
+
+Notes:
+  cpu-shader-mode=full currently keeps CPU-route compatibility enabled,
+  but custom-shader effects are bypassed via platform-route fallback.
 EOF
 }
 
@@ -58,6 +63,7 @@ cpu_shader_mode=""
 cpu_shader_timeout_ms=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
+expect_full_custom_shader_bypass=""
 app_runtime=""
 system_path=""
 expected_host_os=""
@@ -127,6 +133,14 @@ while (($# > 0)); do
       ;;
     --expect-cpu-shader-mode)
       expect_cpu_shader_mode="${2:-}"
+      shift 2
+      ;;
+    --expect-full-custom-shader-bypass=*)
+      expect_full_custom_shader_bypass="${1#*=}"
+      shift
+      ;;
+    --expect-full-custom-shader-bypass)
+      expect_full_custom_shader_bypass="${2:-}"
       shift 2
       ;;
     --app-runtime=*)
@@ -208,6 +222,16 @@ fi
 
 if [[ -n "$expect_cpu_shader_mode" && "$expect_cpu_shader_mode" != "off" && "$expect_cpu_shader_mode" != "safe" && "$expect_cpu_shader_mode" != "full" ]]; then
   echo "invalid --expect-cpu-shader-mode: $expect_cpu_shader_mode (expected: off|safe|full)" >&2
+  exit 2
+fi
+
+if [[ -n "$expect_full_custom_shader_bypass" && "$expect_full_custom_shader_bypass" != "true" && "$expect_full_custom_shader_bypass" != "false" ]]; then
+  echo "invalid --expect-full-custom-shader-bypass: $expect_full_custom_shader_bypass (expected: true|false)" >&2
+  exit 2
+fi
+
+if [[ -n "$expect_full_custom_shader_bypass" && -n "$cpu_shader_mode" && "$cpu_shader_mode" != "full" ]]; then
+  echo "invalid --expect-full-custom-shader-bypass: requires --cpu-shader-mode full (or omit --cpu-shader-mode to use default full)" >&2
   exit 2
 fi
 
@@ -303,13 +327,16 @@ cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} target=${target:-default}"
+if [[ "${cpu_shader_mode:-full}" == "full" ]]; then
+  echo "[software-compat] note: cpu-shader-mode=full currently keeps CPU-route compatibility enabled, but custom-shader effects are bypassed via platform-route fallback."
+fi
 echo "[software-compat] cmd: ${cmd[*]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_full_custom_shader_bypass" ]]; then
     options_file=""
     while IFS= read -r candidate; do
       if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode' "$candidate"; then
@@ -319,7 +346,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
 
     if [[ -z "$options_file" ]]; then
-      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>}"
+      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}"
       exit 1
     fi
 
@@ -345,6 +372,24 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         exit 1
       fi
       echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
+    fi
+
+    if [[ -n "$expect_full_custom_shader_bypass" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\\.?full([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_shader_mode" ]]; then
+          actual_cpu_shader_mode="unknown"
+        fi
+        echo "[software-compat] full-custom-shader-bypass assertion requires effective cpu-shader-mode=full actual=$actual_cpu_shader_mode file=$options_file"
+        exit 1
+      fi
+
+      if [[ "$expect_full_custom_shader_bypass" == "false" ]]; then
+        echo "[software-compat] full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed via platform-route fallback)"
+        exit 1
+      fi
+
+      echo "[software-compat] full-custom-shader-bypass assertion matched expected=true (cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed via platform-route fallback)"
     fi
   fi
 
