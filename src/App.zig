@@ -510,10 +510,15 @@ fn surfaceMessage(self: *App, surface: *Surface, msg: apprt.surface.Message) !vo
     // a simple linear search here.
     if (self.hasSurface(surface)) {
         try surface.handleMessage(msg);
+        return;
     }
 
     // Window was not found, it probably quit before we handled the message.
-    // Not a problem.
+    // Release frame resources that may still be owned by the message payload.
+    switch (msg) {
+        .software_frame_ready => |frame| frame.release(),
+        else => {},
+    }
 }
 
 fn hasSurface(self: *const App, surface: *const Surface) bool {

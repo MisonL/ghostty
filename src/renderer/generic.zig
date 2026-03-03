@@ -10,6 +10,7 @@ const inputpkg = @import("../input.zig");
 const os = @import("../os/main.zig");
 const terminal = @import("../terminal/main.zig");
 const renderer = @import("../renderer.zig");
+const cpu_renderer = @import("CPU.zig");
 const math = @import("../math.zig");
 const Surface = @import("../Surface.zig");
 const link = @import("link.zig");
@@ -43,6 +44,14 @@ const DisplayLink = switch (builtin.os.tag) {
 };
 
 const log = std.log.scoped(.generic_renderer);
+const software_renderer_cpu_effective =
+    if (build_config.renderer == .software)
+        (if (@hasDecl(build_config, "software_renderer_cpu_effective"))
+            build_config.software_renderer_cpu_effective
+        else
+            build_config.software_renderer_cpu_mvp)
+    else
+        false;
 
 /// Create a renderer type with the provided graphics API wrapper.
 ///
@@ -121,6 +130,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// This is controlled by apprt runtime capability/fallback state and
         /// complements config-level toggles.
         software_frame_publishing: bool = true,
+
+        /// Reusable shared-CPU frame pool for software renderer CPU route.
+        cpu_frame_pool: ?cpu_renderer.FramePool = null,
+
+        /// Retired pools waiting for in-flight frame callbacks to release.
+        retired_cpu_frame_pools: std.ArrayListUnmanaged(cpu_renderer.FramePool) = .{},
+
+        /// Monotonic software frame generation, independent from pool lifetime.
+        cpu_frame_generation: u64 = 0,
+
+        /// One-shot warning guard when native transport disables CPU route.
+        cpu_native_transport_warned: bool = false,
+
+        /// One-shot warning guard when all CPU frame slots are in flight.
+        cpu_frame_pool_exhausted_warned: bool = false,
+
+        /// Pending republish flag when CPU frame publication was backpressured.
+        cpu_publish_pending: bool = false,
 
         /// Flag to indicate that our focus state changed for custom
         /// shaders to update their state.
@@ -866,6 +893,31 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.deinitShaders();
 
+            if (self.cpu_frame_pool) |*pool| {
+                if (pool.isIdle()) {
+                    pool.deinitIdle();
+                } else {
+                    log.warn(
+                        "renderer deinit with in-flight cpu frame pool; leaking for safety",
+                        .{},
+                    );
+                }
+            }
+
+            self.collectRetiredCpuFramePools();
+            for (self.retired_cpu_frame_pools.items) |*pool| {
+                if (pool.isIdle()) {
+                    pool.deinitIdle();
+                    continue;
+                }
+
+                log.warn(
+                    "renderer deinit with in-flight retired cpu frame pool; leaking for safety",
+                    .{},
+                );
+            }
+            self.retired_cpu_frame_pools.deinit(self.alloc);
+
             self.api.deinit();
 
             self.* = undefined;
@@ -1113,6 +1165,136 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.draw_mutex.lock();
             defer self.draw_mutex.unlock();
             self.software_frame_publishing = enabled;
+        }
+
+        fn shouldUseSoftwareCpuFramePath(self: *Self) bool {
+            if (!comptime software_renderer_cpu_effective) return false;
+            if (comptime build_config.renderer != .software) return false;
+
+            if (!self.software_frame_publishing) return false;
+            if (!self.config.software_renderer_experimental) return false;
+            if (self.config.software_renderer_presenter == .@"legacy-gl") return false;
+
+            if (comptime build_config.software_frame_transport_mode == .native) {
+                if (!self.cpu_native_transport_warned) {
+                    self.cpu_native_transport_warned = true;
+                    log.warn(
+                        "software renderer cpu route is disabled because transport=native; using platform route for native handles",
+                        .{},
+                    );
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        fn collectRetiredCpuFramePools(self: *Self) void {
+            var i: usize = 0;
+            while (i < self.retired_cpu_frame_pools.items.len) {
+                if (!self.retired_cpu_frame_pools.items[i].isIdle()) {
+                    i += 1;
+                    continue;
+                }
+
+                var retired = self.retired_cpu_frame_pools.swapRemove(i);
+                retired.deinitIdle();
+            }
+        }
+
+        fn retireCpuFramePool(self: *Self, pool: cpu_renderer.FramePool) !void {
+            self.collectRetiredCpuFramePools();
+            try self.retired_cpu_frame_pools.append(self.alloc, pool);
+        }
+
+        fn ensureCpuFramePool(
+            self: *Self,
+            width_px: u32,
+            height_px: u32,
+        ) !*cpu_renderer.FramePool {
+            self.collectRetiredCpuFramePools();
+
+            if (self.cpu_frame_pool) |*pool| {
+                if (pool.dimensionsMatch(width_px, height_px, .bgra8_premul)) {
+                    return pool;
+                }
+
+                const retired = pool.*;
+                try self.retireCpuFramePool(retired);
+                self.cpu_frame_pool = null;
+            }
+
+            self.cpu_frame_pool = try cpu_renderer.FramePool.init(
+                self.alloc,
+                3,
+                width_px,
+                height_px,
+                .bgra8_premul,
+            );
+            return &self.cpu_frame_pool.?;
+        }
+
+        fn publishCpuSoftwareFrame(
+            self: *Self,
+            surface_size: anytype,
+        ) !bool {
+            self.collectRetiredCpuFramePools();
+
+            const width_px = std.math.cast(u32, surface_size.width) orelse return false;
+            const height_px = std.math.cast(u32, surface_size.height) orelse return false;
+            if (width_px == 0 or height_px == 0) return false;
+
+            var pool = try self.ensureCpuFramePool(width_px, height_px);
+            const acquired = pool.acquire() orelse {
+                if (!self.cpu_frame_pool_exhausted_warned) {
+                    self.cpu_frame_pool_exhausted_warned = true;
+                    log.warn(
+                        "software renderer cpu frame pool exhausted; dropping frame",
+                        .{},
+                    );
+                }
+                return false;
+            };
+            self.cpu_frame_pool_exhausted_warned = false;
+
+            self.font_grid.lock.lockShared();
+            defer self.font_grid.lock.unlockShared();
+
+            var framebuffer = acquired.framebuffer;
+            cpu_renderer.composeSoftwareFrame(
+                shaderpkg.CellText,
+                &framebuffer,
+                .{
+                    .padding_left_px = self.size.padding.left,
+                    .padding_top_px = self.size.padding.top,
+                    .cell_width_px = self.size.cell.width,
+                    .cell_height_px = self.size.cell.height,
+                    .grid_columns = self.cells.size.columns,
+                    .grid_rows = self.cells.size.rows,
+                },
+                self.uniforms.bg_color,
+                self.cells.bg_cells,
+                self.cells.fg_rows.lists,
+                .{
+                    .data = self.font_grid.atlas_grayscale.data,
+                    .size = self.font_grid.atlas_grayscale.size,
+                },
+                .{
+                    .data = self.font_grid.atlas_color.data,
+                    .size = self.font_grid.atlas_color.size,
+                },
+            );
+
+            self.cpu_frame_generation +%= 1;
+            const frame = pool.publish(acquired, self.cpu_frame_generation);
+            if (self.surface_mailbox.push(.{
+                .software_frame_ready = frame,
+            }, .instant) == 0) {
+                frame.release();
+                return false;
+            }
+
+            return true;
         }
 
         /// Set the new font grid.
@@ -1525,13 +1707,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
+            const use_software_cpu_path = self.shouldUseSoftwareCpuFramePath();
+            if (!use_software_cpu_path) self.cpu_publish_pending = false;
+
             const needs_redraw =
                 size_changed or
                 self.cells_rebuilt or
                 self.hasAnimations() or
-                sync;
+                sync or
+                (use_software_cpu_path and self.cpu_publish_pending);
+
+            // Keep renderer geometry in sync before any CPU/GPU publish path.
+            if (size_changed) {
+                self.size.screen = .{
+                    .width = surface_size.width,
+                    .height = surface_size.height,
+                };
+                self.updateScreenSizeUniforms();
+            }
 
             if (!needs_redraw) {
+                if (use_software_cpu_path) {
+                    return;
+                }
+
                 // We still need to present the last target again, because the
                 // apprt may be swapping buffers and display an outdated frame
                 // if we don't draw something new.
@@ -1539,6 +1738,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 return;
             }
             self.cells_rebuilt = false;
+
+            if (use_software_cpu_path) {
+                const published = try self.publishCpuSoftwareFrame(surface_size);
+                if (!published) {
+                    self.cpu_publish_pending = true;
+                    self.cells_rebuilt = true;
+                } else {
+                    self.cpu_publish_pending = false;
+                }
+                return;
+            }
 
             // Wait for a frame to be available.
             const frame = try self.swap_chain.nextFrame();
@@ -1570,16 +1780,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             } else if (frame.custom_shader_state) |*state| {
                 state.deinit();
                 frame.custom_shader_state = null;
-            }
-
-            // If our stored size doesn't match the
-            // surface size we need to update it.
-            if (size_changed) {
-                self.size.screen = .{
-                    .width = surface_size.width,
-                    .height = surface_size.height,
-                };
-                self.updateScreenSizeUniforms();
             }
 
             // If this frame's target isn't the correct size, or the target
