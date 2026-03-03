@@ -33,7 +33,7 @@ Examples:
 
 Notes:
   cpu-shader-mode=full currently keeps CPU-route compatibility enabled,
-  but custom-shader effects are bypassed via platform-route fallback.
+  but custom-shader effects are bypassed on the CPU route.
 EOF
 }
 
@@ -328,7 +328,7 @@ cmd+=(--cache-dir "$cache_dir")
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} target=${target:-default}"
 if [[ "${cpu_shader_mode:-full}" == "full" ]]; then
-  echo "[software-compat] note: cpu-shader-mode=full currently keeps CPU-route compatibility enabled, but custom-shader effects are bypassed via platform-route fallback."
+  echo "[software-compat] note: cpu-shader-mode=full currently keeps CPU-route compatibility enabled, but custom-shader effects are bypassed on the CPU route."
 fi
 echo "[software-compat] cmd: ${cmd[*]}"
 
@@ -385,11 +385,11 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       fi
 
       if [[ "$expect_full_custom_shader_bypass" == "false" ]]; then
-        echo "[software-compat] full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed via platform-route fallback)"
+        echo "[software-compat] full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
         exit 1
       fi
 
-      echo "[software-compat] full-custom-shader-bypass assertion matched expected=true (cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed via platform-route fallback)"
+      echo "[software-compat] full-custom-shader-bypass assertion matched expected=true (cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
     fi
   fi
 
