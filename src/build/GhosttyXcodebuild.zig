@@ -49,7 +49,29 @@ pub fn init(
     };
 
     const env = try std.process.getEnvMap(b.allocator);
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    const derived_data_path = b.fmt("build/DerivedData-{s}", .{xc_config});
+    const app_path = b.fmt(
+        "macos/{s}/Build/Products/{s}/Ghostty.app",
+        .{ derived_data_path, xc_config },
+    );
+
+    // Stale Finder metadata/resource forks in build outputs can cause
+    // CodeSign failures. We clear xattrs before invoking xcodebuild.
+    const scrub_xattrs = scrub_xattrs: {
+        const step = RunStep.create(b, "scrub xcodebuild xattrs");
+        step.has_side_effects = true;
+        step.cwd = b.path("macos");
+        step.addArgs(&.{
+            "/bin/sh",
+            "-c",
+            b.fmt(
+                "if [ -d {s} ]; then rm -rf {s}; fi; if [ -d build ]; then find build -type f -path '*/Ghostty.app/Icon*' -delete || true; xattr -cr build || true; fi",
+                .{ derived_data_path, derived_data_path },
+            ),
+        });
+        step.expectExitCode(0);
+        break :scrub_xattrs step;
+    };
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
@@ -58,6 +80,7 @@ pub fn init(
         const env_map = try b.allocator.create(std.process.EnvMap);
         env_map.* = .init(b.allocator);
         if (env.get("PATH")) |v| try env_map.put("PATH", v);
+        try env_map.put("COPYFILE_DISABLE", "1");
 
         const step = RunStep.create(b, "xcodebuild");
         step.has_side_effects = true;
@@ -65,10 +88,12 @@ pub fn init(
         step.env_map = env_map;
         step.addArgs(&.{
             "xcodebuild",
-            "-target",
+            "-scheme",
             "Ghostty",
             "-configuration",
             xc_config,
+            "-derivedDataPath",
+            derived_data_path,
         });
 
         // If we have a specific architecture, we need to pass it
@@ -86,6 +111,7 @@ pub fn init(
 
         // Expect success
         step.expectExitCode(0);
+        step.step.dependOn(&scrub_xattrs.step);
 
         break :build step;
     };
@@ -94,6 +120,7 @@ pub fn init(
         const env_map = try b.allocator.create(std.process.EnvMap);
         env_map.* = .init(b.allocator);
         if (env.get("PATH")) |v| try env_map.put("PATH", v);
+        try env_map.put("COPYFILE_DISABLE", "1");
 
         const step = RunStep.create(b, "xcodebuild test");
         step.has_side_effects = true;
@@ -104,6 +131,8 @@ pub fn init(
             "test",
             "-scheme",
             "Ghostty",
+            "-derivedDataPath",
+            derived_data_path,
         });
         if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });
 
@@ -118,6 +147,7 @@ pub fn init(
 
         // Expect success
         step.expectExitCode(0);
+        step.step.dependOn(&scrub_xattrs.step);
 
         break :xctest step;
     };
