@@ -27,6 +27,20 @@ pub fn isMvpEffective(
     return software_renderer_cpu_effective and software_renderer_cpu_mvp;
 }
 
+/// Runtime feature-compatibility helper for CPU-route presentation.
+///
+/// Custom shaders still force fallback to the platform route. Background
+/// images and kitty image placements do not force CPU-route disablement.
+pub fn isRuntimeCompatibleWithCpuRoute(
+    custom_shaders_active: bool,
+    background_image_active: bool,
+    kitty_images_active: bool,
+) bool {
+    _ = background_image_active;
+    _ = kitty_images_active;
+    return !custom_shaders_active;
+}
+
 /// Runtime API shim used by renderer.GenericRenderer while CPU internals
 /// are developed in parallel.
 pub const CPU = switch (routed_backend) {
@@ -1356,6 +1370,13 @@ test "isMvpEffective requires both effective route and MVP opt-in" {
     try std.testing.expect(!isMvpEffective(true, false));
     try std.testing.expect(!isMvpEffective(false, true));
     try std.testing.expect(!isMvpEffective(false, false));
+}
+
+test "isRuntimeCompatibleWithCpuRoute keeps CPU route enabled for background and kitty images" {
+    try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, true, false));
+    try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, false, true));
+    try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, true, true));
+    try std.testing.expect(!isRuntimeCompatibleWithCpuRoute(true, true, true));
 }
 
 test "FramePool publish uses caller generation and release returns slot to idle" {

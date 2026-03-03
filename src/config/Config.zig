@@ -2015,16 +2015,8 @@ keybind: Keybinds = .{},
 /// CPU-route compatibility fallback:
 ///
 /// When the software renderer CPU route is active, Ghostty automatically
-/// falls back to the platform presentation route while any of these are
-/// active:
-///
-/// * `custom-shader`
-/// * Kitty image placements (kitty graphics protocol, controlled by
-///   `image-storage-limit`)
-/// * `background-image`
-///
-/// The CPU route is re-enabled automatically when these features are no
-/// longer active.
+/// falls back to the platform presentation route while custom shaders are
+/// active (`custom-shader`).
 ///
 /// Build-time compatibility note: by default the CPU route only becomes
 /// effective for macOS >= 14 and Linux >= 5.4. For experimental testing on
