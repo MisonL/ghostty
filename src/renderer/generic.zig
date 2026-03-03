@@ -206,6 +206,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Reusable shared-CPU frame pool for software renderer CPU route.
         cpu_frame_pool: ?cpu_renderer.FramePool = null,
 
+        /// Reusable text-only layer for CPU software publish path.
+        ///
+        /// `composeSoftwareFrame` clears the destination each invocation, so
+        /// keeping this buffer across frames is safe and avoids hot-path
+        /// alloc/free churn.
+        cpu_text_layer: ?cpu_renderer.FrameBuffer = null,
+
         /// Retired pools waiting for in-flight frame callbacks to release.
         retired_cpu_frame_pools: std.ArrayListUnmanaged(cpu_renderer.FramePool) = .{},
 
@@ -996,6 +1003,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
             }
 
+            if (self.cpu_text_layer) |*layer| {
+                layer.deinit(self.alloc);
+            }
+
             self.collectRetiredCpuFramePools();
             for (self.retired_cpu_frame_pools.items) |*pool| {
                 if (pool.isIdle()) {
@@ -1394,6 +1405,32 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .bgra8_premul,
             );
             return &self.cpu_frame_pool.?;
+        }
+
+        fn ensureCpuTextLayer(
+            self: *Self,
+            width_px: u32,
+            height_px: u32,
+        ) !*cpu_renderer.FrameBuffer {
+            if (self.cpu_text_layer) |*layer| {
+                if (layer.width_px == width_px and
+                    layer.height_px == height_px and
+                    layer.pixel_format == .bgra8_premul)
+                {
+                    return layer;
+                }
+
+                layer.deinit(self.alloc);
+                self.cpu_text_layer = null;
+            }
+
+            self.cpu_text_layer = try cpu_renderer.FrameBuffer.init(
+                self.alloc,
+                width_px,
+                height_px,
+                .bgra8_premul,
+            );
+            return &self.cpu_text_layer.?;
         }
 
         const CpuImagePixels = struct {
@@ -1881,15 +1918,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             defer self.font_grid.lock.unlockShared();
 
             var framebuffer = acquired.framebuffer;
-            var text_layer = cpu_renderer.FrameBuffer.init(
-                self.alloc,
-                width_px,
-                height_px,
-                .bgra8_premul,
-            ) catch null;
-            defer if (text_layer) |*layer| layer.deinit(self.alloc);
+            const text_layer = self.ensureCpuTextLayer(width_px, height_px) catch null;
 
-            if (text_layer) |*layer| {
+            if (text_layer) |layer| {
                 self.composeCpuBackground(&framebuffer);
                 self.composeCpuKittyLayer(&framebuffer, .kitty_below_bg);
                 self.composeCpuCellBackgrounds(&framebuffer);

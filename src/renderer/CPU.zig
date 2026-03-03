@@ -1891,6 +1891,71 @@ test "composeSoftwareFrame draws grayscale glyph over global background" {
     );
 }
 
+test "composeSoftwareFrame clears previous pixels when framebuffer is reused" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 0, 0 },
+        .glyph_size = .{ 1, 1 },
+        .bearings = .{ 0, 1 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 255, 0, 0, 255 },
+        .atlas = .grayscale,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const atlas_gray = [_]u8{255};
+    const empty_color: [0]u8 = .{};
+    const layout: Layout = .{
+        .padding_left_px = 0,
+        .padding_top_px = 0,
+        .cell_width_px = 1,
+        .cell_height_px = 1,
+        .grid_columns = 1,
+        .grid_rows = 1,
+    };
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        layout,
+        .{ 0, 0, 0, 0 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = atlas_gray[0..], .size = 1 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0, 0, 255, 255 },
+        fb.bytes,
+    );
+
+    rows[0].clearRetainingCapacity();
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        layout,
+        .{ 0, 0, 0, 0 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = atlas_gray[0..], .size = 1 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0, 0, 0, 0 },
+        fb.bytes,
+    );
+}
+
 test "composeSoftwareFrame blends color glyph atlas directly in BGRA" {
     const alloc = std.testing.allocator;
 
