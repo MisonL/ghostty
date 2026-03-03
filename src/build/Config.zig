@@ -164,7 +164,7 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_mvp = b.option(
         bool,
         "software-renderer-cpu-mvp",
-        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active or when software-frame-transport-mode=native.",
+        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. For legacy target bring-up examples: macOS 13 => zig build -Dtarget=aarch64-macos.13.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 5.3 => zig build -Dtarget=x86_64-linux.5.3.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active or when software-frame-transport-mode=native.",
     ) orelse false;
     config.software_renderer_cpu_allow_legacy_os = b.option(
         bool,
@@ -185,12 +185,12 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_shader_mode = b.option(
         SoftwareRendererCpuShaderMode,
         "software-renderer-cpu-shader-mode",
-        "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route when shaders are active; safe/full currently fallback while CPU-route shader execution is staged.",
+        "CPU software renderer custom-shader mode: off/safe/full. Current implementation: safe/full still fallback to platform route while CPU-route shader execution is staged. Target semantics boundary: off=always fallback while shaders are active; safe=CPU route first with timeout fallback; full=CPU route without timeout fallback.",
     ) orelse .full;
     config.software_renderer_cpu_shader_timeout_ms = b.option(
         u32,
         "software-renderer-cpu-shader-timeout-ms",
-        "CPU software renderer custom-shader timeout budget in milliseconds for safe mode staged rollout. Default: 16.",
+        "CPU software renderer custom-shader timeout budget in milliseconds for safe mode target behavior. Current staged implementation still falls back before CPU-route shader execution. Default: 16.",
     ) orelse 16;
 
     //---------------------------------------------------------------
@@ -834,10 +834,12 @@ pub const SoftwareRendererCpuShaderMode = enum {
     /// Always fallback to the platform route while custom shaders are active.
     off,
 
-    /// Keep CPU route first, fallback to platform route when timeout is exceeded.
+    /// Current staged behavior: platform-route fallback while shaders are active.
+    /// Target behavior boundary: keep CPU route first, fallback on timeout.
     safe,
 
-    /// Keep CPU route active for custom shaders without timeout fallback.
+    /// Current staged behavior: platform-route fallback while shaders are active.
+    /// Target behavior boundary: keep CPU route active without timeout fallback.
     full,
 };
 
