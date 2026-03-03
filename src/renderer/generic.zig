@@ -84,6 +84,7 @@ const SoftwareCpuRouteDecision = struct {
 
 const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
+    custom_shader_bypass_count: u64,
     publish_retry_count: u64,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
@@ -91,6 +92,7 @@ const CpuRouteDiagnosticsSnapshot = struct {
 
 const CpuRouteDiagnosticsState = struct {
     custom_shader_fallback_count: u64 = 0,
+    custom_shader_bypass_count: u64 = 0,
     publish_retry_count: u64 = 0,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
@@ -109,6 +111,10 @@ const CpuRouteDiagnosticsState = struct {
         self.publish_retry_count +%= 1;
     }
 
+    fn recordCustomShaderBypass(self: *CpuRouteDiagnosticsState) void {
+        self.custom_shader_bypass_count +%= 1;
+    }
+
     fn recordCpuFramePublished(self: *CpuRouteDiagnosticsState, duration_ns: u64) void {
         self.last_cpu_frame_ms = duration_ns / std.time.ns_per_ms;
     }
@@ -116,6 +122,7 @@ const CpuRouteDiagnosticsState = struct {
     fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
         return .{
             .custom_shader_fallback_count = self.custom_shader_fallback_count,
+            .custom_shader_bypass_count = self.custom_shader_bypass_count,
             .publish_retry_count = self.publish_retry_count,
             .last_cpu_frame_ms = self.last_cpu_frame_ms,
             .last_fallback_reason = self.last_fallback_reason,
@@ -1424,6 +1431,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.cpu_custom_shader_bypass_warned = false;
             } else if (softwareCpuRouteBypassesCustomShaders(input, decision)) {
                 self.maybeLogSoftwareCpuRouteCustomShaderBypass();
+                self.cpu_route_diagnostics.recordCustomShaderBypass();
             } else {
                 self.cpu_custom_shader_bypass_warned = false;
             }
@@ -4599,6 +4607,7 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
 
     const snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(
@@ -4609,12 +4618,15 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
 
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
     var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordCustomShaderBypass();
+    diagnostics.recordCustomShaderBypass();
     diagnostics.recordPublishRetry();
     diagnostics.recordPublishRetry();
     diagnostics.recordCpuFramePublished((17 * std.time.ns_per_ms) + (500 * std.time.ns_per_us));
 
     const snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.publish_retry_count);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
