@@ -119,6 +119,33 @@ pub const FrameBuffer = struct {
         }
     }
 
+    /// Blend a premultiplied RGBA color over the destination rectangle.
+    ///
+    /// `color` is interpreted in framebuffer storage channel order and must be
+    /// premultiplied by alpha.
+    pub fn blendRectPremul(self: *FrameBuffer, rect: Rect, color: [4]u8) void {
+        const clipped = self.clippedRect(rect) orelse return;
+        const stride = @as(usize, @intCast(self.stride_bytes));
+        const src = color;
+        const src_a = src[3];
+
+        if (src_a == 0) return;
+        if (src_a == 255) return self.fillRect(rect, color);
+
+        for (clipped.y0..clipped.y1) |row| {
+            const row_start = row * stride;
+            var x: usize = clipped.x0;
+            while (x < clipped.x1) : (x += 1) {
+                const off = row_start + (x * 4);
+                var px = self.bytes[off .. off + 4];
+                px[0] = overPremul(src[0], px[0], src_a);
+                px[1] = overPremul(src[1], px[1], src_a);
+                px[2] = overPremul(src[2], px[2], src_a);
+                px[3] = overPremul(src[3], px[3], src_a);
+            }
+        }
+    }
+
     const ClippedRect = struct {
         x0: usize,
         y0: usize,
@@ -170,6 +197,13 @@ pub const FrameBuffer = struct {
 
 fn bytesPerPixel(_: PixelFormat) u32 {
     return 4;
+}
+
+fn overPremul(src: u8, dst: u8, src_a: u8) u8 {
+    const inv = @as(u16, 255) - @as(u16, src_a);
+    const blend = (@as(u16, dst) * inv + 127) / 255;
+    const out = @as(u16, src) + blend;
+    return @intCast(@min(out, 255));
 }
 
 test "FrameBuffer requiredLen validates stride and dimensions" {
@@ -245,4 +279,40 @@ test "FrameBuffer fillRect ignores empty and out-of-bounds regions" {
     fb.fillRect(.{ .x = 0, .y = 1, .width = 1, .height = 1 }, .{ 9, 9, 9, 9 });
 
     try std.testing.expectEqualSlices(u8, before, fb.bytes);
+}
+
+test "FrameBuffer blendRectPremul blends over BGRA storage" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 10, 20, 30, 40 });
+    fb.blendRectPremul(
+        .{ .x = 0, .y = 0, .width = 1, .height = 1 },
+        .{ 128, 0, 0, 128 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 133, 10, 15, 148 },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendRectPremul blends over RGBA storage" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .rgba8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 10, 20, 30, 40 });
+    fb.blendRectPremul(
+        .{ .x = 0, .y = 0, .width = 1, .height = 1 },
+        .{ 128, 0, 0, 128 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 133, 10, 15, 148 },
+        fb.bytes,
+    );
 }
