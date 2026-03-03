@@ -2016,13 +2016,12 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-mode=off`:
 ///   always fallback to platform route while shaders are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=safe`:
-///   current implementation still falls back to platform route while CPU-route
-///   shader execution is staged. Target semantics (once staged code ships):
-///   keep CPU route first and fallback if timeout budget is exceeded.
+///   keep current fallback behavior: platform route is used while shaders
+///   are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=full`:
-///   current implementation still falls back to platform route while CPU-route
-///   shader execution is staged. Target semantics (once staged code ships):
-///   keep CPU route active for shaders without timeout fallback.
+///   keep CPU route active while shaders are configured. In the current stage,
+///   the custom-shader effect pass is bypassed on CPU route (not full shader
+///   execution yet).
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) only defines the `safe` target behavior boundary.
@@ -3076,14 +3075,12 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-mode=off|safe|full`
 /// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
 ///
-/// Current implementation status: CPU-route custom shader execution is staged,
-/// so `safe` and `full` both still use platform-route fallback.
-///
-/// Target semantics boundary (once staged code ships):
+/// Current implementation status:
 ///
 /// * `off`: always platform-route fallback while shaders are active.
-/// * `safe`: CPU route first, then platform-route fallback on timeout.
-/// * `full`: CPU route without timeout-driven fallback.
+/// * `safe`: keep platform-route fallback while shaders are active.
+/// * `full`: keep CPU route active, but bypass the custom-shader effect pass
+///   at this stage (so custom-shader visuals are not fully executed yet).
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.
