@@ -52,6 +52,7 @@ const software_renderer_cpu_effective =
             build_config.software_renderer_cpu_mvp)
     else
         false;
+const max_retired_cpu_frame_pools: usize = 4;
 
 /// Create a renderer type with the provided graphics API wrapper.
 ///
@@ -145,6 +146,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// One-shot warning guard when all CPU frame slots are in flight.
         cpu_frame_pool_exhausted_warned: bool = false,
+
+        /// One-shot warning guard when retired pool pressure blocks resizing.
+        cpu_retired_pool_pressure_warned: bool = false,
 
         /// Pending republish flag when CPU frame publication was backpressured.
         cpu_publish_pending: bool = false,
@@ -1200,10 +1204,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 var retired = self.retired_cpu_frame_pools.swapRemove(i);
                 retired.deinitIdle();
             }
+
+            if (self.retired_cpu_frame_pools.items.len < max_retired_cpu_frame_pools) {
+                self.cpu_retired_pool_pressure_warned = false;
+            }
         }
 
         fn retireCpuFramePool(self: *Self, pool: cpu_renderer.FramePool) !void {
             self.collectRetiredCpuFramePools();
+            if (self.retired_cpu_frame_pools.items.len >= max_retired_cpu_frame_pools) {
+                if (!self.cpu_retired_pool_pressure_warned) {
+                    self.cpu_retired_pool_pressure_warned = true;
+                    log.warn(
+                        "software renderer cpu retired pool pressure; delaying resize until in-flight frames retire count={}",
+                        .{self.retired_cpu_frame_pools.items.len},
+                    );
+                }
+                return error.CpuFramePoolRetiredPressure;
+            }
             try self.retired_cpu_frame_pools.append(self.alloc, pool);
         }
 
@@ -1219,8 +1237,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     return pool;
                 }
 
-                const retired = pool.*;
-                try self.retireCpuFramePool(retired);
+                if (pool.isIdle()) {
+                    pool.deinitIdle();
+                } else {
+                    const retired = pool.*;
+                    try self.retireCpuFramePool(retired);
+                }
                 self.cpu_frame_pool = null;
             }
 
@@ -1244,7 +1266,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const height_px = std.math.cast(u32, surface_size.height) orelse return false;
             if (width_px == 0 or height_px == 0) return false;
 
-            var pool = try self.ensureCpuFramePool(width_px, height_px);
+            var pool = self.ensureCpuFramePool(width_px, height_px) catch |err| switch (err) {
+                error.CpuFramePoolRetiredPressure => return false,
+                else => return err,
+            };
             const acquired = pool.acquire() orelse {
                 if (!self.cpu_frame_pool_exhausted_warned) {
                     self.cpu_frame_pool_exhausted_warned = true;

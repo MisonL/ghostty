@@ -86,8 +86,12 @@ fn embeddedSoftwareRendererCpuFlagsFromBuildConfig() EmbeddedSoftwareRendererCpu
 fn softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
     platform_tag: PlatformTag,
     cpu_flags: EmbeddedSoftwareRendererCpuFlags,
+    transport_mode: build_config.SoftwareFrameTransportMode,
 ) apprt.surface.Message.SoftwareFrameStorage {
     assert(!cpu_flags.effective or cpu_flags.mvp);
+    if (transport_mode == .native) {
+        return .native_texture_handle;
+    }
     if (cpu_flags.effective) {
         return .shared_cpu_bytes;
     }
@@ -108,6 +112,7 @@ fn softwarePresenterRequiredStorageForEmbeddedConfig(
     return softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
         platform_tag,
         embeddedSoftwareRendererCpuFlagsFromBuildConfig(),
+        build_config.software_frame_transport_mode,
     );
 }
 
@@ -2598,7 +2603,7 @@ test "software presenter required storage for embedded runtime uses effective CP
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
             .mvp = true,
             .effective = false,
-        }),
+        }, .auto),
     );
 }
 
@@ -2608,7 +2613,7 @@ test "software presenter required storage for embedded runtime uses shared cpu b
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
             .mvp = true,
             .effective = true,
-        }),
+        }, .auto),
     );
 }
 
@@ -2618,7 +2623,7 @@ test "software presenter required storage for embedded runtime uses native textu
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
             .mvp = false,
             .effective = false,
-        }),
+        }, .auto),
     );
 }
 
@@ -2628,7 +2633,7 @@ test "software presenter required storage for embedded runtime on iOS uses nativ
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
             .mvp = true,
             .effective = false,
-        }),
+        }, .auto),
     );
 }
 
@@ -2638,7 +2643,7 @@ test "software presenter required storage for embedded runtime on iOS uses share
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
             .mvp = true,
             .effective = true,
-        }),
+        }, .auto),
     );
 }
 
@@ -2648,15 +2653,29 @@ test "software presenter required storage for embedded runtime on iOS uses nativ
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
             .mvp = false,
             .effective = false,
-        }),
+        }, .auto),
+    );
+}
+
+test "software presenter required storage for embedded runtime uses native texture handle when transport mode is native" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
+            .mvp = true,
+            .effective = true,
+        }, .native),
     );
 }
 
 fn testRequiredStorageForOsTagWithCpuFlags(
     os_tag: std.Target.Os.Tag,
     cpu_flags: EmbeddedSoftwareRendererCpuFlags,
+    transport_mode: build_config.SoftwareFrameTransportMode,
 ) apprt.surface.Message.SoftwareFrameStorage {
     assert(!cpu_flags.effective or cpu_flags.mvp);
+    if (transport_mode == .native) {
+        return .native_texture_handle;
+    }
     if (cpu_flags.effective) {
         return .shared_cpu_bytes;
     }
@@ -2673,7 +2692,7 @@ test "software presenter required storage for embedded runtime uses shared cpu b
         testRequiredStorageForOsTagWithCpuFlags(.linux, .{
             .mvp = false,
             .effective = false,
-        }),
+        }, .auto),
     );
 }
 

@@ -895,6 +895,20 @@ fn rgbaToPremulBgra(rgba: [4]u8) [4]u8 {
     };
 }
 
+const TestCellText = struct {
+    glyph_pos: [2]u32 = .{ 0, 0 },
+    glyph_size: [2]u32 = .{ 0, 0 },
+    bearings: [2]i16 = .{ 0, 0 },
+    grid_pos: [2]u16 = .{ 0, 0 },
+    color: [4]u8 = .{ 0, 0, 0, 0 },
+    atlas: AtlasKind = .grayscale,
+
+    const AtlasKind = enum {
+        grayscale,
+        color,
+    };
+};
+
 test "FrameBuffer requiredLen validates stride and dimensions" {
     try std.testing.expectError(
         error.InvalidFrameSize,
@@ -1236,4 +1250,157 @@ test "FramePool publish uses caller generation and release returns slot to idle"
 
     frame.release();
     try std.testing.expect(pool.isIdle());
+}
+
+test "composeSoftwareFrame draws grayscale glyph over global background" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 2, 2, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 0, 0 },
+        .glyph_size = .{ 1, 1 },
+        .bearings = .{ 0, 2 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 255, 0, 0, 255 },
+        .atlas = .grayscale,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const atlas_gray = [_]u8{255};
+    const empty_color: [0]u8 = .{};
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 2,
+            .cell_height_px = 2,
+            .grid_columns = 1,
+            .grid_rows = 1,
+        },
+        .{ 10, 20, 30, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = atlas_gray[0..], .size = 1 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0,  0,  255, 255, 30, 20, 10, 255,
+            30, 20, 10,  255, 30, 20, 10, 255,
+        },
+        fb.bytes,
+    );
+}
+
+test "composeSoftwareFrame blends color glyph atlas directly in BGRA" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 0, 0 },
+        .glyph_size = .{ 1, 1 },
+        .bearings = .{ 0, 1 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 255, 255, 255, 255 },
+        .atlas = .color,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const empty_gray: [0]u8 = .{};
+    const atlas_color = [_]u8{ 100, 50, 25, 128 };
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 1,
+            .cell_height_px = 1,
+            .grid_columns = 1,
+            .grid_rows = 1,
+        },
+        .{ 0, 0, 0, 0 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = empty_gray[0..], .size = 0 },
+        .{ .data = atlas_color[0..], .size = 1 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 100, 50, 25, 128 },
+        fb.bytes,
+    );
+}
+
+test "composeSoftwareFrame clips glyph with negative bearing and samples correct source column" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 2, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 0, 0 },
+        .glyph_size = .{ 2, 1 },
+        .bearings = .{ -1, 1 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 0, 255, 0, 255 },
+        .atlas = .grayscale,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const atlas_gray = [_]u8{
+        64, 255,
+        0,  0,
+    };
+    const empty_color: [0]u8 = .{};
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 1,
+            .cell_height_px = 1,
+            .grid_columns = 1,
+            .grid_rows = 1,
+        },
+        .{ 0, 0, 0, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = atlas_gray[0..], .size = 2 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 255, 0, 255,
+            0, 0,   0, 255,
+        },
+        fb.bytes,
+    );
 }
