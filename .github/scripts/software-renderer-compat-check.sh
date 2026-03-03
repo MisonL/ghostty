@@ -9,7 +9,10 @@ Usage:
     [--transport <auto|shared|native>] \
     [--target <zig-target>] \
     [--allow-legacy-os <true|false>] \
+    [--cpu-shader-mode <off|safe|full>] \
+    [--cpu-shader-timeout-ms <u32>] \
     [--expect-cpu-effective <true|false>] \
+    [--expect-cpu-shader-mode <off|safe|full>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
     [--expected-host-os <linux|macos>] \
@@ -51,7 +54,10 @@ mode="test"
 transport="auto"
 target=""
 allow_legacy_os="false"
+cpu_shader_mode=""
+cpu_shader_timeout_ms=""
 expect_cpu_effective=""
+expect_cpu_shader_mode=""
 app_runtime=""
 system_path=""
 expected_host_os=""
@@ -91,12 +97,36 @@ while (($# > 0)); do
       allow_legacy_os="${2:-}"
       shift 2
       ;;
+    --cpu-shader-mode=*)
+      cpu_shader_mode="${1#*=}"
+      shift
+      ;;
+    --cpu-shader-mode)
+      cpu_shader_mode="${2:-}"
+      shift 2
+      ;;
+    --cpu-shader-timeout-ms=*)
+      cpu_shader_timeout_ms="${1#*=}"
+      shift
+      ;;
+    --cpu-shader-timeout-ms)
+      cpu_shader_timeout_ms="${2:-}"
+      shift 2
+      ;;
     --expect-cpu-effective=*)
       expect_cpu_effective="${1#*=}"
       shift
       ;;
     --expect-cpu-effective)
       expect_cpu_effective="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-shader-mode=*)
+      expect_cpu_shader_mode="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-shader-mode)
+      expect_cpu_shader_mode="${2:-}"
       shift 2
       ;;
     --app-runtime=*)
@@ -153,8 +183,31 @@ if [[ "$allow_legacy_os" != "true" && "$allow_legacy_os" != "false" ]]; then
   exit 2
 fi
 
+if [[ -n "$cpu_shader_mode" && "$cpu_shader_mode" != "off" && "$cpu_shader_mode" != "safe" && "$cpu_shader_mode" != "full" ]]; then
+  echo "invalid --cpu-shader-mode: $cpu_shader_mode (expected: off|safe|full)" >&2
+  exit 2
+fi
+
+if [[ -n "$cpu_shader_timeout_ms" ]]; then
+  if ! [[ "$cpu_shader_timeout_ms" =~ ^[0-9]+$ ]]; then
+    echo "invalid --cpu-shader-timeout-ms: $cpu_shader_timeout_ms (expected: u32)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_shader_timeout_ms} > 10 )) || {
+    (( ${#cpu_shader_timeout_ms} == 10 )) && (( cpu_shader_timeout_ms > 4294967295 ))
+  }; then
+    echo "invalid --cpu-shader-timeout-ms: $cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "true" && "$expect_cpu_effective" != "false" ]]; then
   echo "invalid --expect-cpu-effective: $expect_cpu_effective" >&2
+  exit 2
+fi
+
+if [[ -n "$expect_cpu_shader_mode" && "$expect_cpu_shader_mode" != "off" && "$expect_cpu_shader_mode" != "safe" && "$expect_cpu_shader_mode" != "full" ]]; then
+  echo "invalid --expect-cpu-shader-mode: $expect_cpu_shader_mode (expected: off|safe|full)" >&2
   exit 2
 fi
 
@@ -225,6 +278,12 @@ fi
 cmd+=(-Drenderer=software)
 cmd+=(-Dsoftware-renderer-cpu-mvp=true)
 cmd+=("-Dsoftware-renderer-cpu-allow-legacy-os=$allow_legacy_os")
+if [[ -n "$cpu_shader_mode" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-shader-mode=$cpu_shader_mode")
+fi
+if [[ -n "$cpu_shader_timeout_ms" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-shader-timeout-ms=$cpu_shader_timeout_ms")
+fi
 cmd+=("-Dsoftware-frame-transport-mode=$transport")
 cmd+=(-Demit-macos-app=false)
 
@@ -243,36 +302,50 @@ fi
 cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} target=${target:-default}"
 echo "[software-compat] cmd: ${cmd[*]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" ]]; then
     options_file=""
     while IFS= read -r candidate; do
-      if grep -q 'software_renderer_cpu_effective' "$candidate"; then
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode' "$candidate"; then
         options_file="$candidate"
         break
       fi
     done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
 
     if [[ -z "$options_file" ]]; then
-      echo "[software-compat] expected-cpu-effective=$expect_cpu_effective but options.zig not found in cache"
+      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>}"
       exit 1
     fi
 
-    if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
-      actual_cpu_effective="$(sed -nE 's/.*software_renderer_cpu_effective[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
-      if [[ -z "$actual_cpu_effective" ]]; then
-        actual_cpu_effective="unknown"
+    if [[ -n "$expect_cpu_effective" ]]; then
+      if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_effective="$(sed -nE 's/.*software_renderer_cpu_effective[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_effective" ]]; then
+          actual_cpu_effective="unknown"
+        fi
+        echo "[software-compat] cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
+        exit 1
       fi
-      echo "[software-compat] cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
-      exit 1
+      echo "[software-compat] cpu-effective assertion matched expected=$expect_cpu_effective"
     fi
-    echo "[software-compat] cpu-effective assertion matched expected=$expect_cpu_effective"
+
+    if [[ -n "$expect_cpu_shader_mode" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\\.?$expect_cpu_shader_mode([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_shader_mode" ]]; then
+          actual_cpu_shader_mode="unknown"
+        fi
+        echo "[software-compat] cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$actual_cpu_shader_mode file=$options_file"
+        exit 1
+      fi
+      echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
+    fi
   fi
 
   echo "[software-compat] success"
