@@ -162,7 +162,7 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_mvp = b.option(
         bool,
         "software-renderer-cpu-mvp",
-        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders, kitty images, background images, or debug overlays are active.",
+        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders, kitty images, or background images are active.",
     ) orelse false;
     config.software_renderer_cpu_allow_legacy_os = b.option(
         bool,

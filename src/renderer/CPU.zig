@@ -302,6 +302,79 @@ pub const FrameBuffer = struct {
         }
     }
 
+    /// Blend a premultiplied RGBA image into the framebuffer.
+    ///
+    /// Source pixels are interpreted as RGBA premultiplied-alpha and converted
+    /// into framebuffer storage order prior to blending.
+    pub fn blendPremulRgbaImage(
+        self: *FrameBuffer,
+        dst_x: u32,
+        dst_y: u32,
+        image_width: u32,
+        image_height: u32,
+        image_stride_bytes: u32,
+        image_rgba: []const u8,
+    ) void {
+        if (image_width == 0 or image_height == 0) return;
+
+        const min_stride_u64 = std.math.mul(u64, image_width, 4) catch return;
+        if (image_stride_bytes < min_stride_u64) return;
+
+        const required_len_u64 = std.math.mul(
+            u64,
+            image_stride_bytes,
+            image_height,
+        ) catch return;
+        const required_len = std.math.cast(usize, required_len_u64) orelse return;
+        if (image_rgba.len < required_len) return;
+
+        const clipped = self.clippedRect(.{
+            .x = dst_x,
+            .y = dst_y,
+            .width = image_width,
+            .height = image_height,
+        }) orelse return;
+
+        const dst_stride = @as(usize, @intCast(self.stride_bytes));
+        const src_stride = @as(usize, @intCast(image_stride_bytes));
+        const dst_x0 = @as(usize, @intCast(dst_x));
+        const dst_y0 = @as(usize, @intCast(dst_y));
+
+        var dst_row: usize = clipped.y0;
+        var src_row: usize = clipped.y0 - dst_y0;
+        while (dst_row < clipped.y1) : ({
+            dst_row += 1;
+            src_row += 1;
+        }) {
+            const dst_row_start = dst_row * dst_stride;
+            const src_row_start = src_row * src_stride;
+
+            var dst_col: usize = clipped.x0;
+            var src_col: usize = clipped.x0 - dst_x0;
+            while (dst_col < clipped.x1) : ({
+                dst_col += 1;
+                src_col += 1;
+            }) {
+                const src_off = src_row_start + (src_col * 4);
+                const rgba: [4]u8 = .{
+                    image_rgba[src_off + 0],
+                    image_rgba[src_off + 1],
+                    image_rgba[src_off + 2],
+                    image_rgba[src_off + 3],
+                };
+                if (rgba[3] == 0) continue;
+
+                const src: [4]u8 = switch (self.pixel_format) {
+                    .bgra8_premul => .{ rgba[2], rgba[1], rgba[0], rgba[3] },
+                    .rgba8_premul => rgba,
+                };
+
+                const off = dst_row_start + (dst_col * 4);
+                blendPremulBgra(self.bytes[off .. off + 4], src);
+            }
+        }
+    }
+
     const ClippedRect = struct {
         x0: usize,
         y0: usize,
@@ -1224,6 +1297,58 @@ test "FrameBuffer blendAlphaMaskPremul no-ops when mask data is truncated" {
     );
 
     try std.testing.expectEqualSlices(u8, before, fb.bytes);
+}
+
+test "FrameBuffer blendPremulRgbaImage converts to BGRA storage and blends" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 2, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 10, 20, 30, 40 });
+    const src = [_]u8{
+        100, 0, 0, 128,
+        0,   0, 0, 0,
+    };
+    fb.blendPremulRgbaImage(
+        1,
+        0,
+        2,
+        1,
+        8,
+        src[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            10, 20, 30,  40,
+            5,  10, 115, 148,
+        },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendPremulRgbaImage copies opaque RGBA source" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 0, 0, 0, 0 });
+    const src = [_]u8{ 50, 100, 150, 255 };
+    fb.blendPremulRgbaImage(
+        0,
+        0,
+        1,
+        1,
+        4,
+        src[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 150, 100, 50, 255 },
+        fb.bytes,
+    );
 }
 
 test "isMvpEffective requires both effective route and MVP opt-in" {

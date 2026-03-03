@@ -2022,7 +2022,6 @@ keybind: Keybinds = .{},
 /// * Kitty image placements (kitty graphics protocol, controlled by
 ///   `image-storage-limit`)
 /// * `background-image`
-/// * Debug overlay features (inspector overlays)
 ///
 /// The CPU route is re-enabled automatically when these features are no
 /// longer active.

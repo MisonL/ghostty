@@ -153,9 +153,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when kitty images disable CPU route.
         cpu_kitty_images_warned: bool = false,
 
-        /// One-shot warning guard when debug overlay disables CPU route.
-        cpu_overlay_warned: bool = false,
-
         /// One-shot warning guard when all CPU frame slots are in flight.
         cpu_frame_pool_exhausted_warned: bool = false,
 
@@ -1203,12 +1200,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const custom_shaders_active = self.has_custom_shaders;
             const background_image_active = self.bg_image != null;
             const kitty_images_active = self.images.kitty_placements.items.len > 0;
-            const overlay_active = self.overlay != null;
 
             if (!custom_shaders_active) self.cpu_custom_shader_warned = false;
             if (!background_image_active) self.cpu_background_image_warned = false;
             if (!kitty_images_active) self.cpu_kitty_images_warned = false;
-            if (!overlay_active) self.cpu_overlay_warned = false;
 
             if (custom_shaders_active) {
                 warnSoftwareCpuRouteDisabledOnce(
@@ -1230,14 +1225,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 warnSoftwareCpuRouteDisabledOnce(
                     &self.cpu_kitty_images_warned,
                     "software renderer cpu route is disabled while kitty image placements are active; using platform route",
-                );
-                return false;
-            }
-
-            if (overlay_active) {
-                warnSoftwareCpuRouteDisabledOnce(
-                    &self.cpu_overlay_warned,
-                    "software renderer cpu route is disabled while debug overlay is active; using platform route",
                 );
                 return false;
             }
@@ -1372,6 +1359,27 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .size = self.font_grid.atlas_color.size,
                 },
             );
+
+            if (self.overlay) |*overlay| {
+                const pending = overlay.pendingImage();
+                if (pending.pixel_format == .rgba) {
+                    const stride_bytes = std.math.mul(
+                        u32,
+                        pending.width,
+                        4,
+                    ) catch 0;
+                    if (stride_bytes > 0) {
+                        framebuffer.blendPremulRgbaImage(
+                            self.size.padding.left,
+                            self.size.padding.top,
+                            pending.width,
+                            pending.height,
+                            stride_bytes,
+                            pending.dataSlice(),
+                        );
+                    }
+                }
+            }
 
             self.cpu_frame_generation +%= 1;
             const frame = pool.publish(acquired, self.cpu_frame_generation);
