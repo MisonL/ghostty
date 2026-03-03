@@ -989,7 +989,7 @@ jobs:
           - target_label: default-target
             target: ""
           - target_label: linux-5.3
-            target: -Dtarget=x86_64-linux.5.3.0
+            target: x86_64-linux.5.3.0
         transport:
           - transport_label: auto
             transport_mode: auto
@@ -1025,15 +1025,12 @@ jobs:
 
       - name: Test software renderer CPU path
         run: |
-          target_arg='${{ matrix.target.target }}'
           nix develop -c \
-            zig build test \
-            -Dapp-runtime=none \
-            -Drenderer=software \
-            -Dsoftware-renderer-cpu-mvp=true \
-            -Dsoftware-frame-transport-mode=${{ matrix.transport.transport_mode }} \
-            -Demit-macos-app=false \
-            ${target_arg:+$target_arg}
+            ./.github/scripts/software-renderer-compat-check.sh \
+            --mode test \
+            --transport "${{ matrix.transport.transport_mode }}" \
+            --target "${{ matrix.target.target }}" \
+            --app-runtime none
 
   test-software-renderer-macos:
     strategy:
@@ -1044,7 +1041,7 @@ jobs:
           - target_label: default-target
             target: ""
           - target_label: macos-13.0
-            target: -Dtarget=x86_64-macos.13.0.0
+            target: x86_64-macos.13.0.0
         transport:
           - transport_label: auto
             transport_mode: auto
@@ -1091,15 +1088,12 @@ jobs:
 
       - name: Test software renderer CPU path
         run: |
-          target_arg='${{ matrix.target.target }}'
           nix develop -c \
-            zig build test \
-            --system ${{ steps.deps.outputs.deps }} \
-            -Drenderer=software \
-            -Dsoftware-renderer-cpu-mvp=true \
-            -Dsoftware-frame-transport-mode=${{ matrix.transport.transport_mode }} \
-            -Demit-macos-app=false \
-            ${target_arg:+$target_arg}
+            ./.github/scripts/software-renderer-compat-check.sh \
+            --mode test \
+            --transport "${{ matrix.transport.transport_mode }}" \
+            --target "${{ matrix.target.target }}" \
+            --system "${{ steps.deps.outputs.deps }}"
 
   test-i18n:
     strategy:

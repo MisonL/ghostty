@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
 const wuffs = @import("wuffs");
+const build_config = @import("../build_config.zig");
 const apprt = @import("../apprt.zig");
 const configpkg = @import("../config.zig");
 const font = @import("../font/main.zig");
@@ -236,6 +237,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// Our overlay state, if any.
         overlay: ?Overlay = null,
+
+        /// One-shot process-local diagnostic guard for software CPU route logs.
+        var software_cpu_route_diagnostic_logged: bool = false;
 
         const HighlightTag = enum(u8) {
             search_match,
@@ -666,6 +670,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         };
 
         pub fn init(alloc: Allocator, options: renderer.Options) !Self {
+            maybeLogSoftwareCpuRouteDiagnostic();
+
             // Initialize our graphics API wrapper, this will prepare the
             // surface provided by the apprt and set up any API-specific
             // GPU resources.
@@ -805,6 +811,32 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try result.prepBackgroundImage();
 
             return result;
+        }
+
+        fn maybeLogSoftwareCpuRouteDiagnostic() void {
+            if (software_cpu_route_diagnostic_logged) return;
+            software_cpu_route_diagnostic_logged = true;
+
+            if (comptime build_config.renderer != .software) return;
+            if (!comptime build_config.software_renderer_cpu_mvp) return;
+
+            const cpu_effective = comptime if (@hasDecl(build_config, "software_renderer_cpu_effective"))
+                build_config.software_renderer_cpu_effective
+            else
+                build_config.software_renderer_cpu_mvp;
+
+            if (comptime cpu_effective) {
+                log.info(
+                    "software renderer cpu-mvp route active target_os={s}",
+                    .{@tagName(builtin.target.os.tag)},
+                );
+                return;
+            }
+
+            log.warn(
+                "software renderer cpu-mvp requested but unavailable target_os={s}; requires macOS >= 14 or Linux >= 5.4, falling back to platform route",
+                .{@tagName(builtin.target.os.tag)},
+            );
         }
 
         pub fn deinit(self: *Self) void {
