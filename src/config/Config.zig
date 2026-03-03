@@ -2036,10 +2036,10 @@ keybind: Keybinds = .{},
 ///
 /// Examples for legacy targets:
 ///
-/// * macOS 13:
-///   `zig build -Dtarget=aarch64-macos.13.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
-/// * Linux 5.3:
-///   `zig build -Dtarget=x86_64-linux.5.3.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
+/// * macOS 11:
+///   `zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
+/// * Linux 5.0:
+///   `zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
 ///
 /// This can be changed at runtime and will affect new frames.
 @"software-renderer-experimental": bool = false,

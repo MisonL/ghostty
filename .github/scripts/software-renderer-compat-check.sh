@@ -13,6 +13,7 @@ Usage:
     [--cpu-shader-timeout-ms <u32>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
+    [--expect-cpu-shader-timeout-ms <u32>] \
     [--expect-full-custom-shader-bypass <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
@@ -22,16 +23,20 @@ Usage:
 
 Examples:
   .github/scripts/software-renderer-compat-check.sh \
-    --target x86_64-linux.5.3.0 \
+    --target x86_64-linux.5.0.0 \
     --app-runtime none
 
   .github/scripts/software-renderer-compat-check.sh \
     --transport native \
-    --target x86_64-macos.13.0.0 \
+    --target x86_64-macos.11.0.0 \
     --allow-legacy-os true \
     --system /path/to/deps
 
 Notes:
+  --allow-legacy-os=true is intended for legacy-target compatibility checks,
+  e.g. macOS 11 / Linux 5.0 scenarios.
+  --target accepts shorthand (e.g. x86_64-macos.11, x86_64-linux.5.0) and is
+  auto-normalized to <major>.<minor>.<patch> for Zig.
   cpu-shader-mode=full currently keeps CPU-route compatibility enabled,
   but custom-shader effects are bypassed on the CPU route.
 EOF
@@ -63,6 +68,7 @@ cpu_shader_mode=""
 cpu_shader_timeout_ms=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
+expect_cpu_shader_timeout_ms=""
 expect_full_custom_shader_bypass=""
 app_runtime=""
 system_path=""
@@ -133,6 +139,14 @@ while (($# > 0)); do
       ;;
     --expect-cpu-shader-mode)
       expect_cpu_shader_mode="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-shader-timeout-ms=*)
+      expect_cpu_shader_timeout_ms="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-shader-timeout-ms)
+      expect_cpu_shader_timeout_ms="${2:-}"
       shift 2
       ;;
     --expect-full-custom-shader-bypass=*)
@@ -225,6 +239,19 @@ if [[ -n "$expect_cpu_shader_mode" && "$expect_cpu_shader_mode" != "off" && "$ex
   exit 2
 fi
 
+if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
+  if ! [[ "$expect_cpu_shader_timeout_ms" =~ ^[0-9]+$ ]]; then
+    echo "invalid --expect-cpu-shader-timeout-ms: $expect_cpu_shader_timeout_ms (expected: u32)" >&2
+    exit 2
+  fi
+  if (( ${#expect_cpu_shader_timeout_ms} > 10 )) || {
+    (( ${#expect_cpu_shader_timeout_ms} == 10 )) && (( expect_cpu_shader_timeout_ms > 4294967295 ))
+  }; then
+    echo "invalid --expect-cpu-shader-timeout-ms: $expect_cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "$expect_full_custom_shader_bypass" && "$expect_full_custom_shader_bypass" != "true" && "$expect_full_custom_shader_bypass" != "false" ]]; then
   echo "invalid --expect-full-custom-shader-bypass: $expect_full_custom_shader_bypass (expected: true|false)" >&2
   exit 2
@@ -262,6 +289,8 @@ if [[ -n "$expected_host_os" && "$host_os" != "$expected_host_os" ]]; then
 fi
 
 if [[ -n "$target" ]]; then
+  # Keep backwards compatibility for historical CI invocations that pass
+  # shorthand OS versions (for example: macos.11 or linux.5.0).
   normalized_target="$(normalize_target_for_zig "$target")"
   if [[ "$normalized_target" != "$target" ]]; then
     echo "[software-compat] normalized-target: $target -> $normalized_target"
@@ -336,17 +365,17 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_full_custom_shader_bypass" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_full_custom_shader_bypass" ]]; then
     options_file=""
     while IFS= read -r candidate; do
-      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode' "$candidate"; then
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_timeout_ms' "$candidate"; then
         options_file="$candidate"
         break
       fi
     done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
 
     if [[ -z "$options_file" ]]; then
-      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}"
+      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}"
       exit 1
     fi
 
@@ -372,6 +401,18 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         exit 1
       fi
       echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
+    fi
+
+    if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*$expect_cpu_shader_timeout_ms([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_shader_timeout_ms="$(sed -nE 's/.*software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_shader_timeout_ms" ]]; then
+          actual_cpu_shader_timeout_ms="unknown"
+        fi
+        echo "[software-compat] cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$actual_cpu_shader_timeout_ms file=$options_file"
+        exit 1
+      fi
+      echo "[software-compat] cpu-shader-timeout-ms assertion matched expected=$expect_cpu_shader_timeout_ms"
     fi
 
     if [[ -n "$expect_full_custom_shader_bypass" ]]; then
