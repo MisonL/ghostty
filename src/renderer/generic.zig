@@ -82,6 +82,47 @@ const SoftwareCpuRouteDecision = struct {
     reason: ?SoftwareCpuRouteDisableReason = null,
 };
 
+const CpuRouteDiagnosticsSnapshot = struct {
+    custom_shader_fallback_count: u64,
+    publish_retry_count: u64,
+    last_cpu_frame_ms: ?u64,
+    last_fallback_reason: ?SoftwareCpuRouteDisableReason,
+};
+
+const CpuRouteDiagnosticsState = struct {
+    custom_shader_fallback_count: u64 = 0,
+    publish_retry_count: u64 = 0,
+    last_cpu_frame_ms: ?u64 = null,
+    last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
+
+    fn recordRouteDecision(self: *CpuRouteDiagnosticsState, decision: SoftwareCpuRouteDecision) void {
+        if (decision.enabled) return;
+        const reason = decision.reason orelse return;
+
+        self.last_fallback_reason = reason;
+        if (reason == .custom_shaders_mode_off or reason == .custom_shaders_unsupported) {
+            self.custom_shader_fallback_count +%= 1;
+        }
+    }
+
+    fn recordPublishRetry(self: *CpuRouteDiagnosticsState) void {
+        self.publish_retry_count +%= 1;
+    }
+
+    fn recordCpuFramePublished(self: *CpuRouteDiagnosticsState, duration_ns: u64) void {
+        self.last_cpu_frame_ms = duration_ns / std.time.ns_per_ms;
+    }
+
+    fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
+        return .{
+            .custom_shader_fallback_count = self.custom_shader_fallback_count,
+            .publish_retry_count = self.publish_retry_count,
+            .last_cpu_frame_ms = self.last_cpu_frame_ms,
+            .last_fallback_reason = self.last_fallback_reason,
+        };
+    }
+};
+
 fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRouteDecision {
     if (!input.cpu_route_build_effective) return .{
         .enabled = false,
@@ -247,6 +288,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// Pending republish flag when CPU frame publication was backpressured.
         cpu_publish_pending: bool = false,
+
+        /// Runtime diagnostics state for software renderer CPU route.
+        cpu_route_diagnostics: CpuRouteDiagnosticsState = .{},
 
         /// Flag to indicate that our focus state changed for custom
         /// shaders to update their state.
@@ -1270,6 +1314,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.software_frame_publishing = enabled;
         }
 
+        /// Return a snapshot of software renderer CPU route diagnostics.
+        pub fn cpuRouteDiagnosticsSnapshot(self: *Self) CpuRouteDiagnosticsSnapshot {
+            self.draw_mutex.lock();
+            defer self.draw_mutex.unlock();
+            return self.cpu_route_diagnostics.snapshot();
+        }
+
         fn softwareCpuRouteWarnFlag(
             self: *Self,
             reason: SoftwareCpuRouteDisableReason,
@@ -1337,6 +1388,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .cpu_shader_timeout_ms = build_config.software_renderer_cpu_shader_timeout_ms,
                 .transport_mode_native = build_config.software_frame_transport_mode == .native,
             });
+            self.cpu_route_diagnostics.recordRouteDecision(decision);
             if (!decision.enabled) {
                 self.maybeLogSoftwareCpuRouteDisabled(decision.reason.?);
             }
@@ -2485,12 +2537,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     }
                 }
 
+                const publish_start = std.time.Instant.now() catch null;
                 const published = try self.publishCpuSoftwareFrame(surface_size);
                 if (!published) {
+                    self.cpu_route_diagnostics.recordPublishRetry();
                     self.cpu_publish_pending = true;
                     self.cells_rebuilt = true;
                 } else {
                     self.cpu_publish_pending = false;
+                    if (publish_start) |start| {
+                        const publish_end = std.time.Instant.now() catch null;
+                        if (publish_end) |end| {
+                            self.cpu_route_diagnostics.recordCpuFramePublished(end.since(start));
+                        }
+                    }
                 }
                 return;
             }
@@ -4462,4 +4522,42 @@ test "software cpu route decision reason priority keeps runtime gate first" {
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.runtime_publishing_disabled, decision.reason.?);
+}
+
+test "cpu route diagnostics tracks custom shader fallback count and reason" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordRouteDecision(.{
+        .enabled = false,
+        .reason = .custom_shaders_mode_off,
+    });
+    diagnostics.recordRouteDecision(.{
+        .enabled = false,
+        .reason = .runtime_publishing_disabled,
+    });
+    diagnostics.recordRouteDecision(.{
+        .enabled = false,
+        .reason = .custom_shaders_unsupported,
+    });
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
+    try std.testing.expectEqual(
+        SoftwareCpuRouteDisableReason.custom_shaders_unsupported,
+        snapshot.last_fallback_reason.?,
+    );
+}
+
+test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordPublishRetry();
+    diagnostics.recordPublishRetry();
+    diagnostics.recordCpuFramePublished((17 * std.time.ns_per_ms) + (500 * std.time.ns_per_us));
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
 }
