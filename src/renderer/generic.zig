@@ -144,6 +144,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when native transport disables CPU route.
         cpu_native_transport_warned: bool = false,
 
+        /// One-shot warning guard when custom shaders disable CPU route.
+        cpu_custom_shader_warned: bool = false,
+
+        /// One-shot warning guard when background image disables CPU route.
+        cpu_background_image_warned: bool = false,
+
+        /// One-shot warning guard when kitty images disable CPU route.
+        cpu_kitty_images_warned: bool = false,
+
+        /// One-shot warning guard when debug overlay disables CPU route.
+        cpu_overlay_warned: bool = false,
+
         /// One-shot warning guard when all CPU frame slots are in flight.
         cpu_frame_pool_exhausted_warned: bool = false,
 
@@ -1171,6 +1183,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.software_frame_publishing = enabled;
         }
 
+        fn warnSoftwareCpuRouteDisabledOnce(
+            warned: *bool,
+            comptime message: []const u8,
+        ) void {
+            if (warned.*) return;
+            warned.* = true;
+            log.warn(message, .{});
+        }
+
         fn shouldUseSoftwareCpuFramePath(self: *Self) bool {
             if (!comptime software_renderer_cpu_effective) return false;
             if (comptime build_config.renderer != .software) return false;
@@ -1178,6 +1199,48 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (!self.software_frame_publishing) return false;
             if (!self.config.software_renderer_experimental) return false;
             if (self.config.software_renderer_presenter == .@"legacy-gl") return false;
+
+            const custom_shaders_active = self.has_custom_shaders;
+            const background_image_active = self.bg_image != null;
+            const kitty_images_active = self.images.kitty_placements.items.len > 0;
+            const overlay_active = self.overlay != null;
+
+            if (!custom_shaders_active) self.cpu_custom_shader_warned = false;
+            if (!background_image_active) self.cpu_background_image_warned = false;
+            if (!kitty_images_active) self.cpu_kitty_images_warned = false;
+            if (!overlay_active) self.cpu_overlay_warned = false;
+
+            if (custom_shaders_active) {
+                warnSoftwareCpuRouteDisabledOnce(
+                    &self.cpu_custom_shader_warned,
+                    "software renderer cpu route is disabled while custom shaders are active; using platform route",
+                );
+                return false;
+            }
+
+            if (background_image_active) {
+                warnSoftwareCpuRouteDisabledOnce(
+                    &self.cpu_background_image_warned,
+                    "software renderer cpu route is disabled while background image is active; using platform route",
+                );
+                return false;
+            }
+
+            if (kitty_images_active) {
+                warnSoftwareCpuRouteDisabledOnce(
+                    &self.cpu_kitty_images_warned,
+                    "software renderer cpu route is disabled while kitty image placements are active; using platform route",
+                );
+                return false;
+            }
+
+            if (overlay_active) {
+                warnSoftwareCpuRouteDisabledOnce(
+                    &self.cpu_overlay_warned,
+                    "software renderer cpu route is disabled while debug overlay is active; using platform route",
+                );
+                return false;
+            }
 
             if (comptime build_config.software_frame_transport_mode == .native) {
                 if (!self.cpu_native_transport_warned) {
