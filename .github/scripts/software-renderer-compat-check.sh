@@ -10,6 +10,7 @@ Usage:
     [--target <zig-target>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
+    [--expected-host-os <linux|macos|ios>] \
     [--mismatch-policy <skip|fail>] \
     [--mode <build|test>]
 
@@ -31,6 +32,7 @@ transport=""
 target=""
 app_runtime=""
 system_path=""
+expected_host_os=""
 mismatch_policy="skip"
 
 while (($# > 0)); do
@@ -53,6 +55,10 @@ while (($# > 0)); do
       ;;
     --system)
       system_path="${2:-}"
+      shift 2
+      ;;
+    --expected-host-os)
+      expected_host_os="${2:-}"
       shift 2
       ;;
     --mismatch-policy)
@@ -92,11 +98,21 @@ if [[ "$mismatch_policy" != "skip" && "$mismatch_policy" != "fail" ]]; then
   exit 2
 fi
 
+if [[ -n "$expected_host_os" && "$expected_host_os" != "linux" && "$expected_host_os" != "macos" && "$expected_host_os" != "ios" ]]; then
+  echo "invalid --expected-host-os: $expected_host_os" >&2
+  exit 2
+fi
+
 host_os="unknown"
 case "$(uname -s)" in
   Linux) host_os="linux" ;;
   Darwin) host_os="macos" ;;
 esac
+
+if [[ -n "$expected_host_os" && "$host_os" != "$expected_host_os" ]]; then
+  echo "[software-compat] host=$host_os expected-host=$expected_host_os mismatch."
+  exit 1
+fi
 
 target_os=""
 if [[ -n "$target" ]]; then
@@ -117,6 +133,11 @@ if [[ -n "$target_os" && "$host_os" != "$target_os" ]]; then
     exit 1
   fi
   exit 0
+fi
+
+if [[ "$mismatch_policy" == "fail" && -z "$target_os" && -z "$expected_host_os" ]]; then
+  echo "[software-compat] mismatch-policy=fail requires --target with known OS or --expected-host-os"
+  exit 2
 fi
 
 cmd=(zig build)
