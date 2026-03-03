@@ -90,11 +90,6 @@ fn softwarePresenterAvailabilityForEmbeddedConfig(
     software_frame_cb: ?App.Options.SoftwareFrameCallback,
     software_frame_storage_support: u32,
 ) software_presenter.Availability {
-    switch (platform_tag) {
-        .ios => return .platform_route_unavailable,
-        .macos => {},
-    }
-
     if (software_frame_cb == null) return .runtime_capability_missing;
     const required_storage = softwarePresenterRequiredStorageForEmbeddedConfig(platform_tag);
     if (!runtimeSoftwareFrameStorageSupported(
@@ -2556,13 +2551,29 @@ fn testSoftwareFrameCallbackSuccess(
 }
 
 fn testRequiredStorageSupportMaskForMacos() u32 {
-    return softwareFrameStorageSupportMask(
-        softwarePresenterRequiredStorageForEmbeddedConfig(.macos),
-    );
+    return testRequiredStorageSupportMaskForPlatform(.macos);
 }
 
 fn testUnsupportedStorageSupportMaskForMacos() u32 {
-    return switch (softwarePresenterRequiredStorageForEmbeddedConfig(.macos)) {
+    return testUnsupportedStorageSupportMaskForPlatform(.macos);
+}
+
+fn testRequiredStorageSupportMaskForIos() u32 {
+    return testRequiredStorageSupportMaskForPlatform(.ios);
+}
+
+fn testUnsupportedStorageSupportMaskForIos() u32 {
+    return testUnsupportedStorageSupportMaskForPlatform(.ios);
+}
+
+fn testRequiredStorageSupportMaskForPlatform(platform: PlatformTag) u32 {
+    return softwareFrameStorageSupportMask(
+        softwarePresenterRequiredStorageForEmbeddedConfig(platform),
+    );
+}
+
+fn testUnsupportedStorageSupportMaskForPlatform(platform: PlatformTag) u32 {
+    return switch (softwarePresenterRequiredStorageForEmbeddedConfig(platform)) {
         .shared_cpu_bytes => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.native_texture_handle),
         .native_texture_handle => @intFromEnum(CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes),
     };
@@ -2665,6 +2676,94 @@ test "software presenter decision for embedded runtime returns runtime_capabilit
 
     try std.testing.expectEqual(
         software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime returns runtime_capability_missing without callback on iOS" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .ios,
+        null,
+        testRequiredStorageSupportMaskForIos(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime selects snapshot on iOS with callback and required storage support" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .ios,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForIos(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.snapshot_selected,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.snapshot,
+        decision.selected,
+    );
+    try std.testing.expect(decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime returns runtime_capability_missing on iOS when required storage support is absent" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .ios,
+        &testSoftwareFrameCallbackSuccess,
+        testUnsupportedStorageSupportMaskForIos(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime applies runtime_failed_session_fallback on iOS" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .ios,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForIos(),
+        true,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_failed_session_fallback,
         decision.reason,
     );
     try std.testing.expectEqual(

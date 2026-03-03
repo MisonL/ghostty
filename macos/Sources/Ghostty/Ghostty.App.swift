@@ -119,20 +119,51 @@ extension Ghostty {
         }
 
         static private func configureSoftwareFrameRuntimeCallbacks(_ runtimeConfig: inout ghostty_runtime_config_s) {
-            // Keep software frame capability disabled by default until the macOS presenter path is implemented.
-            runtimeConfig.software_frame_storage_support = 0
+            runtimeConfig.software_frame_storage_support =
+                ghostty_runtime_software_frame_storage_support_t(
+                    GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_SHARED_CPU_BYTES.rawValue |
+                        GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_NATIVE_TEXTURE_HANDLE.rawValue
+                )
             runtimeConfig.software_frame_cb = { userdata, frame in
-                App.softwareFramePlaceholder(userdata, frame: frame)
+                App.softwareFrameCallback(userdata, frame: frame)
             }
         }
 
-        static private func softwareFramePlaceholder(
+        static private func softwareFrameCallback(
             _ userdata: UnsafeMutableRawPointer?,
             frame: UnsafePointer<ghostty_runtime_software_frame_s>?
         ) -> Bool {
             _ = userdata
-            _ = frame
-            return false
+            guard let frame else { return false }
+
+            let frameValue = frame.pointee
+            switch frameValue.storage {
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SHARED_CPU_BYTES:
+                let width = UInt64(frameValue.width_px)
+                let height = UInt64(frameValue.height_px)
+                let stride = UInt64(frameValue.stride_bytes)
+                if width == 0 || height == 0 || frameValue.data == nil {
+                    return false
+                }
+
+                let (minStride, minStrideOverflow) = width.multipliedReportingOverflow(by: 4)
+                if minStrideOverflow || stride < minStride {
+                    return false
+                }
+
+                let (requiredLen, requiredLenOverflow) = stride.multipliedReportingOverflow(by: height)
+                if requiredLenOverflow || UInt64(frameValue.data_len) < requiredLen {
+                    return false
+                }
+
+                return true
+
+            case GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_NATIVE_TEXTURE_HANDLE:
+                return frameValue.handle != nil
+
+            default:
+                return false
+            }
         }
 
         // MARK: App Operations
