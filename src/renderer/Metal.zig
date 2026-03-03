@@ -295,10 +295,19 @@ fn softwareFrameSharedCpuBytesAvailable(
     self: *const Metal,
     target: *const Target,
 ) bool {
-    if (!softwareFrameSharedCpuBytesRouteEnabled()) return false;
+    return softwareFrameSharedCpuBytesAvailabilityReason(self, target) == .available;
+}
 
-    _ = self;
-    _ = target;
+const SoftwareFrameSharedAvailabilityReason = enum {
+    available,
+    route_disabled,
+    sync_unimplemented,
+};
+
+fn softwareFrameSharedAvailabilityReasonForRouteEnabled(
+    route_enabled: bool,
+) SoftwareFrameSharedAvailabilityReason {
+    if (!route_enabled) return .route_disabled;
 
     // NOTE: publishSoftwareFrame is called before the current command buffer is
     // committed/completed (see renderer/generic.zig drawFrame). Exposing IOSurface
@@ -306,7 +315,29 @@ fn softwareFrameSharedCpuBytesAvailable(
     // undefined contents. Keep the shared path explicitly disabled until frame
     // publication is moved to a completion-safe point or an explicit readback/sync
     // path is added.
-    return false;
+    return .sync_unimplemented;
+}
+
+fn softwareFrameSharedAvailabilityReasonLabel(
+    reason: SoftwareFrameSharedAvailabilityReason,
+) []const u8 {
+    return switch (reason) {
+        .available => "available",
+        .route_disabled => "route-disabled",
+        .sync_unimplemented => "sync-unimplemented",
+    };
+}
+
+fn softwareFrameSharedCpuBytesAvailabilityReason(
+    self: *const Metal,
+    target: *const Target,
+) SoftwareFrameSharedAvailabilityReason {
+    _ = self;
+    _ = target;
+
+    return softwareFrameSharedAvailabilityReasonForRouteEnabled(
+        softwareFrameSharedCpuBytesRouteEnabled(),
+    );
 }
 
 fn softwareFrameSharedCpuBytesRouteEnabled() bool {
@@ -332,6 +363,28 @@ test "software frame shared availability respects cpu effective route" {
     try std.testing.expectEqual(
         software_renderer_cpu_effective,
         softwareFrameSharedCpuBytesRouteEnabled(),
+    );
+}
+
+test "softwareFrameSharedAvailabilityReasonForRouteEnabled reports reason" {
+    try std.testing.expectEqual(
+        SoftwareFrameSharedAvailabilityReason.route_disabled,
+        softwareFrameSharedAvailabilityReasonForRouteEnabled(false),
+    );
+    try std.testing.expectEqual(
+        SoftwareFrameSharedAvailabilityReason.sync_unimplemented,
+        softwareFrameSharedAvailabilityReasonForRouteEnabled(true),
+    );
+}
+
+test "softwareFrameSharedAvailabilityReasonLabel uses stable values" {
+    try std.testing.expectEqualStrings(
+        "route-disabled",
+        softwareFrameSharedAvailabilityReasonLabel(.route_disabled),
+    );
+    try std.testing.expectEqualStrings(
+        "sync-unimplemented",
+        softwareFrameSharedAvailabilityReasonLabel(.sync_unimplemented),
     );
 }
 
@@ -393,7 +446,8 @@ pub fn publishSoftwareFrame(
     const height_u32 = std.math.cast(u32, target.height) orelse return error.OutOfMemory;
     const stride_bytes = std.math.mul(u32, width_u32, 4) catch return error.OutOfMemory;
     const transport_mode = softwareFrameTransportMode();
-    const shared_available = softwareFrameSharedCpuBytesAvailable(self, target);
+    const shared_availability_reason = softwareFrameSharedCpuBytesAvailabilityReason(self, target);
+    const shared_available = shared_availability_reason == .available;
 
     if (softwareFrameShouldTryShared(transport_mode, shared_available)) {
         if (publishSoftwareFrameSharedCpuBytes(
@@ -407,8 +461,8 @@ pub fn publishSoftwareFrame(
         if (transport_mode == .shared and !self.software_shared_fallback_warned) {
             self.software_shared_fallback_warned = true;
             log.warn(
-                "software frame transport shared requested but unavailable; falling back to native handles",
-                .{},
+                "software frame transport shared requested but unavailable (reason={s}); falling back to native handles",
+                .{softwareFrameSharedAvailabilityReasonLabel(shared_availability_reason)},
             );
         }
     }

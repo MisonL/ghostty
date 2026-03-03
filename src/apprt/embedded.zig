@@ -2622,6 +2622,36 @@ test "software presenter required storage for embedded runtime uses native textu
     );
 }
 
+test "software presenter required storage for embedded runtime on iOS uses native texture handle when mvp is true and effective is false" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
+            .mvp = true,
+            .effective = false,
+        }),
+    );
+}
+
+test "software presenter required storage for embedded runtime on iOS uses shared cpu bytes when mvp and effective are true" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.shared_cpu_bytes,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
+            .mvp = true,
+            .effective = true,
+        }),
+    );
+}
+
+test "software presenter required storage for embedded runtime on iOS uses native texture handle when mvp and effective are false" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
+            .mvp = false,
+            .effective = false,
+        }),
+    );
+}
+
 fn testRequiredStorageForOsTagWithCpuFlags(
     os_tag: std.Target.Os.Tag,
     cpu_flags: EmbeddedSoftwareRendererCpuFlags,

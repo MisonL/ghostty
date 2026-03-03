@@ -662,6 +662,59 @@ test "FrameBuffer blendAlphaMaskPremul blends partial coverage" {
     );
 }
 
+test "FrameBuffer blendAlphaMaskPremul uses mask stride and clips right edge" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 3, 2, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 0, 0, 0, 0 });
+    const mask = [_]u8{
+        64,  255, 13, 99, 98,
+        128, 32,  77, 88, 87,
+    };
+
+    fb.blendAlphaMaskPremul(
+        1,
+        0,
+        3,
+        2,
+        5,
+        &mask,
+        .{ 200, 100, 50, 255 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0, 0, 0, 50,  25, 13, 64,  200, 100, 50, 255,
+            0, 0, 0, 0, 100, 50, 25, 128, 25,  13,  6,  32,
+        },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendAlphaMaskPremul no-ops when mask data is truncated" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 2, 2, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 11, 22, 33, 44 });
+    const before = try alloc.dupe(u8, fb.bytes);
+    defer alloc.free(before);
+
+    fb.blendAlphaMaskPremul(
+        0,
+        0,
+        2,
+        2,
+        3,
+        &[_]u8{ 255, 255, 255, 255, 255 },
+        .{ 200, 100, 50, 255 },
+    );
+
+    try std.testing.expectEqualSlices(u8, before, fb.bytes);
+}
+
 test "isMvpEffective requires both effective route and MVP opt-in" {
     try std.testing.expect(isMvpEffective(true, true));
     try std.testing.expect(!isMvpEffective(true, false));
