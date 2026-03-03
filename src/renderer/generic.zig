@@ -1198,33 +1198,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (self.config.software_renderer_presenter == .@"legacy-gl") return false;
 
             const custom_shaders_active = self.has_custom_shaders;
-            const background_image_active = self.bg_image != null;
-            const kitty_images_active = self.images.kitty_placements.items.len > 0;
 
             if (!custom_shaders_active) self.cpu_custom_shader_warned = false;
-            if (!background_image_active) self.cpu_background_image_warned = false;
-            if (!kitty_images_active) self.cpu_kitty_images_warned = false;
+            self.cpu_background_image_warned = false;
+            self.cpu_kitty_images_warned = false;
 
             if (custom_shaders_active) {
                 warnSoftwareCpuRouteDisabledOnce(
                     &self.cpu_custom_shader_warned,
                     "software renderer cpu route is disabled while custom shaders are active; using platform route",
-                );
-                return false;
-            }
-
-            if (background_image_active) {
-                warnSoftwareCpuRouteDisabledOnce(
-                    &self.cpu_background_image_warned,
-                    "software renderer cpu route is disabled while background image is active; using platform route",
-                );
-                return false;
-            }
-
-            if (kitty_images_active) {
-                warnSoftwareCpuRouteDisabledOnce(
-                    &self.cpu_kitty_images_warned,
-                    "software renderer cpu route is disabled while kitty image placements are active; using platform route",
                 );
                 return false;
             }
@@ -1306,6 +1288,461 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             return &self.cpu_frame_pool.?;
         }
 
+        const CpuImagePixels = struct {
+            width: u32,
+            height: u32,
+            stride_bytes: u32,
+            data: []const u8,
+        };
+
+        fn scaleByAlpha(channel: u8, alpha: u8) u8 {
+            return @intCast((@as(u16, channel) * @as(u16, alpha) + 127) / 255);
+        }
+
+        fn overPremul(src: u8, dst: u8, src_a: u8) u8 {
+            const inv = @as(u16, 255) - src_a;
+            const blend = (@as(u16, dst) * inv + 127) / 255;
+            const out = @as(u16, src) + blend;
+            return @intCast(@min(out, 255));
+        }
+
+        fn float01ToByte(value: f32) u8 {
+            const clamped = @max(@as(f32, 0.0), @min(value, 1.0));
+            return @intFromFloat(@round(clamped * 255.0));
+        }
+
+        fn premulStorageColor(
+            pixel_format: cpu_renderer.PixelFormat,
+            rgba: [4]u8,
+        ) [4]u8 {
+            const alpha = rgba[3];
+            const r = scaleByAlpha(rgba[0], alpha);
+            const g = scaleByAlpha(rgba[1], alpha);
+            const b = scaleByAlpha(rgba[2], alpha);
+            return switch (pixel_format) {
+                .bgra8_premul => .{ b, g, r, alpha },
+                .rgba8_premul => .{ r, g, b, alpha },
+            };
+        }
+
+        fn pendingRgbaPixels(pending: imagepkg.Image.Pending) ?CpuImagePixels {
+            if (pending.pixel_format != .rgba) return null;
+
+            const stride_bytes = std.math.mul(u32, pending.width, 4) catch return null;
+            const required = std.math.mul(
+                usize,
+                @as(usize, @intCast(stride_bytes)),
+                @as(usize, @intCast(pending.height)),
+            ) catch return null;
+            const data = pending.dataSlice();
+            if (data.len < required) return null;
+
+            return .{
+                .width = pending.width,
+                .height = pending.height,
+                .stride_bytes = stride_bytes,
+                .data = data[0..required],
+            };
+        }
+
+        fn imageCpuPixels(image: imagepkg.Image) ?CpuImagePixels {
+            return switch (image) {
+                .pending, .unload_pending => |pending| pendingRgbaPixels(pending),
+                .replace, .unload_replace => |replace| pendingRgbaPixels(replace.pending),
+                .ready, .unload_ready => null,
+            };
+        }
+
+        fn kittyPlacementsSlice(
+            images: *const ImageState,
+            placement_type: ImageState.DrawPlacements,
+        ) []const imagepkg.Placement {
+            return switch (placement_type) {
+                .kitty_below_bg => images.kitty_placements.items[0..images.kitty_bg_end],
+                .kitty_below_text => images.kitty_placements.items[images.kitty_bg_end..images.kitty_text_end],
+                .kitty_above_text => images.kitty_placements.items[images.kitty_text_end..],
+                .overlay => images.overlay_placements.items,
+            };
+        }
+
+        fn wrapRepeatCoord(coord: f32, size: f32) f32 {
+            return @mod(@mod(coord, size) + size, size);
+        }
+
+        fn composeCpuBackground(self: *Self, framebuffer: *cpu_renderer.FrameBuffer) void {
+            const bg_color = premulStorageColor(
+                framebuffer.pixel_format,
+                self.uniforms.bg_color,
+            );
+            const bg_image = self.bg_image orelse {
+                framebuffer.clear(bg_color);
+                return;
+            };
+            const pixels = imageCpuPixels(bg_image) orelse {
+                framebuffer.clear(bg_color);
+                return;
+            };
+            if (pixels.width == 0 or pixels.height == 0) {
+                framebuffer.clear(bg_color);
+                return;
+            }
+
+            const row_stride = std.math.mul(u32, framebuffer.width_px, 4) catch {
+                framebuffer.clear(bg_color);
+                return;
+            };
+            const row_len: usize = @intCast(row_stride);
+            var row_rgba = self.alloc.alloc(u8, row_len) catch {
+                framebuffer.clear(bg_color);
+                return;
+            };
+            defer self.alloc.free(row_rgba);
+
+            const screen_width = @as(f32, @floatFromInt(framebuffer.width_px));
+            const screen_height = @as(f32, @floatFromInt(framebuffer.height_px));
+            const tex_width = @as(f32, @floatFromInt(pixels.width));
+            const tex_height = @as(f32, @floatFromInt(pixels.height));
+            if (screen_width <= 0 or screen_height <= 0 or tex_width <= 0 or tex_height <= 0) {
+                framebuffer.clear(bg_color);
+                return;
+            }
+
+            var dest_width = tex_width;
+            var dest_height = tex_height;
+            switch (self.bg_image_buffer.info.fit) {
+                .contain => {
+                    const scale = @min(
+                        screen_width / tex_width,
+                        screen_height / tex_height,
+                    );
+                    dest_width = tex_width * scale;
+                    dest_height = tex_height * scale;
+                },
+                .cover => {
+                    const scale = @max(
+                        screen_width / tex_width,
+                        screen_height / tex_height,
+                    );
+                    dest_width = tex_width * scale;
+                    dest_height = tex_height * scale;
+                },
+                .stretch => {
+                    dest_width = screen_width;
+                    dest_height = screen_height;
+                },
+                .none => {},
+            }
+            if (dest_width <= 0 or dest_height <= 0) {
+                framebuffer.clear(bg_color);
+                return;
+            }
+
+            const start_x: f32 = 0;
+            const start_y: f32 = 0;
+            const mid_x = (screen_width - dest_width) / 2.0;
+            const mid_y = (screen_height - dest_height) / 2.0;
+            const end_x = screen_width - dest_width;
+            const end_y = screen_height - dest_height;
+
+            var offset_x = mid_x;
+            var offset_y = mid_y;
+            switch (self.bg_image_buffer.info.position) {
+                .tl => {
+                    offset_x = start_x;
+                    offset_y = start_y;
+                },
+                .tc => {
+                    offset_x = mid_x;
+                    offset_y = start_y;
+                },
+                .tr => {
+                    offset_x = end_x;
+                    offset_y = start_y;
+                },
+                .ml => {
+                    offset_x = start_x;
+                    offset_y = mid_y;
+                },
+                .mc => {
+                    offset_x = mid_x;
+                    offset_y = mid_y;
+                },
+                .mr => {
+                    offset_x = end_x;
+                    offset_y = mid_y;
+                },
+                .bl => {
+                    offset_x = start_x;
+                    offset_y = end_y;
+                },
+                .bc => {
+                    offset_x = mid_x;
+                    offset_y = end_y;
+                },
+                .br => {
+                    offset_x = end_x;
+                    offset_y = end_y;
+                },
+            }
+
+            const scale_x = tex_width / dest_width;
+            const scale_y = tex_height / dest_height;
+            const bg_r = @as(f32, @floatFromInt(self.uniforms.bg_color[0])) / 255.0;
+            const bg_g = @as(f32, @floatFromInt(self.uniforms.bg_color[1])) / 255.0;
+            const bg_b = @as(f32, @floatFromInt(self.uniforms.bg_color[2])) / 255.0;
+            const bg_a = @as(f32, @floatFromInt(self.uniforms.bg_color[3])) / 255.0;
+            const image_opacity = @max(@as(f32, 0), @min(self.bg_image_buffer.opacity, 1));
+            const opacity = if (bg_a > 0)
+                @min(image_opacity, 1.0 / bg_a)
+            else
+                image_opacity;
+            const repeat = self.bg_image_buffer.info.repeat;
+
+            framebuffer.clear(.{ 0, 0, 0, 0 });
+            for (0..framebuffer.height_px) |yi| {
+                const y_u32: u32 = @intCast(yi);
+                const frag_y = @as(f32, @floatFromInt(y_u32)) + 0.5;
+                for (0..framebuffer.width_px) |xi| {
+                    const x_u32: u32 = @intCast(xi);
+                    const frag_x = @as(f32, @floatFromInt(x_u32)) + 0.5;
+
+                    var tex_x = (frag_x - offset_x) * scale_x;
+                    var tex_y = (frag_y - offset_y) * scale_y;
+
+                    if (repeat) {
+                        tex_x = wrapRepeatCoord(tex_x, tex_width);
+                        tex_y = wrapRepeatCoord(tex_y, tex_height);
+                    }
+
+                    var src_r_premul: f32 = 0;
+                    var src_g_premul: f32 = 0;
+                    var src_b_premul: f32 = 0;
+                    var src_alpha: f32 = 0;
+                    if (tex_x >= 0 and tex_y >= 0 and tex_x <= tex_width and tex_y <= tex_height) {
+                        const sx = @min(
+                            pixels.width - 1,
+                            @as(u32, @intFromFloat(@floor(tex_x))),
+                        );
+                        const sy = @min(
+                            pixels.height - 1,
+                            @as(u32, @intFromFloat(@floor(tex_y))),
+                        );
+                        const off =
+                            @as(usize, @intCast(sy)) * @as(usize, @intCast(pixels.stride_bytes)) +
+                            @as(usize, @intCast(sx)) * 4;
+                        const r = pixels.data[off];
+                        const g = pixels.data[off + 1];
+                        const b = pixels.data[off + 2];
+                        const a = pixels.data[off + 3];
+                        src_alpha = @as(f32, @floatFromInt(a)) / 255.0;
+                        src_r_premul = (@as(f32, @floatFromInt(r)) / 255.0) * src_alpha;
+                        src_g_premul = (@as(f32, @floatFromInt(g)) / 255.0) * src_alpha;
+                        src_b_premul = (@as(f32, @floatFromInt(b)) / 255.0) * src_alpha;
+                    }
+
+                    const src_alpha_scaled = src_alpha * opacity;
+                    const src_r_scaled = src_r_premul * opacity;
+                    const src_g_scaled = src_g_premul * opacity;
+                    const src_b_scaled = src_b_premul * opacity;
+                    const bg_mix = 1.0 - src_alpha_scaled;
+                    const out_r = (src_r_scaled + bg_r * bg_mix) * bg_a;
+                    const out_g = (src_g_scaled + bg_g * bg_mix) * bg_a;
+                    const out_b = (src_b_scaled + bg_b * bg_mix) * bg_a;
+
+                    const row_off = @as(usize, @intCast(x_u32)) * 4;
+                    row_rgba[row_off] = float01ToByte(out_r);
+                    row_rgba[row_off + 1] = float01ToByte(out_g);
+                    row_rgba[row_off + 2] = float01ToByte(out_b);
+                    row_rgba[row_off + 3] = float01ToByte(bg_a);
+                }
+
+                framebuffer.blendPremulRgbaImage(
+                    0,
+                    y_u32,
+                    framebuffer.width_px,
+                    1,
+                    row_stride,
+                    row_rgba,
+                );
+            }
+        }
+
+        fn composeCpuCellBackgrounds(self: *Self, framebuffer: *cpu_renderer.FrameBuffer) void {
+            const cols = @as(usize, @intCast(self.cells.size.columns));
+            const rows = @as(usize, @intCast(self.cells.size.rows));
+            if (cols == 0 or rows == 0) return;
+            if (self.cells.bg_cells.len < cols * rows) return;
+            if (self.size.cell.width == 0 or self.size.cell.height == 0) return;
+
+            for (0..rows) |y| {
+                for (0..cols) |x| {
+                    const idx = y * cols + x;
+                    const bg = self.cells.bg_cells[idx];
+                    if (bg[3] == 0) continue;
+
+                    const x_offset = std.math.mul(
+                        u32,
+                        @as(u32, @intCast(x)),
+                        self.size.cell.width,
+                    ) catch continue;
+                    const y_offset = std.math.mul(
+                        u32,
+                        @as(u32, @intCast(y)),
+                        self.size.cell.height,
+                    ) catch continue;
+
+                    framebuffer.fillRect(
+                        .{
+                            .x = self.size.padding.left + x_offset,
+                            .y = self.size.padding.top + y_offset,
+                            .width = self.size.cell.width,
+                            .height = self.size.cell.height,
+                        },
+                        premulStorageColor(framebuffer.pixel_format, bg),
+                    );
+                }
+            }
+        }
+
+        fn composeCpuKittyPlacement(
+            self: *Self,
+            framebuffer: *cpu_renderer.FrameBuffer,
+            placement: imagepkg.Placement,
+            pixels: CpuImagePixels,
+        ) void {
+            if (placement.width == 0 or placement.height == 0) return;
+            if (placement.source_x >= pixels.width or placement.source_y >= pixels.height) return;
+
+            const max_source_width = pixels.width - placement.source_x;
+            const max_source_height = pixels.height - placement.source_y;
+            const requested_source_width = if (placement.source_width == 0)
+                max_source_width
+            else
+                placement.source_width;
+            const requested_source_height = if (placement.source_height == 0)
+                max_source_height
+            else
+                placement.source_height;
+            const source_width = @min(max_source_width, requested_source_width);
+            const source_height = @min(max_source_height, requested_source_height);
+            if (source_width == 0 or source_height == 0) return;
+
+            const dst_x = @as(i64, @intCast(self.size.padding.left)) +
+                @as(i64, placement.x) * @as(i64, @intCast(self.size.cell.width)) +
+                @as(i64, @intCast(placement.cell_offset_x));
+            const dst_y = @as(i64, @intCast(self.size.padding.top)) +
+                @as(i64, placement.y) * @as(i64, @intCast(self.size.cell.height)) +
+                @as(i64, @intCast(placement.cell_offset_y));
+            const dst_width = @as(i64, @intCast(placement.width));
+            const dst_height = @as(i64, @intCast(placement.height));
+            const fb_width = @as(i64, @intCast(framebuffer.width_px));
+            const fb_height = @as(i64, @intCast(framebuffer.height_px));
+
+            const visible_x0 = @max(@as(i64, 0), dst_x);
+            const visible_y0 = @max(@as(i64, 0), dst_y);
+            const visible_x1 = @min(fb_width, dst_x + dst_width);
+            const visible_y1 = @min(fb_height, dst_y + dst_height);
+            if (visible_x0 >= visible_x1 or visible_y0 >= visible_y1) return;
+
+            const visible_width = std.math.cast(u32, visible_x1 - visible_x0) orelse return;
+            const visible_height = std.math.cast(u32, visible_y1 - visible_y0) orelse return;
+            const row_stride = std.math.mul(u32, visible_width, 4) catch return;
+            var row_rgba = self.alloc.alloc(u8, @intCast(row_stride)) catch return;
+            defer self.alloc.free(row_rgba);
+
+            for (0..visible_height) |yi| {
+                const dst_row_y = visible_y0 + @as(i64, @intCast(yi));
+                const local_y = std.math.cast(u32, dst_row_y - dst_y) orelse continue;
+                const src_y_scaled = (@as(u64, local_y) * @as(u64, source_height)) /
+                    @as(u64, placement.height);
+                const src_y = placement.source_y + @as(u32, @intCast(@min(
+                    src_y_scaled,
+                    @as(u64, source_height - 1),
+                )));
+
+                for (0..visible_width) |xi| {
+                    const dst_col_x = visible_x0 + @as(i64, @intCast(xi));
+                    const local_x = std.math.cast(u32, dst_col_x - dst_x) orelse continue;
+                    const src_x_scaled = (@as(u64, local_x) * @as(u64, source_width)) /
+                        @as(u64, placement.width);
+                    const src_x = placement.source_x + @as(u32, @intCast(@min(
+                        src_x_scaled,
+                        @as(u64, source_width - 1),
+                    )));
+
+                    const src_off =
+                        @as(usize, @intCast(src_y)) * @as(usize, @intCast(pixels.stride_bytes)) +
+                        @as(usize, @intCast(src_x)) * 4;
+                    const src_r = pixels.data[src_off];
+                    const src_g = pixels.data[src_off + 1];
+                    const src_b = pixels.data[src_off + 2];
+                    const src_a = pixels.data[src_off + 3];
+                    const row_off = @as(usize, @intCast(xi)) * 4;
+                    row_rgba[row_off] = scaleByAlpha(src_r, src_a);
+                    row_rgba[row_off + 1] = scaleByAlpha(src_g, src_a);
+                    row_rgba[row_off + 2] = scaleByAlpha(src_b, src_a);
+                    row_rgba[row_off + 3] = src_a;
+                }
+
+                framebuffer.blendPremulRgbaImage(
+                    @intCast(visible_x0),
+                    @intCast(dst_row_y),
+                    visible_width,
+                    1,
+                    row_stride,
+                    row_rgba,
+                );
+            }
+        }
+
+        fn composeCpuKittyLayer(
+            self: *Self,
+            framebuffer: *cpu_renderer.FrameBuffer,
+            placement_type: ImageState.DrawPlacements,
+        ) void {
+            const placements = kittyPlacementsSlice(&self.images, placement_type);
+            for (placements) |placement| {
+                const image_entry = self.images.images.getPtr(placement.image_id) orelse continue;
+                const pixels = imageCpuPixels(image_entry.image) orelse continue;
+                self.composeCpuKittyPlacement(framebuffer, placement, pixels);
+            }
+        }
+
+        fn blendCpuBgraLayer(
+            dst: *cpu_renderer.FrameBuffer,
+            src: *const cpu_renderer.FrameBuffer,
+        ) void {
+            if (dst.pixel_format != .bgra8_premul) return;
+            if (src.pixel_format != .bgra8_premul) return;
+            if (dst.width_px != src.width_px or dst.height_px != src.height_px) return;
+
+            const width = @as(usize, @intCast(dst.width_px));
+            const height = @as(usize, @intCast(dst.height_px));
+            const dst_stride = @as(usize, @intCast(dst.stride_bytes));
+            const src_stride = @as(usize, @intCast(src.stride_bytes));
+            for (0..height) |row| {
+                const dst_row = row * dst_stride;
+                const src_row = row * src_stride;
+                for (0..width) |col| {
+                    const px_off = col * 4;
+                    const src_px = src.bytes[src_row + px_off ..][0..4];
+                    const src_a = src_px[3];
+                    if (src_a == 0) continue;
+
+                    var dst_px = dst.bytes[dst_row + px_off ..][0..4];
+                    if (src_a == 255) {
+                        std.mem.copyForwards(u8, dst_px, src_px);
+                        continue;
+                    }
+
+                    dst_px[0] = overPremul(src_px[0], dst_px[0], src_a);
+                    dst_px[1] = overPremul(src_px[1], dst_px[1], src_a);
+                    dst_px[2] = overPremul(src_px[2], dst_px[2], src_a);
+                    dst_px[3] = overPremul(src_px[3], dst_px[3], src_a);
+                }
+            }
+        }
+
         fn publishCpuSoftwareFrame(
             self: *Self,
             surface_size: anytype,
@@ -1336,29 +1773,70 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             defer self.font_grid.lock.unlockShared();
 
             var framebuffer = acquired.framebuffer;
-            cpu_renderer.composeSoftwareFrame(
-                shaderpkg.CellText,
-                &framebuffer,
-                .{
-                    .padding_left_px = self.size.padding.left,
-                    .padding_top_px = self.size.padding.top,
-                    .cell_width_px = self.size.cell.width,
-                    .cell_height_px = self.size.cell.height,
-                    .grid_columns = self.cells.size.columns,
-                    .grid_rows = self.cells.size.rows,
-                },
-                self.uniforms.bg_color,
-                self.cells.bg_cells,
-                self.cells.fg_rows.lists,
-                .{
-                    .data = self.font_grid.atlas_grayscale.data,
-                    .size = self.font_grid.atlas_grayscale.size,
-                },
-                .{
-                    .data = self.font_grid.atlas_color.data,
-                    .size = self.font_grid.atlas_color.size,
-                },
-            );
+            var text_layer = cpu_renderer.FrameBuffer.init(
+                self.alloc,
+                width_px,
+                height_px,
+                .bgra8_premul,
+            ) catch null;
+            defer if (text_layer) |*layer| layer.deinit(self.alloc);
+
+            if (text_layer) |*layer| {
+                self.composeCpuBackground(&framebuffer);
+                self.composeCpuKittyLayer(&framebuffer, .kitty_below_bg);
+                self.composeCpuCellBackgrounds(&framebuffer);
+                self.composeCpuKittyLayer(&framebuffer, .kitty_below_text);
+
+                cpu_renderer.composeSoftwareFrame(
+                    shaderpkg.CellText,
+                    layer,
+                    .{
+                        .padding_left_px = self.size.padding.left,
+                        .padding_top_px = self.size.padding.top,
+                        .cell_width_px = self.size.cell.width,
+                        .cell_height_px = self.size.cell.height,
+                        .grid_columns = self.cells.size.columns,
+                        .grid_rows = self.cells.size.rows,
+                    },
+                    .{ 0, 0, 0, 0 },
+                    self.cells.bg_cells[0..0],
+                    self.cells.fg_rows.lists,
+                    .{
+                        .data = self.font_grid.atlas_grayscale.data,
+                        .size = self.font_grid.atlas_grayscale.size,
+                    },
+                    .{
+                        .data = self.font_grid.atlas_color.data,
+                        .size = self.font_grid.atlas_color.size,
+                    },
+                );
+                blendCpuBgraLayer(&framebuffer, layer);
+                self.composeCpuKittyLayer(&framebuffer, .kitty_above_text);
+            } else {
+                cpu_renderer.composeSoftwareFrame(
+                    shaderpkg.CellText,
+                    &framebuffer,
+                    .{
+                        .padding_left_px = self.size.padding.left,
+                        .padding_top_px = self.size.padding.top,
+                        .cell_width_px = self.size.cell.width,
+                        .cell_height_px = self.size.cell.height,
+                        .grid_columns = self.cells.size.columns,
+                        .grid_rows = self.cells.size.rows,
+                    },
+                    self.uniforms.bg_color,
+                    self.cells.bg_cells,
+                    self.cells.fg_rows.lists,
+                    .{
+                        .data = self.font_grid.atlas_grayscale.data,
+                        .size = self.font_grid.atlas_grayscale.size,
+                    },
+                    .{
+                        .data = self.font_grid.atlas_color.data,
+                        .size = self.font_grid.atlas_color.size,
+                    },
+                );
+            }
 
             if (self.overlay) |*overlay| {
                 const pending = overlay.pendingImage();
