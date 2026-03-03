@@ -43,6 +43,7 @@ pub const app_runtime: apprt.Runtime = config.app_runtime;
 pub const font_backend: font.Backend = config.font_backend;
 pub const renderer: rendererpkg.Backend = config.renderer;
 pub const software_renderer_cpu_mvp: bool = config.software_renderer_cpu_mvp;
+pub const software_renderer_cpu_allow_legacy_os: bool = config.software_renderer_cpu_allow_legacy_os;
 pub const software_renderer_cpu_effective: bool = config.software_renderer_cpu_effective;
 pub const software_frame_transport_mode: SoftwareFrameTransportMode = config.software_frame_transport_mode;
 pub const i18n: bool = config.i18n;

@@ -46,6 +46,7 @@ simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
 software_renderer_cpu_mvp: bool = false,
+software_renderer_cpu_allow_legacy_os: bool = false,
 software_renderer_cpu_effective: bool = false,
 software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 
@@ -161,10 +162,18 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_mvp = b.option(
         bool,
         "software-renderer-cpu-mvp",
-        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4; other targets fallback to disabled.",
+        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders, kitty images, background images, or debug overlays are active.",
     ) orelse false;
-    config.software_renderer_cpu_effective = config.software_renderer_cpu_mvp and
-        softwareRendererCpuSupported(target.result);
+    config.software_renderer_cpu_allow_legacy_os = b.option(
+        bool,
+        "software-renderer-cpu-allow-legacy-os",
+        "Allow CPU software renderer MVP on legacy OS targets even if platform support checks fail. Disabled by default; intended for experimental bring-up on older systems.",
+    ) orelse false;
+    config.software_renderer_cpu_effective = softwareRendererCpuEffective(
+        target.result,
+        config.software_renderer_cpu_mvp,
+        config.software_renderer_cpu_allow_legacy_os,
+    );
 
     config.software_frame_transport_mode = b.option(
         SoftwareFrameTransportMode,
@@ -513,6 +522,11 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
     step.addOption(bool, "software_renderer_cpu_mvp", self.software_renderer_cpu_mvp);
+    step.addOption(
+        bool,
+        "software_renderer_cpu_allow_legacy_os",
+        self.software_renderer_cpu_allow_legacy_os,
+    );
     step.addOption(bool, "software_renderer_cpu_effective", self.software_renderer_cpu_effective);
     step.addOption(
         SoftwareFrameTransportMode,
@@ -599,6 +613,7 @@ pub fn fromOptions() Config {
         .renderer = std.meta.stringToEnum(RendererBackend, @tagName(options.renderer)).?,
         .snap = options.snap,
         .software_renderer_cpu_mvp = options.software_renderer_cpu_mvp,
+        .software_renderer_cpu_allow_legacy_os = options.software_renderer_cpu_allow_legacy_os,
         .software_renderer_cpu_effective = options.software_renderer_cpu_effective,
         .software_frame_transport_mode = std.meta.stringToEnum(
             SoftwareFrameTransportMode,
@@ -617,6 +632,14 @@ fn softwareRendererCpuSupported(target: std.Target) bool {
         .linux => target.os.isAtLeast(.linux, software_renderer_cpu_min_linux) orelse false,
         else => false,
     };
+}
+
+fn softwareRendererCpuEffective(
+    target: std.Target,
+    cpu_mvp: bool,
+    allow_legacy_os: bool,
+) bool {
+    return cpu_mvp and (allow_legacy_os or softwareRendererCpuSupported(target));
 }
 
 test "softwareRendererCpuSupported requires macOS 14+" {
@@ -651,6 +674,28 @@ test "softwareRendererCpuSupported requires Linux 5.4+" {
 
     try stdx.testing.expect(!softwareRendererCpuSupported(linux_53));
     try stdx.testing.expect(softwareRendererCpuSupported(linux_54));
+}
+
+test "softwareRendererCpuEffective keeps legacy override disabled by default" {
+    const stdx = std;
+    const linux_53 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .os_version_min = .{ .semver = .{ .major = 5, .minor = 3, .patch = 0 } },
+    });
+
+    try stdx.testing.expect(!softwareRendererCpuEffective(linux_53, true, false));
+}
+
+test "softwareRendererCpuEffective allows unsupported target when legacy override enabled" {
+    const stdx = std;
+    const linux_53 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .os_version_min = .{ .semver = .{ .major = 5, .minor = 3, .patch = 0 } },
+    });
+
+    try stdx.testing.expect(softwareRendererCpuEffective(linux_53, true, true));
 }
 
 /// Returns the minimum OS version for the given OS tag. This shouldn't

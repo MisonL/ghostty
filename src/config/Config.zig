@@ -611,6 +611,10 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// memory usage (specifically VRAM usage). A future Ghostty improvement
 /// will resolve this by sharing image textures across terminals.
 ///
+/// Compatibility note: when the software renderer CPU route is active
+/// (`software-renderer-experimental=true`), enabling a background image
+/// automatically falls back to the platform presentation route.
+///
 /// Available since: 1.2.0
 @"background-image": ?Path = null,
 
@@ -2008,6 +2012,26 @@ keybind: Keybinds = .{},
 /// When this is `false` (default), Ghostty uses the stable legacy
 /// presentation path even if `renderer=software` is selected at build time.
 ///
+/// CPU-route compatibility fallback:
+///
+/// When the software renderer CPU route is active, Ghostty automatically
+/// falls back to the platform presentation route while any of these are
+/// active:
+///
+/// * `custom-shader`
+/// * Kitty image placements (kitty graphics protocol, controlled by
+///   `image-storage-limit`)
+/// * `background-image`
+/// * Debug overlay features (inspector overlays)
+///
+/// The CPU route is re-enabled automatically when these features are no
+/// longer active.
+///
+/// Build-time compatibility note: by default the CPU route only becomes
+/// effective for macOS >= 14 and Linux >= 5.4. For experimental testing on
+/// older systems, the build option `-Dsoftware-renderer-cpu-allow-legacy-os=true`
+/// can override this gate.
+///
 /// This can be changed at runtime and will affect new frames.
 @"software-renderer-experimental": bool = false,
 
@@ -2415,6 +2439,10 @@ keybind: Keybinds = .{},
 ///
 /// This value is separate for primary and alternate screens so the effective
 /// limit per surface is double.
+///
+/// Compatibility note: when the software renderer CPU route is active
+/// (`software-renderer-experimental=true`), active kitty image placements
+/// automatically fall back to the platform presentation route.
 @"image-storage-limit": u32 = 320 * 1000 * 1000,
 
 /// Whether to automatically copy selected text to the clipboard. `true`
@@ -3033,6 +3061,10 @@ keybind: Keybinds = .{},
 /// and only show up in the log, since shader compilation happens after
 /// configuration loading on the dedicated render thread.  For interactive
 /// development, use [shadertoy.com](https://shadertoy.com).
+///
+/// Compatibility note: when the software renderer CPU route is active
+/// (`software-renderer-experimental=true`), custom shaders automatically
+/// fall back to the platform presentation route.
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.

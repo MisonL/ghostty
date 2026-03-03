@@ -6,30 +6,50 @@ usage() {
   cat <<'EOF'
 Usage:
   .github/scripts/software-renderer-compat-check.sh \
-    --transport <auto|shared|native> \
+    [--transport <auto|shared|native>] \
     [--target <zig-target>] \
+    [--allow-legacy-os <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
-    [--expected-host-os <linux|macos|ios>] \
+    [--expected-host-os <linux|macos>] \
     [--mismatch-policy <skip|fail>] \
     [--mode <build|test>]
 
 Examples:
   .github/scripts/software-renderer-compat-check.sh \
-    --transport auto \
     --target x86_64-linux.5.3.0 \
     --app-runtime none
 
   .github/scripts/software-renderer-compat-check.sh \
     --transport native \
     --target x86_64-macos.13.0.0 \
+    --allow-legacy-os true \
     --system /path/to/deps
 EOF
 }
 
+normalize_target_for_zig() {
+  local raw_target="$1"
+
+  if [[ "$raw_target" =~ ^(.+-)(macos|linux)\.([0-9]+)(\.([0-9]+))?(\.([0-9]+))?([+-].*)?$ ]]; then
+    local prefix="${BASH_REMATCH[1]}"
+    local os="${BASH_REMATCH[2]}"
+    local major="${BASH_REMATCH[3]}"
+    local minor="${BASH_REMATCH[5]:-0}"
+    local patch="${BASH_REMATCH[7]:-0}"
+    local suffix="${BASH_REMATCH[8]:-}"
+
+    printf '%s%s.%s.%s.%s%s' "$prefix" "$os" "$major" "$minor" "$patch" "$suffix"
+    return
+  fi
+
+  printf '%s' "$raw_target"
+}
+
 mode="test"
-transport=""
+transport="auto"
 target=""
+allow_legacy_os="false"
 app_runtime=""
 system_path=""
 expected_host_os=""
@@ -47,6 +67,10 @@ while (($# > 0)); do
       ;;
     --target)
       target="${2:-}"
+      shift 2
+      ;;
+    --allow-legacy-os)
+      allow_legacy_os="${2:-}"
       shift 2
       ;;
     --app-runtime)
@@ -77,14 +101,13 @@ while (($# > 0)); do
   esac
 done
 
-if [[ -z "$transport" ]]; then
-  echo "missing required arg: --transport" >&2
-  usage >&2
+if [[ "$transport" != "auto" && "$transport" != "shared" && "$transport" != "native" ]]; then
+  echo "invalid --transport: $transport" >&2
   exit 2
 fi
 
-if [[ "$transport" != "auto" && "$transport" != "shared" && "$transport" != "native" ]]; then
-  echo "invalid --transport: $transport" >&2
+if [[ "$allow_legacy_os" != "true" && "$allow_legacy_os" != "false" ]]; then
+  echo "invalid --allow-legacy-os: $allow_legacy_os" >&2
   exit 2
 fi
 
@@ -98,7 +121,7 @@ if [[ "$mismatch_policy" != "skip" && "$mismatch_policy" != "fail" ]]; then
   exit 2
 fi
 
-if [[ -n "$expected_host_os" && "$expected_host_os" != "linux" && "$expected_host_os" != "macos" && "$expected_host_os" != "ios" ]]; then
+if [[ -n "$expected_host_os" && "$expected_host_os" != "linux" && "$expected_host_os" != "macos" ]]; then
   echo "invalid --expected-host-os: $expected_host_os" >&2
   exit 2
 fi
@@ -112,6 +135,14 @@ esac
 if [[ -n "$expected_host_os" && "$host_os" != "$expected_host_os" ]]; then
   echo "[software-compat] host=$host_os expected-host=$expected_host_os mismatch."
   exit 1
+fi
+
+if [[ -n "$target" ]]; then
+  normalized_target="$(normalize_target_for_zig "$target")"
+  if [[ "$normalized_target" != "$target" ]]; then
+    echo "[software-compat] normalized-target: $target -> $normalized_target"
+    target="$normalized_target"
+  fi
 fi
 
 target_os=""
@@ -146,6 +177,7 @@ if [[ "$mode" == "test" ]]; then
 fi
 cmd+=(-Drenderer=software)
 cmd+=(-Dsoftware-renderer-cpu-mvp=true)
+cmd+=("-Dsoftware-renderer-cpu-allow-legacy-os=$allow_legacy_os")
 cmd+=("-Dsoftware-frame-transport-mode=$transport")
 cmd+=(-Demit-macos-app=false)
 
@@ -161,7 +193,7 @@ if [[ -n "$system_path" ]]; then
   cmd+=(--system "$system_path")
 fi
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os target=${target:-default}"
 echo "[software-compat] cmd: ${cmd[*]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
