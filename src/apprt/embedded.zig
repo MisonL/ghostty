@@ -2602,6 +2602,51 @@ test "software presenter required storage for embedded runtime uses effective CP
     );
 }
 
+test "software presenter required storage for embedded runtime uses shared cpu bytes on macOS when effective cpu flag is true" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.shared_cpu_bytes,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
+            .mvp = true,
+            .effective = true,
+        }),
+    );
+}
+
+test "software presenter required storage for embedded runtime uses native texture handle on macOS when mvp and effective are false" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
+            .mvp = false,
+            .effective = false,
+        }),
+    );
+}
+
+fn testRequiredStorageForOsTagWithCpuFlags(
+    os_tag: std.Target.Os.Tag,
+    cpu_flags: EmbeddedSoftwareRendererCpuFlags,
+) apprt.surface.Message.SoftwareFrameStorage {
+    assert(!cpu_flags.effective or cpu_flags.mvp);
+    if (cpu_flags.effective) {
+        return .shared_cpu_bytes;
+    }
+
+    return switch (renderer.Backend.softwareRouteForOsTag(os_tag)) {
+        .metal => .native_texture_handle,
+        else => .shared_cpu_bytes,
+    };
+}
+
+test "software presenter required storage for embedded runtime uses shared cpu bytes on linux when mvp and effective are false" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.shared_cpu_bytes,
+        testRequiredStorageForOsTagWithCpuFlags(.linux, .{
+            .mvp = false,
+            .effective = false,
+        }),
+    );
+}
+
 fn testRequiredStorageSupportMaskForPlatform(platform: PlatformTag) u32 {
     return softwareFrameStorageSupportMask(
         softwarePresenterRequiredStorageForEmbeddedConfig(platform),

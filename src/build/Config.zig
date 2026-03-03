@@ -16,6 +16,17 @@ const expandPath = @import("../os/path.zig").expand;
 const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
 
+const software_renderer_cpu_min_macos: std.SemanticVersion = .{
+    .major = 14,
+    .minor = 0,
+    .patch = 0,
+};
+const software_renderer_cpu_min_linux: std.SemanticVersion = .{
+    .major = 5,
+    .minor = 4,
+    .patch = 0,
+};
+
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
 target: std.Build.ResolvedTarget,
@@ -146,7 +157,7 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_mvp = b.option(
         bool,
         "software-renderer-cpu-mvp",
-        "Enable the CPU software renderer MVP scaffold route. Disabled by default.",
+        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4; other targets fallback to disabled.",
     ) orelse false;
     config.software_renderer_cpu_effective = config.software_renderer_cpu_mvp and
         softwareRendererCpuSupported(target.result);
@@ -598,16 +609,8 @@ pub fn fromOptions() Config {
 
 fn softwareRendererCpuSupported(target: std.Target) bool {
     return switch (target.os.tag) {
-        .macos => target.os.isAtLeast(.macos, .{
-            .major = 14,
-            .minor = 0,
-            .patch = 0,
-        }) orelse false,
-        .linux => target.os.isAtLeast(.linux, .{
-            .major = 5,
-            .minor = 4,
-            .patch = 0,
-        }) orelse false,
+        .macos => target.os.isAtLeast(.macos, software_renderer_cpu_min_macos) orelse false,
+        .linux => target.os.isAtLeast(.linux, software_renderer_cpu_min_linux) orelse false,
         else => false,
     };
 }

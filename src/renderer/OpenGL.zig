@@ -78,7 +78,7 @@ fn softwareFrameReleaseMalloc(
     if (ctx) |ptr| std.c.free(ptr);
 }
 
-fn softwareFrameTransportDisabledForOpenGL(
+fn softwareFrameTransportRequestsNativeForOpenGL(
     mode: build_config.SoftwareFrameTransportMode,
 ) bool {
     return mode == .native;
@@ -368,15 +368,14 @@ pub fn publishSoftwareFrame(
 ) !?apprt.surface.Message.SoftwareFrameReady {
     _ = screen;
 
-    if (softwareFrameTransportDisabledForOpenGL(build_config.software_frame_transport_mode)) {
+    if (softwareFrameTransportRequestsNativeForOpenGL(build_config.software_frame_transport_mode)) {
         if (!self.software_transport_mode_warned) {
             self.software_transport_mode_warned = true;
             log.warn(
-                "software frame transport native requested but OpenGL only supports shared CPU bytes; publication disabled for this session",
+                "software frame transport native requested but OpenGL only supports shared CPU bytes; falling back to shared for this session",
                 .{},
             );
         }
-        return null;
     }
 
     if (target.width == 0 or target.height == 0) return null;
@@ -439,10 +438,10 @@ pub const bgBufferOptions = bufferOptions;
 pub const imageBufferOptions = bufferOptions;
 pub const bgImageBufferOptions = bufferOptions;
 
-test "softwareFrameTransportDisabledForOpenGL honors mode" {
-    try std.testing.expect(!softwareFrameTransportDisabledForOpenGL(.auto));
-    try std.testing.expect(!softwareFrameTransportDisabledForOpenGL(.shared));
-    try std.testing.expect(softwareFrameTransportDisabledForOpenGL(.native));
+test "softwareFrameTransportRequestsNativeForOpenGL honors mode" {
+    try std.testing.expect(!softwareFrameTransportRequestsNativeForOpenGL(.auto));
+    try std.testing.expect(!softwareFrameTransportRequestsNativeForOpenGL(.shared));
+    try std.testing.expect(softwareFrameTransportRequestsNativeForOpenGL(.native));
 }
 
 /// Returns the options to use when constructing textures.
