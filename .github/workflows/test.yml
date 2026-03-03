@@ -1007,6 +1007,18 @@ jobs:
             transport_mode: shared
           - transport_label: native-forced
             transport_mode: native
+        include:
+          # Keep total runtime almost flat while adding one explicit full-mode
+          # compatibility check on the Linux minimum non-legacy target.
+          - target:
+              target_label: linux-5.4-full
+              target: x86_64-linux.5.4.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: full
+              cpu_shader_timeout_ms: ""
+            transport:
+              transport_label: auto
+              transport_mode: auto
     name: Test software renderer (linux cpu-mvp, ${{ matrix.target.target_label }}, ${{ matrix.transport.transport_label }})
     runs-on: namespace-profile-ghostty-sm
     needs: test
