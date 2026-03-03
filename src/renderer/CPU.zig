@@ -1772,6 +1772,41 @@ test "FrameBuffer blendPremulRgbaImage copies opaque RGBA source" {
     );
 }
 
+test "FrameBuffer blendStraightRgbaImage converts straight RGBA to premultiplied storage" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 0, 0, 0, 0 });
+    const src = [_]u8{ 255, 0, 0, 128 };
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0, 0, 128, 128 },
+        fb.bytes,
+    );
+}
+
 test "isMvpEffective requires both effective route and MVP opt-in" {
     try std.testing.expect(isMvpEffective(true, true));
     try std.testing.expect(!isMvpEffective(true, false));
@@ -2064,6 +2099,184 @@ test "composeBackgroundImagePass repeat wraps background image across x axis" {
             0, 255, 0,   255,
             0, 0,   255, 255,
         },
+        fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass contain and cover use different scaled sizes" {
+    const alloc = std.testing.allocator;
+    const image = [_]u8{ 255, 0, 0, 255 };
+
+    var contain_fb = try FrameBuffer.init(alloc, 4, 2, .bgra8_premul);
+    defer contain_fb.deinit(alloc);
+    composeBackgroundImagePass(
+        &contain_fb,
+        .{
+            .fit = .contain,
+            .position = .{ .x = 0, .y = 0 },
+            .repeat = .no_repeat,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 10, 20, 30, 255 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0, 255, 255, 0, 0, 255, 255, 30, 20, 10, 255, 30, 20, 10, 255,
+            0, 0, 255, 255, 0, 0, 255, 255, 30, 20, 10, 255, 30, 20, 10, 255,
+        },
+        contain_fb.bytes,
+    );
+
+    var cover_fb = try FrameBuffer.init(alloc, 4, 2, .bgra8_premul);
+    defer cover_fb.deinit(alloc);
+    composeBackgroundImagePass(
+        &cover_fb,
+        .{
+            .fit = .cover,
+            .position = .{ .x = 0, .y = 0 },
+            .repeat = .no_repeat,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 10, 20, 30, 255 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        },
+        cover_fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass repeat tiles across both axes" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 3, 3, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const image = [_]u8{
+        255, 0, 0,   255, 0,   255, 0, 255,
+        0,   0, 255, 255, 255, 255, 0, 255,
+    };
+
+    composeBackgroundImagePass(
+        &fb,
+        .{
+            .fit = .none,
+            .position = .{ .x = 0, .y = 0 },
+            .repeat = .repeat,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 0, 0, 0, 0 },
+        },
+        2,
+        2,
+        8,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0,   0, 255, 255, 0, 255, 0,   255, 0,   0, 255, 255,
+            255, 0, 0,   255, 0, 255, 255, 255, 255, 0, 0,   255,
+            0,   0, 255, 255, 0, 255, 0,   255, 0,   0, 255, 255,
+        },
+        fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass position boundaries anchor to 0 and 1" {
+    const alloc = std.testing.allocator;
+    const image = [_]u8{ 255, 0, 0, 255 };
+
+    var start_fb = try FrameBuffer.init(alloc, 3, 2, .bgra8_premul);
+    defer start_fb.deinit(alloc);
+    composeBackgroundImagePass(
+        &start_fb,
+        .{
+            .fit = .none,
+            .position = .{ .x = 0, .y = 0 },
+            .repeat = .no_repeat,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 0, 0, 0, 0 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,   0,   0, 0, 0, 0, 0, 0, 0, 0,
+        },
+        start_fb.bytes,
+    );
+
+    var end_fb = try FrameBuffer.init(alloc, 3, 2, .bgra8_premul);
+    defer end_fb.deinit(alloc);
+    composeBackgroundImagePass(
+        &end_fb,
+        .{
+            .fit = .none,
+            .position = .{ .x = 1, .y = 1 },
+            .repeat = .no_repeat,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 0, 0, 0, 0 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,   0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255,
+        },
+        end_fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass opacity blends image over background color" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const image = [_]u8{ 255, 0, 0, 255 };
+    composeBackgroundImagePass(
+        &fb,
+        .{
+            .fit = .fill,
+            .position = .{ .x = 0.5, .y = 0.5 },
+            .repeat = .no_repeat,
+            .opacity = 0.5,
+            .bg_color_rgba = .{ 20, 40, 60, 255 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 30, 20, 138, 255 },
         fb.bytes,
     );
 }

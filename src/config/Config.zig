@@ -611,10 +611,6 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// memory usage (specifically VRAM usage). A future Ghostty improvement
 /// will resolve this by sharing image textures across terminals.
 ///
-/// Compatibility note: when the software renderer CPU route is active
-/// (`software-renderer-experimental=true`), enabling a background image
-/// automatically falls back to the platform presentation route.
-///
 /// Available since: 1.2.0
 @"background-image": ?Path = null,
 
@@ -2016,7 +2012,8 @@ keybind: Keybinds = .{},
 ///
 /// When the software renderer CPU route is active, Ghostty automatically
 /// falls back to the platform presentation route while custom shaders are
-/// active (`custom-shader`).
+/// active (`custom-shader`), or when build-time transport mode is forced to
+/// native (`-Dsoftware-frame-transport-mode=native`).
 ///
 /// Build-time compatibility note: by default the CPU route only becomes
 /// effective for macOS >= 14 and Linux >= 5.4. For experimental testing on
@@ -2431,9 +2428,6 @@ keybind: Keybinds = .{},
 /// This value is separate for primary and alternate screens so the effective
 /// limit per surface is double.
 ///
-/// Compatibility note: when the software renderer CPU route is active
-/// (`software-renderer-experimental=true`), active kitty image placements
-/// automatically fall back to the platform presentation route.
 @"image-storage-limit": u32 = 320 * 1000 * 1000,
 
 /// Whether to automatically copy selected text to the clipboard. `true`

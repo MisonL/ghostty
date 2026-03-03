@@ -54,6 +54,63 @@ const software_renderer_cpu_effective =
         false;
 const max_retired_cpu_frame_pools: usize = 4;
 
+const SoftwareCpuRouteDisableReason = enum {
+    build_cpu_route_unavailable,
+    build_renderer_not_software,
+    runtime_publishing_disabled,
+    config_experimental_disabled,
+    config_presenter_legacy_gl,
+    custom_shaders_active,
+    transport_native,
+};
+
+const SoftwareCpuRouteDecisionInput = struct {
+    cpu_route_build_effective: bool,
+    renderer_is_software: bool,
+    software_frame_publishing: bool,
+    software_renderer_experimental: bool,
+    software_renderer_presenter: configpkg.Config.SoftwareRendererPresenter,
+    custom_shaders_active: bool,
+    transport_mode_native: bool,
+};
+
+const SoftwareCpuRouteDecision = struct {
+    enabled: bool,
+    reason: ?SoftwareCpuRouteDisableReason = null,
+};
+
+fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRouteDecision {
+    if (!input.cpu_route_build_effective) return .{
+        .enabled = false,
+        .reason = .build_cpu_route_unavailable,
+    };
+    if (!input.renderer_is_software) return .{
+        .enabled = false,
+        .reason = .build_renderer_not_software,
+    };
+    if (!input.software_frame_publishing) return .{
+        .enabled = false,
+        .reason = .runtime_publishing_disabled,
+    };
+    if (!input.software_renderer_experimental) return .{
+        .enabled = false,
+        .reason = .config_experimental_disabled,
+    };
+    if (input.software_renderer_presenter == .@"legacy-gl") return .{
+        .enabled = false,
+        .reason = .config_presenter_legacy_gl,
+    };
+    if (input.custom_shaders_active) return .{
+        .enabled = false,
+        .reason = .custom_shaders_active,
+    };
+    if (input.transport_mode_native) return .{
+        .enabled = false,
+        .reason = .transport_native,
+    };
+    return .{ .enabled = true };
+}
+
 /// Create a renderer type with the provided graphics API wrapper.
 ///
 /// The graphics API wrapper must provide the interface outlined below.
@@ -147,11 +204,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when custom shaders disable CPU route.
         cpu_custom_shader_warned: bool = false,
 
-        /// One-shot warning guard when background image disables CPU route.
-        cpu_background_image_warned: bool = false,
+        /// One-shot warning guard when runtime publishing disables CPU route.
+        cpu_runtime_publishing_warned: bool = false,
 
-        /// One-shot warning guard when kitty images disable CPU route.
-        cpu_kitty_images_warned: bool = false,
+        /// One-shot warning guard when config disables experimental CPU route.
+        cpu_config_experimental_warned: bool = false,
+
+        /// One-shot warning guard when legacy presenter disables CPU route.
+        cpu_legacy_presenter_warned: bool = false,
 
         /// One-shot warning guard when all CPU frame slots are in flight.
         cpu_frame_pool_exhausted_warned: bool = false,
@@ -1180,49 +1240,70 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.software_frame_publishing = enabled;
         }
 
-        fn warnSoftwareCpuRouteDisabledOnce(
-            warned: *bool,
-            comptime message: []const u8,
+        fn softwareCpuRouteWarnFlag(
+            self: *Self,
+            reason: SoftwareCpuRouteDisableReason,
+        ) ?*bool {
+            return switch (reason) {
+                .runtime_publishing_disabled => &self.cpu_runtime_publishing_warned,
+                .config_experimental_disabled => &self.cpu_config_experimental_warned,
+                .config_presenter_legacy_gl => &self.cpu_legacy_presenter_warned,
+                .custom_shaders_active => &self.cpu_custom_shader_warned,
+                .transport_native => &self.cpu_native_transport_warned,
+                .build_cpu_route_unavailable,
+                .build_renderer_not_software,
+                => null,
+            };
+        }
+
+        fn resetSoftwareCpuRouteWarnFlags(self: *Self) void {
+            if (self.software_frame_publishing) self.cpu_runtime_publishing_warned = false;
+            if (self.config.software_renderer_experimental) self.cpu_config_experimental_warned = false;
+            if (self.config.software_renderer_presenter != .@"legacy-gl") self.cpu_legacy_presenter_warned = false;
+            if (!self.has_custom_shaders) self.cpu_custom_shader_warned = false;
+            if (comptime build_config.software_frame_transport_mode != .native) {
+                self.cpu_native_transport_warned = false;
+            }
+        }
+
+        fn maybeLogSoftwareCpuRouteDisabled(
+            self: *Self,
+            reason: SoftwareCpuRouteDisableReason,
         ) void {
+            const warned = self.softwareCpuRouteWarnFlag(reason) orelse return;
             if (warned.*) return;
             warned.* = true;
-            log.warn(message, .{});
+
+            log.warn(
+                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} transport={s}; using platform route",
+                .{
+                    @tagName(reason),
+                    self.software_frame_publishing,
+                    self.config.software_renderer_experimental,
+                    @tagName(self.config.software_renderer_presenter),
+                    self.has_custom_shaders,
+                    @tagName(build_config.software_frame_transport_mode),
+                },
+            );
         }
 
         fn shouldUseSoftwareCpuFramePath(self: *Self) bool {
-            if (!comptime software_renderer_cpu_effective) return false;
-            if (comptime build_config.renderer != .software) return false;
+            self.resetSoftwareCpuRouteWarnFlags();
 
-            if (!self.software_frame_publishing) return false;
-            if (!self.config.software_renderer_experimental) return false;
-            if (self.config.software_renderer_presenter == .@"legacy-gl") return false;
-
-            const custom_shaders_active = self.has_custom_shaders;
-
-            if (!custom_shaders_active) self.cpu_custom_shader_warned = false;
-            self.cpu_background_image_warned = false;
-            self.cpu_kitty_images_warned = false;
-
-            if (custom_shaders_active) {
-                warnSoftwareCpuRouteDisabledOnce(
-                    &self.cpu_custom_shader_warned,
-                    "software renderer cpu route is disabled while custom shaders are active; using platform route",
-                );
-                return false;
+            const decision = decideSoftwareCpuRoute(.{
+                .cpu_route_build_effective = software_renderer_cpu_effective,
+                .renderer_is_software = build_config.renderer == .software,
+                .software_frame_publishing = self.software_frame_publishing,
+                .software_renderer_experimental = self.config.software_renderer_experimental,
+                .software_renderer_presenter = self.config.software_renderer_presenter,
+                .custom_shaders_active = self.has_custom_shaders,
+                .transport_mode_native = build_config.software_frame_transport_mode == .native,
+            });
+            if (!decision.enabled) {
+                self.maybeLogSoftwareCpuRouteDisabled(decision.reason.?);
             }
 
-            if (comptime build_config.software_frame_transport_mode == .native) {
-                if (!self.cpu_native_transport_warned) {
-                    self.cpu_native_transport_warned = true;
-                    log.warn(
-                        "software renderer cpu route is disabled because transport=native; using platform route for native handles",
-                        .{},
-                    );
-                }
-                return false;
-            }
-
-            return true;
+            return decision.enabled;
         }
 
         fn collectRetiredCpuFramePools(self: *Self) void {
@@ -1847,13 +1928,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         4,
                     ) catch 0;
                     if (stride_bytes > 0) {
-                        framebuffer.blendPremulRgbaImage(
-                            self.size.padding.left,
-                            self.size.padding.top,
+                        framebuffer.blendStraightRgbaImage(
                             pending.width,
                             pending.height,
                             stride_bytes,
                             pending.dataSlice(),
+                            .{
+                                .src_rect = .{
+                                    .x = 0,
+                                    .y = 0,
+                                    .width = @floatFromInt(pending.width),
+                                    .height = @floatFromInt(pending.height),
+                                },
+                                .dst_rect = .{
+                                    .x = @floatFromInt(self.size.padding.left),
+                                    .y = @floatFromInt(self.size.padding.top),
+                                    .width = @floatFromInt(pending.width),
+                                    .height = @floatFromInt(pending.height),
+                                },
+                            },
                         );
                     }
                 }
@@ -2035,7 +2128,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // If we have any virtual references, we must also rebuild our
                 // kitty state on every frame because any cell change can move
                 // an image.
-                if (self.images.kittyRequiresUpdate(state.terminal)) {
+                const cpu_kitty_pixels_missing =
+                    self.shouldUseSoftwareCpuFramePath() and
+                    self.images.kittyNeedsCpuPixels();
+                if (self.images.kittyRequiresUpdate(state.terminal) or cpu_kitty_pixels_missing) {
                     // We need to grab the draw mutex since this updates
                     // our image state that drawFrame uses.
                     self.draw_mutex.lock();
@@ -2046,6 +2142,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .{
                             .width = self.grid_metrics.cell_width,
                             .height = self.grid_metrics.cell_height,
+                        },
+                        .{
+                            .repopulate_pending_if_missing = cpu_kitty_pixels_missing,
                         },
                     );
                 }
@@ -2314,6 +2413,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.cells_rebuilt = false;
 
             if (use_software_cpu_path) {
+                if (self.bg_image) |bg_image| {
+                    if (!bg_image.isUnloading() and
+                        imageCpuPixels(bg_image) == null and
+                        self.config.bg_image != null)
+                    {
+                        self.prepBackgroundImage() catch |err| {
+                            log.warn(
+                                "error preparing background image for cpu route err={}",
+                                .{err},
+                            );
+                        };
+                    }
+                }
+
                 const published = try self.publishCpuSoftwareFrame(surface_size);
                 if (!published) {
                     self.cpu_publish_pending = true;
@@ -4211,4 +4324,60 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try texture.replaceRegion(0, 0, atlas.size, atlas.size, atlas.data);
         }
     };
+}
+
+fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
+    return .{
+        .cpu_route_build_effective = true,
+        .renderer_is_software = true,
+        .software_frame_publishing = true,
+        .software_renderer_experimental = true,
+        .software_renderer_presenter = .auto,
+        .custom_shaders_active = false,
+        .transport_mode_native = false,
+    };
+}
+
+test "software cpu route decision enabled when all gates pass" {
+    const decision = decideSoftwareCpuRoute(softwareCpuRouteDecisionInputDefaults());
+    try std.testing.expect(decision.enabled);
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), decision.reason);
+}
+
+test "software cpu route decision disables when custom shaders are active" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_active, decision.reason.?);
+}
+
+test "software cpu route decision disables when presenter is legacy-gl" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.software_renderer_presenter = .@"legacy-gl";
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.config_presenter_legacy_gl, decision.reason.?);
+}
+
+test "software cpu route decision disables when transport mode is native" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.transport_mode_native = true;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.transport_native, decision.reason.?);
+}
+
+test "software cpu route decision reason priority keeps runtime gate first" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.software_frame_publishing = false;
+    input.custom_shaders_active = true;
+    input.transport_mode_native = true;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.runtime_publishing_disabled, decision.reason.?);
 }

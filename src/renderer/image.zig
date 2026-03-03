@@ -229,6 +229,7 @@ pub const State = struct {
             .overlay,
             transmit_time,
             pending,
+            false,
         );
         errdefer comptime unreachable;
 
@@ -269,6 +270,22 @@ pub const State = struct {
         return false;
     }
 
+    /// Returns true when any current Kitty placement lacks CPU-readable RGBA
+    /// pixels. This is used by the CPU presentation route to trigger a refresh
+    /// from terminal storage when images are already GPU-ready.
+    pub fn kittyNeedsCpuPixels(self: *const State) bool {
+        for (self.kitty_placements.items) |placement| {
+            const image = self.images.get(placement.image_id) orelse return true;
+            if (image.image.cpuPixelsRgba() == null) return true;
+        }
+
+        return false;
+    }
+
+    pub const KittyUpdateOptions = struct {
+        repopulate_pending_if_missing: bool = false,
+    };
+
     /// Update the Kitty graphics state from the terminal.
     ///
     /// This reads/writes state used by drawing.
@@ -277,6 +294,7 @@ pub const State = struct {
         alloc: Allocator,
         t: *const terminal.Terminal,
         cell_size: CellSize,
+        options: KittyUpdateOptions,
     ) void {
         const storage = &t.screens.active.kitty_images;
         defer storage.dirty = false;
@@ -350,6 +368,7 @@ pub const State = struct {
                 bot_y,
                 &image,
                 p,
+                options.repopulate_pending_if_missing,
             ) catch |err| {
                 // For errors we log and continue. We try to place
                 // other placements even if one fails.
@@ -366,6 +385,7 @@ pub const State = struct {
                     t,
                     &virtual_p,
                     cell_size,
+                    options.repopulate_pending_if_missing,
                 ) catch |err| {
                     // For errors we log and continue. We try to place
                     // other placements even if one fails.
@@ -426,6 +446,7 @@ pub const State = struct {
         bot_y: u32,
         image: *const terminal.kitty.graphics.Image,
         p: *const terminal.kitty.graphics.ImageStorage.Placement,
+        repopulate_pending_if_missing: bool,
     ) PrepImageError!void {
         // Get the rect for the placement. If this placement doesn't have
         // a rect then its virtual or something so skip it.
@@ -442,7 +463,11 @@ pub const State = struct {
         // We need to prep this image for upload if it isn't in the
         // cache OR it is in the cache but the transmit time doesn't
         // match meaning this image is different.
-        try self.prepKittyImage(alloc, image);
+        try self.prepKittyImage(
+            alloc,
+            image,
+            repopulate_pending_if_missing,
+        );
 
         // Calculate the dimensions of our image, taking in to
         // account the rows / columns specified by the placement.
@@ -488,6 +513,7 @@ pub const State = struct {
         t: *const terminal.Terminal,
         p: *const terminal.kitty.graphics.unicode.Placement,
         cell_size: CellSize,
+        repopulate_pending_if_missing: bool,
     ) PrepImageError!void {
         const storage = &t.screens.active.kitty_images;
         const image = storage.imageById(p.image_id) orelse {
@@ -523,7 +549,11 @@ pub const State = struct {
         };
 
         // Prepare the image for the GPU and store the placement.
-        try self.prepKittyImage(alloc, &image);
+        try self.prepKittyImage(
+            alloc,
+            &image,
+            repopulate_pending_if_missing,
+        );
         try self.kitty_placements.append(alloc, .{
             .image_id = .{ .kitty = image.id },
             .x = @intCast(rp.top_left.x),
@@ -547,17 +577,15 @@ pub const State = struct {
         id: Id,
         transmit_time: std.time.Instant,
         pending: Image.Pending,
+        repopulate_pending_if_missing: bool,
     ) PrepImageError!void {
-        // If this image exists and has the same transmit time, we can only
-        // skip work if we still have pending pixel data. Without pending data
-        // (for example a fully uploaded texture), CPU routes need us to
-        // repopulate pending pixels for read-only access.
         const gop = try self.images.getOrPut(alloc, id);
-        if (gop.found_existing and
-            gop.value_ptr.transmit_time.order(transmit_time) == .eq and
-            gop.value_ptr.image.getPending() != null)
-        {
-            return;
+        if (gop.found_existing and gop.value_ptr.transmit_time.order(transmit_time) == .eq) {
+            // For the normal GPU path we skip identical transmit-time images
+            // to avoid repeated upload churn. CPU route may explicitly request
+            // repopulating pending bytes when they are missing.
+            if (!repopulate_pending_if_missing) return;
+            if (gop.value_ptr.image.getPending() != null) return;
         }
 
         // Copy the data so we own it.
@@ -618,6 +646,7 @@ pub const State = struct {
         self: *State,
         alloc: Allocator,
         image: *const terminal.kitty.graphics.Image,
+        repopulate_pending_if_missing: bool,
     ) PrepImageError!void {
         try self.prepImage(
             alloc,
@@ -639,6 +668,7 @@ pub const State = struct {
                 // buffer.
                 .data = @constCast(image.data.ptr),
             },
+            repopulate_pending_if_missing,
         );
     }
 };
@@ -997,7 +1027,7 @@ pub const Image = union(enum) {
     }
 };
 
-test "renderer.image: cpuPixels returns pending pixels and can repopulate same transmit_time" {
+test "renderer.image: cpuPixels returns pending pixels and can repopulate same transmit_time when forced" {
     const testing = std.testing;
     const alloc = testing.allocator;
 
@@ -1030,6 +1060,7 @@ test "renderer.image: cpuPixels returns pending pixels and can repopulate same t
             .pixel_format = .rgba,
             .data = &first_pixels,
         },
+        false,
     );
 
     const first = state.cpuPixels(.overlay).?;
@@ -1053,12 +1084,64 @@ test "renderer.image: cpuPixels returns pending pixels and can repopulate same t
             .pixel_format = .rgba,
             .data = &second_pixels,
         },
+        true,
     );
 
     const second = state.cpuPixels(.overlay).?;
     try testing.expectEqual(@as(u32, 1), second.width);
     try testing.expectEqual(@as(u32, 1), second.height);
     try testing.expectEqualSlices(u8, &second_pixels, second.rgba);
+}
+
+test "renderer.image: prepImage skips identical transmit_time by default when pending is missing" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer {
+        if (state.images.getPtr(.overlay)) |entry| {
+            if (entry.image.getPending()) |p| alloc.free(p.dataSlice());
+            _ = state.images.remove(.overlay);
+        }
+        state.images.deinit(alloc);
+        state.kitty_placements.deinit(alloc);
+        state.overlay_placements.deinit(alloc);
+    }
+
+    const transmit_time = try std.time.Instant.now();
+    var first_pixels = [_]u8{ 1, 2, 3, 4 };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 1,
+            .pixel_format = .rgba,
+            .data = &first_pixels,
+        },
+        false,
+    );
+
+    const existing = state.images.getPtr(.overlay).?;
+    alloc.free(existing.image.getPending().?.dataSlice());
+    existing.image = .{ .ready = std.mem.zeroes(Texture) };
+
+    var second_pixels = [_]u8{ 9, 10, 11, 12 };
+    try state.prepImage(
+        alloc,
+        .overlay,
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 1,
+            .pixel_format = .rgba,
+            .data = &second_pixels,
+        },
+        false,
+    );
+
+    try testing.expectEqual(@as(?State.CpuPixels, null), state.cpuPixels(.overlay));
 }
 
 test "renderer.image: deinit frees pending image data" {
@@ -1083,9 +1166,64 @@ test "renderer.image: deinit frees pending image data" {
             .pixel_format = .rgba,
             .data = &pixels,
         },
+        false,
     );
 
     try testing.expectEqual(@as(usize, 1), state.images.count());
+}
+
+test "renderer.image: kittyNeedsCpuPixels reports ready images without pending data" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer {
+        if (state.images.getPtr(.{ .kitty = 7 })) |entry| {
+            if (entry.image.getPending()) |p| alloc.free(p.dataSlice());
+            _ = state.images.remove(.{ .kitty = 7 });
+        }
+        state.images.deinit(alloc);
+        state.kitty_placements.deinit(alloc);
+        state.overlay_placements.deinit(alloc);
+    }
+
+    const transmit_time = try std.time.Instant.now();
+    var pixels = [_]u8{ 1, 2, 3, 4 };
+    try state.prepImage(
+        alloc,
+        .{ .kitty = 7 },
+        transmit_time,
+        .{
+            .width = 1,
+            .height = 1,
+            .pixel_format = .rgba,
+            .data = &pixels,
+        },
+        false,
+    );
+
+    try state.kitty_placements.append(alloc, .{
+        .image_id = .{ .kitty = 7 },
+        .x = 0,
+        .y = 0,
+        .z = 0,
+        .width = 1,
+        .height = 1,
+        .cell_offset_x = 0,
+        .cell_offset_y = 0,
+        .source_x = 0,
+        .source_y = 0,
+        .source_width = 1,
+        .source_height = 1,
+    });
+
+    try testing.expect(!state.kittyNeedsCpuPixels());
+
+    const entry = state.images.getPtr(.{ .kitty = 7 }).?;
+    alloc.free(entry.image.getPending().?.dataSlice());
+    entry.image = .{ .ready = std.mem.zeroes(Texture) };
+
+    try testing.expect(state.kittyNeedsCpuPixels());
 }
 
 test "renderer.image: upload unload path deallocates pending images" {
@@ -1110,6 +1248,7 @@ test "renderer.image: upload unload path deallocates pending images" {
             .pixel_format = .rgba,
             .data = &pixels,
         },
+        false,
     );
 
     state.images.getPtr(.overlay).?.image.markForUnload();

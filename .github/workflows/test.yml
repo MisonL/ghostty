@@ -990,6 +990,8 @@ jobs:
             target: ""
           - target_label: linux-5.4
             target: x86_64-linux.5.4.0
+          - target_label: linux-5.3-fallback
+            target: x86_64-linux.5.3.0
         transport:
           - transport_label: auto
             transport_mode: auto
@@ -1025,17 +1027,26 @@ jobs:
 
       - name: Test software renderer CPU path
         run: |
+          allow_legacy_os=false
+          app_runtime=none
+          if [[ "${{ matrix.target.target }}" == "x86_64-linux.5.3.0" ]]; then
+            allow_legacy_os=true
+            if [[ "${{ matrix.transport.transport_mode }}" == "auto" ]]; then
+              app_runtime=gtk
+            fi
+          fi
+
           compat_args=(
             --mode test
             --transport "${{ matrix.transport.transport_mode }}"
-            --allow-legacy-os=false
+            --allow-legacy-os="${allow_legacy_os}"
             --expected-host-os linux
             --mismatch-policy fail
           )
           if [[ -n "${{ matrix.target.target }}" ]]; then
             compat_args+=(--target "${{ matrix.target.target }}")
           fi
-          compat_args+=(--app-runtime none)
+          compat_args+=(--app-runtime "${app_runtime}")
 
           nix develop -c \
             ./.github/scripts/software-renderer-compat-check.sh \
@@ -1051,6 +1062,8 @@ jobs:
             target: ""
           - target_label: macos-14.0
             target: x86_64-macos.14.0.0
+          - target_label: macos-13.0-fallback
+            target: x86_64-macos.13.0.0
         transport:
           - transport_label: auto
             transport_mode: auto
@@ -1097,10 +1110,15 @@ jobs:
 
       - name: Test software renderer CPU path
         run: |
+          allow_legacy_os=false
+          if [[ "${{ matrix.target.target }}" == "x86_64-macos.13.0.0" ]]; then
+            allow_legacy_os=true
+          fi
+
           compat_args=(
             --mode test
             --transport "${{ matrix.transport.transport_mode }}"
-            --allow-legacy-os=false
+            --allow-legacy-os="${allow_legacy_os}"
             --expected-host-os macos
             --mismatch-policy fail
           )
