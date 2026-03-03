@@ -185,12 +185,12 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_shader_mode = b.option(
         SoftwareRendererCpuShaderMode,
         "software-renderer-cpu-shader-mode",
-        "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route when shaders are active; safe=fallback after timeout budget; full=keep CPU route active.",
+        "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route when shaders are active; safe/full currently fallback while CPU-route shader execution is staged.",
     ) orelse .full;
     config.software_renderer_cpu_shader_timeout_ms = b.option(
         u32,
         "software-renderer-cpu-shader-timeout-ms",
-        "CPU software renderer custom-shader timeout budget in milliseconds for safe mode fallback. Default: 16.",
+        "CPU software renderer custom-shader timeout budget in milliseconds for safe mode staged rollout. Default: 16.",
     ) orelse 16;
 
     //---------------------------------------------------------------

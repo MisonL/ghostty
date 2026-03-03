@@ -2016,10 +2016,13 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-mode=off`:
 ///   always fallback to platform route while shaders are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=safe`:
-///   fallback to platform route when shader path exceeds
-///   `-Dsoftware-renderer-cpu-shader-timeout-ms` (default: `16` ms).
+///   currently behaves like platform-route fallback while CPU-route shader
+///   execution is staged. Timeout budget
+///   (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default: `16` ms) is
+///   reserved for staged rollout.
 /// * `-Dsoftware-renderer-cpu-shader-mode=full`:
-///   keep CPU route active for shader frames (best-effort).
+///   currently behaves like platform-route fallback while CPU-route shader
+///   execution is staged.
 ///
 /// Transport mode `-Dsoftware-frame-transport-mode=native` still forces
 /// the platform route.
@@ -3062,6 +3065,9 @@ keybind: Keybinds = .{},
 ///
 /// * `-Dsoftware-renderer-cpu-shader-mode=off|safe|full`
 /// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
+///
+/// Current implementation status: CPU-route custom shader execution is
+/// staged, so `safe`/`full` still use platform-route fallback for now.
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.

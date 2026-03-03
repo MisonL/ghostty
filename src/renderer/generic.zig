@@ -60,7 +60,8 @@ const SoftwareCpuRouteDisableReason = enum {
     runtime_publishing_disabled,
     config_experimental_disabled,
     config_presenter_legacy_gl,
-    custom_shaders_active,
+    custom_shaders_mode_off,
+    custom_shaders_unsupported,
     transport_native,
 };
 
@@ -71,6 +72,8 @@ const SoftwareCpuRouteDecisionInput = struct {
     software_renderer_experimental: bool,
     software_renderer_presenter: configpkg.Config.SoftwareRendererPresenter,
     custom_shaders_active: bool,
+    cpu_shader_mode: build_config.SoftwareRendererCpuShaderMode,
+    cpu_shader_timeout_ms: u32,
     transport_mode_native: bool,
 };
 
@@ -100,10 +103,21 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
         .enabled = false,
         .reason = .config_presenter_legacy_gl,
     };
-    if (input.custom_shaders_active) return .{
-        .enabled = false,
-        .reason = .custom_shaders_active,
-    };
+    if (input.custom_shaders_active) {
+        return switch (input.cpu_shader_mode) {
+            .off => .{
+                .enabled = false,
+                .reason = .custom_shaders_mode_off,
+            },
+            // CPU-route custom shader execution is still staged; keep
+            // platform-route fallback active for correctness.
+            .safe, .full => .{
+                .enabled = false,
+                .reason = .custom_shaders_unsupported,
+            },
+        };
+    }
+    _ = input.cpu_shader_timeout_ms;
     if (input.transport_mode_native) return .{
         .enabled = false,
         .reason = .transport_native,
@@ -201,8 +215,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when native transport disables CPU route.
         cpu_native_transport_warned: bool = false,
 
-        /// One-shot warning guard when custom shaders disable CPU route.
-        cpu_custom_shader_warned: bool = false,
+        /// One-shot warning guard when custom shaders disable CPU route
+        /// because shader mode is explicitly off.
+        cpu_custom_shader_mode_off_warned: bool = false,
+
+        /// One-shot warning guard when custom shaders disable CPU route
+        /// because CPU-route shader execution is not yet available.
+        cpu_custom_shader_unsupported_warned: bool = false,
 
         /// One-shot warning guard when runtime publishing disables CPU route.
         cpu_runtime_publishing_warned: bool = false,
@@ -1248,7 +1267,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .runtime_publishing_disabled => &self.cpu_runtime_publishing_warned,
                 .config_experimental_disabled => &self.cpu_config_experimental_warned,
                 .config_presenter_legacy_gl => &self.cpu_legacy_presenter_warned,
-                .custom_shaders_active => &self.cpu_custom_shader_warned,
+                .custom_shaders_mode_off => &self.cpu_custom_shader_mode_off_warned,
+                .custom_shaders_unsupported => &self.cpu_custom_shader_unsupported_warned,
                 .transport_native => &self.cpu_native_transport_warned,
                 .build_cpu_route_unavailable,
                 .build_renderer_not_software,
@@ -1260,7 +1280,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (self.software_frame_publishing) self.cpu_runtime_publishing_warned = false;
             if (self.config.software_renderer_experimental) self.cpu_config_experimental_warned = false;
             if (self.config.software_renderer_presenter != .@"legacy-gl") self.cpu_legacy_presenter_warned = false;
-            if (!self.has_custom_shaders) self.cpu_custom_shader_warned = false;
+            if (!self.has_custom_shaders) {
+                self.cpu_custom_shader_mode_off_warned = false;
+                self.cpu_custom_shader_unsupported_warned = false;
+            }
             if (comptime build_config.software_frame_transport_mode != .native) {
                 self.cpu_native_transport_warned = false;
             }
@@ -1275,13 +1298,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             warned.* = true;
 
             log.warn(
-                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} transport={s}; using platform route",
+                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_timeout_ms={} transport={s}; using platform route",
                 .{
                     @tagName(reason),
                     self.software_frame_publishing,
                     self.config.software_renderer_experimental,
                     @tagName(self.config.software_renderer_presenter),
                     self.has_custom_shaders,
+                    @tagName(build_config.software_renderer_cpu_shader_mode),
+                    build_config.software_renderer_cpu_shader_timeout_ms,
                     @tagName(build_config.software_frame_transport_mode),
                 },
             );
@@ -1297,6 +1322,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .software_renderer_experimental = self.config.software_renderer_experimental,
                 .software_renderer_presenter = self.config.software_renderer_presenter,
                 .custom_shaders_active = self.has_custom_shaders,
+                .cpu_shader_mode = build_config.software_renderer_cpu_shader_mode,
+                .cpu_shader_timeout_ms = build_config.software_renderer_cpu_shader_timeout_ms,
                 .transport_mode_native = build_config.software_frame_transport_mode == .native,
             });
             if (!decision.enabled) {
@@ -4334,6 +4361,8 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .software_renderer_experimental = true,
         .software_renderer_presenter = .auto,
         .custom_shaders_active = false,
+        .cpu_shader_mode = .off,
+        .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
     };
 }
@@ -4344,13 +4373,35 @@ test "software cpu route decision enabled when all gates pass" {
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), decision.reason);
 }
 
-test "software cpu route decision disables when custom shaders are active" {
+test "software cpu route decision disables when custom shaders are active and mode is off" {
     var input = softwareCpuRouteDecisionInputDefaults();
     input.custom_shaders_active = true;
+    input.cpu_shader_mode = .off;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
-    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_active, decision.reason.?);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_mode_off, decision.reason.?);
+}
+
+test "software cpu route decision disables when custom shaders are active and mode is safe" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+    input.cpu_shader_mode = .safe;
+    input.cpu_shader_timeout_ms = 8;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
+}
+
+test "software cpu route decision disables when custom shaders are active and mode is full" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+    input.cpu_shader_mode = .full;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
 }
 
 test "software cpu route decision disables when presenter is legacy-gl" {
