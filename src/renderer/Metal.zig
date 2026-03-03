@@ -40,6 +40,11 @@ pub const swap_chain_count = 3;
 
 const log = std.log.scoped(.metal);
 
+const software_renderer_cpu_effective = if (@hasDecl(build_config, "software_renderer_cpu_effective"))
+    build_config.software_renderer_cpu_effective
+else
+    build_config.software_renderer_cpu_mvp;
+
 layer: IOSurfaceLayer,
 
 /// MTLDevice
@@ -290,7 +295,7 @@ fn softwareFrameSharedCpuBytesAvailable(
     self: *const Metal,
     target: *const Target,
 ) bool {
-    if (!build_config.software_renderer_cpu_mvp) return false;
+    if (!softwareFrameSharedCpuBytesRouteEnabled()) return false;
 
     _ = self;
     _ = target;
@@ -302,6 +307,10 @@ fn softwareFrameSharedCpuBytesAvailable(
     // publication is moved to a completion-safe point or an explicit readback/sync
     // path is added.
     return false;
+}
+
+fn softwareFrameSharedCpuBytesRouteEnabled() bool {
+    return software_renderer_cpu_effective;
 }
 
 fn softwareFrameTransportMode() build_config.SoftwareFrameTransportMode {
@@ -317,6 +326,13 @@ fn softwareFrameShouldTryShared(
         .auto => shared_available,
         .shared => true,
     };
+}
+
+test "software frame shared availability respects cpu effective route" {
+    try std.testing.expectEqual(
+        software_renderer_cpu_effective,
+        softwareFrameSharedCpuBytesRouteEnabled(),
+    );
 }
 
 fn publishSoftwareFrameNativeHandle(

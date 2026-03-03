@@ -35,6 +35,7 @@ simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
 software_renderer_cpu_mvp: bool = false,
+software_renderer_cpu_effective: bool = false,
 software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 
 /// Ghostty exe properties
@@ -147,6 +148,8 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-mvp",
         "Enable the CPU software renderer MVP scaffold route. Disabled by default.",
     ) orelse false;
+    config.software_renderer_cpu_effective = config.software_renderer_cpu_mvp and
+        softwareRendererCpuSupported(target.result);
 
     config.software_frame_transport_mode = b.option(
         SoftwareFrameTransportMode,
@@ -495,6 +498,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
     step.addOption(bool, "software_renderer_cpu_mvp", self.software_renderer_cpu_mvp);
+    step.addOption(bool, "software_renderer_cpu_effective", self.software_renderer_cpu_effective);
     step.addOption(
         SoftwareFrameTransportMode,
         "software_frame_transport_mode",
@@ -580,6 +584,7 @@ pub fn fromOptions() Config {
         .renderer = std.meta.stringToEnum(RendererBackend, @tagName(options.renderer)).?,
         .snap = options.snap,
         .software_renderer_cpu_mvp = options.software_renderer_cpu_mvp,
+        .software_renderer_cpu_effective = options.software_renderer_cpu_effective,
         .software_frame_transport_mode = std.meta.stringToEnum(
             SoftwareFrameTransportMode,
             @tagName(options.software_frame_transport_mode),
@@ -588,6 +593,22 @@ pub fn fromOptions() Config {
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
         .i18n = options.i18n,
+    };
+}
+
+fn softwareRendererCpuSupported(target: std.Target) bool {
+    return switch (target.os.tag) {
+        .macos => target.os.isAtLeast(.macos, .{
+            .major = 14,
+            .minor = 0,
+            .patch = 0,
+        }) orelse false,
+        .linux => target.os.isAtLeast(.linux, .{
+            .major = 5,
+            .minor = 4,
+            .patch = 0,
+        }) orelse false,
+        else => false,
     };
 }
 

@@ -7,7 +7,7 @@
 //! Compatibility policy:
 //! - Apple platforms: route through Metal.
 //! - Linux/other non-Apple: route through OpenGL path.
-//! - `-Dsoftware-renderer-cpu-mvp=true`: route through the CPU MVP scaffold.
+//! - `software_renderer_cpu_effective=true`: route through the CPU MVP scaffold.
 
 const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
@@ -18,7 +18,12 @@ const Metal = @import("Metal.zig").Metal;
 
 pub const routed_backend = Backend.softwareRouteForOsTag(builtin.os.tag);
 
-pub const Software = if (build_config.software_renderer_cpu_mvp)
+const software_renderer_cpu_effective = if (@hasDecl(build_config, "software_renderer_cpu_effective"))
+    build_config.software_renderer_cpu_effective
+else
+    build_config.software_renderer_cpu_mvp;
+
+pub const Software = if (software_renderer_cpu_effective)
     CPUBackend
 else switch (routed_backend) {
     .opengl => OpenGL,

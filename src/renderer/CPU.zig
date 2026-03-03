@@ -14,6 +14,18 @@ const apprt = @import("../apprt.zig");
 /// Transitional routing for the MVP stage.
 pub const routed_backend = Backend.softwareRouteForOsTag(builtin.os.tag);
 
+/// Effective-route helper for transitional software routing.
+///
+/// `software_renderer_cpu_effective` is the authoritative build-config route
+/// switch. `software_renderer_cpu_mvp` records whether MVP was explicitly
+/// requested. When either is false, MVP isn't the active software route.
+pub fn isMvpEffective(
+    software_renderer_cpu_effective: bool,
+    software_renderer_cpu_mvp: bool,
+) bool {
+    return software_renderer_cpu_effective and software_renderer_cpu_mvp;
+}
+
 /// Runtime API shim used by renderer.GenericRenderer while CPU internals
 /// are developed in parallel.
 pub const CPU = switch (routed_backend) {
@@ -648,4 +660,11 @@ test "FrameBuffer blendAlphaMaskPremul blends partial coverage" {
         &[_]u8{ 105, 60, 40, 148 },
         fb.bytes,
     );
+}
+
+test "isMvpEffective requires both effective route and MVP opt-in" {
+    try std.testing.expect(isMvpEffective(true, true));
+    try std.testing.expect(!isMvpEffective(true, false));
+    try std.testing.expect(!isMvpEffective(false, true));
+    try std.testing.expect(!isMvpEffective(false, false));
 }

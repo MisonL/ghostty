@@ -68,10 +68,27 @@ fn runtimeSoftwareFrameStorageSupported(
     return support & softwareFrameStorageSupportMask(storage) != 0;
 }
 
-fn softwarePresenterRequiredStorageForEmbeddedConfig(
+const EmbeddedSoftwareRendererCpuFlags = struct {
+    mvp: bool,
+    effective: bool,
+};
+
+fn embeddedSoftwareRendererCpuFlagsFromBuildConfig() EmbeddedSoftwareRendererCpuFlags {
+    return .{
+        .mvp = build_config.software_renderer_cpu_mvp,
+        .effective = comptime if (@hasDecl(build_config, "software_renderer_cpu_effective"))
+            build_config.software_renderer_cpu_effective
+        else
+            build_config.software_renderer_cpu_mvp,
+    };
+}
+
+fn softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
     platform_tag: PlatformTag,
+    cpu_flags: EmbeddedSoftwareRendererCpuFlags,
 ) apprt.surface.Message.SoftwareFrameStorage {
-    if (comptime build_config.software_renderer_cpu_mvp) {
+    assert(!cpu_flags.effective or cpu_flags.mvp);
+    if (cpu_flags.effective) {
         return .shared_cpu_bytes;
     }
 
@@ -83,6 +100,15 @@ fn softwarePresenterRequiredStorageForEmbeddedConfig(
         .metal => .native_texture_handle,
         else => .shared_cpu_bytes,
     };
+}
+
+fn softwarePresenterRequiredStorageForEmbeddedConfig(
+    platform_tag: PlatformTag,
+) apprt.surface.Message.SoftwareFrameStorage {
+    return softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
+        platform_tag,
+        embeddedSoftwareRendererCpuFlagsFromBuildConfig(),
+    );
 }
 
 fn softwarePresenterAvailabilityForEmbeddedConfig(
@@ -2564,6 +2590,16 @@ fn testRequiredStorageSupportMaskForIos() u32 {
 
 fn testUnsupportedStorageSupportMaskForIos() u32 {
     return testUnsupportedStorageSupportMaskForPlatform(.ios);
+}
+
+test "software presenter required storage for embedded runtime uses effective CPU switch instead of raw mvp toggle" {
+    try std.testing.expectEqual(
+        apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.macos, .{
+            .mvp = true,
+            .effective = false,
+        }),
+    );
 }
 
 fn testRequiredStorageSupportMaskForPlatform(platform: PlatformTag) u32 {
