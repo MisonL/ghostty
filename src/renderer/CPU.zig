@@ -57,6 +57,25 @@ pub const Rect = struct {
     height: u32,
 };
 
+pub const FloatRect = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+pub const ImageBoundaryMode = enum {
+    clamp_to_edge,
+    clamp_to_zero,
+};
+
+pub const StraightRgbaCompose = struct {
+    src_rect: FloatRect,
+    dst_rect: FloatRect,
+    boundary: ImageBoundaryMode = .clamp_to_edge,
+    opacity: f32 = 1.0,
+};
+
 /// CPU-owned framebuffer primitive for staging software-rendered output.
 pub const FrameBuffer = struct {
     width_px: u32,
@@ -389,6 +408,100 @@ pub const FrameBuffer = struct {
         }
     }
 
+    /// Blend a straight-alpha RGBA image using source rect sampling and
+    /// destination scaling.
+    ///
+    /// Sampling uses bilinear filtering. `boundary` controls behavior for
+    /// source taps outside the image bounds.
+    pub fn blendStraightRgbaImage(
+        self: *FrameBuffer,
+        image_width: u32,
+        image_height: u32,
+        image_stride_bytes: u32,
+        image_rgba: []const u8,
+        compose: StraightRgbaCompose,
+    ) void {
+        if (!(compose.src_rect.width > 0) or !(compose.src_rect.height > 0)) return;
+        if (!(compose.dst_rect.width > 0) or !(compose.dst_rect.height > 0)) return;
+
+        if (image_width == 0 or image_height == 0) return;
+        const min_stride_u64 = std.math.mul(u64, image_width, 4) catch return;
+        if (image_stride_bytes < min_stride_u64) return;
+
+        const required_len_u64 = std.math.mul(
+            u64,
+            image_stride_bytes,
+            image_height,
+        ) catch return;
+        const required_len = std.math.cast(usize, required_len_u64) orelse return;
+        if (image_rgba.len < required_len) return;
+
+        const opacity = clampUnit(compose.opacity);
+        if (opacity <= 0) return;
+
+        const fb_width_i64 = @as(i64, @intCast(self.width_px));
+        const fb_height_i64 = @as(i64, @intCast(self.height_px));
+        if (fb_width_i64 <= 0 or fb_height_i64 <= 0) return;
+
+        const dst_x0 = compose.dst_rect.x;
+        const dst_y0 = compose.dst_rect.y;
+        const dst_x1 = dst_x0 + compose.dst_rect.width;
+        const dst_y1 = dst_y0 + compose.dst_rect.height;
+        if (!(dst_x1 > dst_x0) or !(dst_y1 > dst_y0)) return;
+
+        var start_x = @as(i64, @intFromFloat(@floor(dst_x0)));
+        var start_y = @as(i64, @intFromFloat(@floor(dst_y0)));
+        var end_x = @as(i64, @intFromFloat(@ceil(dst_x1)));
+        var end_y = @as(i64, @intFromFloat(@ceil(dst_y1)));
+
+        start_x = std.math.clamp(start_x, 0, fb_width_i64);
+        start_y = std.math.clamp(start_y, 0, fb_height_i64);
+        end_x = std.math.clamp(end_x, 0, fb_width_i64);
+        end_y = std.math.clamp(end_y, 0, fb_height_i64);
+        if (start_x >= end_x or start_y >= end_y) return;
+
+        const src_rect = compose.src_rect;
+        const dst_rect = compose.dst_rect;
+        const dst_stride = @as(usize, @intCast(self.stride_bytes));
+        const src_width = @as(usize, @intCast(image_width));
+        const src_height = @as(usize, @intCast(image_height));
+        const src_stride = @as(usize, @intCast(image_stride_bytes));
+
+        var y = start_y;
+        while (y < end_y) : (y += 1) {
+            const dst_row = @as(usize, @intCast(y)) * dst_stride;
+            const dst_center_y = @as(f32, @floatFromInt(y)) + 0.5;
+            const ty = (dst_center_y - dst_rect.y) / dst_rect.height;
+            const src_y = src_rect.y + ty * src_rect.height - 0.5;
+
+            var x = start_x;
+            while (x < end_x) : (x += 1) {
+                const dst_center_x = @as(f32, @floatFromInt(x)) + 0.5;
+                const tx = (dst_center_x - dst_rect.x) / dst_rect.width;
+                const src_x = src_rect.x + tx * src_rect.width - 0.5;
+
+                const sample = sampleStraightRgbaBilinear(
+                    src_width,
+                    src_height,
+                    src_stride,
+                    image_rgba,
+                    src_x,
+                    src_y,
+                    compose.boundary,
+                );
+                const src_px = straightSampleToPremulStorage(
+                    sample,
+                    opacity,
+                    self.pixel_format,
+                );
+                if (src_px[3] == 0) continue;
+
+                const off = dst_row + @as(usize, @intCast(x)) * 4;
+                blendPremulBgra(self.bytes[off .. off + 4], src_px);
+            }
+        }
+    }
+
     const ClippedRect = struct {
         x0: usize,
         y0: usize,
@@ -484,6 +597,181 @@ fn scaleByAlpha(value: u8, alpha: u8) u8 {
     if (alpha == 0) return 0;
     if (alpha == 255) return value;
     return @intCast((@as(u16, value) * @as(u16, alpha) + 127) / 255);
+}
+
+fn clampUnit(value: f32) f32 {
+    if (!(value > 0)) return 0;
+    if (value >= 1) return 1;
+    return value;
+}
+
+fn f32ToU8(value: f32) u8 {
+    if (!(value > 0)) return 0;
+    if (value >= 255) return 255;
+    return @as(u8, @intFromFloat(value + 0.5));
+}
+
+fn straightSampleToPremulStorage(
+    sample: [4]f32,
+    opacity: f32,
+    pixel_format: PixelFormat,
+) [4]u8 {
+    const alpha = f32ToU8(sample[3] * clampUnit(opacity));
+    if (alpha == 0) return .{ 0, 0, 0, 0 };
+
+    const alpha_scale = @as(f32, @floatFromInt(alpha)) / 255.0;
+    const r = f32ToU8(sample[0] * alpha_scale);
+    const g = f32ToU8(sample[1] * alpha_scale);
+    const b = f32ToU8(sample[2] * alpha_scale);
+
+    return switch (pixel_format) {
+        .bgra8_premul => .{ b, g, r, alpha },
+        .rgba8_premul => .{ r, g, b, alpha },
+    };
+}
+
+fn sampleStraightRgbaBilinear(
+    image_width: usize,
+    image_height: usize,
+    image_stride_bytes: usize,
+    image_rgba: []const u8,
+    src_x: f32,
+    src_y: f32,
+    boundary: ImageBoundaryMode,
+) [4]f32 {
+    const x0f = @floor(src_x);
+    const y0f = @floor(src_y);
+    const x0 = @as(i32, @intFromFloat(x0f));
+    const y0 = @as(i32, @intFromFloat(y0f));
+    const x1 = x0 + 1;
+    const y1 = y0 + 1;
+    const fx = src_x - x0f;
+    const fy = src_y - y0f;
+    const one_minus_fx = 1.0 - fx;
+    const one_minus_fy = 1.0 - fy;
+
+    const c00 = sampleStraightRgbaTap(
+        image_width,
+        image_height,
+        image_stride_bytes,
+        image_rgba,
+        x0,
+        y0,
+        boundary,
+    );
+    const c10 = sampleStraightRgbaTap(
+        image_width,
+        image_height,
+        image_stride_bytes,
+        image_rgba,
+        x1,
+        y0,
+        boundary,
+    );
+    const c01 = sampleStraightRgbaTap(
+        image_width,
+        image_height,
+        image_stride_bytes,
+        image_rgba,
+        x0,
+        y1,
+        boundary,
+    );
+    const c11 = sampleStraightRgbaTap(
+        image_width,
+        image_height,
+        image_stride_bytes,
+        image_rgba,
+        x1,
+        y1,
+        boundary,
+    );
+
+    var out: [4]f32 = .{ 0, 0, 0, 0 };
+    for (0..4) |channel| {
+        out[channel] = c00[channel] * one_minus_fx * one_minus_fy +
+            c10[channel] * fx * one_minus_fy +
+            c01[channel] * one_minus_fx * fy +
+            c11[channel] * fx * fy;
+    }
+    return out;
+}
+
+fn sampleStraightRgbaTap(
+    image_width: usize,
+    image_height: usize,
+    image_stride_bytes: usize,
+    image_rgba: []const u8,
+    src_x: i32,
+    src_y: i32,
+    boundary: ImageBoundaryMode,
+) [4]f32 {
+    var x = src_x;
+    var y = src_y;
+    const width_i32 = @as(i32, @intCast(image_width));
+    const height_i32 = @as(i32, @intCast(image_height));
+
+    switch (boundary) {
+        .clamp_to_zero => {
+            if (x < 0 or y < 0 or x >= width_i32 or y >= height_i32) {
+                return .{ 0, 0, 0, 0 };
+            }
+        },
+        .clamp_to_edge => {
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
+            if (x >= width_i32) x = width_i32 - 1;
+            if (y >= height_i32) y = height_i32 - 1;
+        },
+    }
+
+    const off = @as(usize, @intCast(y)) * image_stride_bytes +
+        @as(usize, @intCast(x)) * 4;
+    return .{
+        @as(f32, @floatFromInt(image_rgba[off + 0])),
+        @as(f32, @floatFromInt(image_rgba[off + 1])),
+        @as(f32, @floatFromInt(image_rgba[off + 2])),
+        @as(f32, @floatFromInt(image_rgba[off + 3])),
+    };
+}
+
+fn computeBackgroundImageSize(
+    fit: BackgroundImageFit,
+    frame_w: f32,
+    frame_h: f32,
+    src_w: f32,
+    src_h: f32,
+) ?struct { width: f32, height: f32 } {
+    switch (fit) {
+        .fill => return .{ .width = frame_w, .height = frame_h },
+        .none => return .{ .width = src_w, .height = src_h },
+        .contain => {
+            const scale = @min(frame_w / src_w, frame_h / src_h);
+            return .{ .width = src_w * scale, .height = src_h * scale };
+        },
+        .cover => {
+            const scale = @max(frame_w / src_w, frame_h / src_h);
+            return .{ .width = src_w * scale, .height = src_h * scale };
+        },
+    }
+}
+
+fn isRepeatX(mode: BackgroundImageRepeat) bool {
+    return mode == .repeat_x or mode == .repeat;
+}
+
+fn isRepeatY(mode: BackgroundImageRepeat) bool {
+    return mode == .repeat_y or mode == .repeat;
+}
+
+fn repeatStart(origin: f32, step: f32) f32 {
+    if (!(step > 0)) return origin;
+
+    const tiles_to_zero = @floor((-origin) / step);
+    var start = origin + tiles_to_zero * step;
+    if (start > 0) start -= step;
+    while (start + step <= 0) start += step;
+    return start;
 }
 
 /// A fixed-size reusable pool of shared CPU frame buffers.
@@ -662,6 +950,119 @@ pub const Atlas = struct {
     data: []const u8,
     size: u32,
 };
+
+pub const BackgroundImageFit = enum {
+    fill,
+    contain,
+    cover,
+    none,
+};
+
+pub const BackgroundImagePosition = struct {
+    x: f32 = 0.5,
+    y: f32 = 0.5,
+};
+
+pub const BackgroundImageRepeat = enum {
+    no_repeat,
+    repeat_x,
+    repeat_y,
+    repeat,
+};
+
+pub const BackgroundImagePass = struct {
+    fit: BackgroundImageFit = .cover,
+    position: BackgroundImagePosition = .{},
+    repeat: BackgroundImageRepeat = .no_repeat,
+    opacity: f32 = 1.0,
+    bg_color_rgba: [4]u8 = .{ 0, 0, 0, 0 },
+};
+
+/// Compose a background pass with optional image fit/position/repeat behavior.
+///
+/// The pass always clears the framebuffer with `bg_color_rgba` first, then
+/// blends the background image over it using straight RGBA sampling.
+pub fn composeBackgroundImagePass(
+    framebuffer: *FrameBuffer,
+    pass: BackgroundImagePass,
+    image_width: u32,
+    image_height: u32,
+    image_stride_bytes: u32,
+    image_rgba: []const u8,
+) void {
+    framebuffer.clear(rgbaToPremulStorage(pass.bg_color_rgba, framebuffer.pixel_format));
+
+    const opacity = clampUnit(pass.opacity);
+    if (opacity <= 0) return;
+    if (image_width == 0 or image_height == 0) return;
+
+    const frame_w = @as(f32, @floatFromInt(framebuffer.width_px));
+    const frame_h = @as(f32, @floatFromInt(framebuffer.height_px));
+    if (!(frame_w > 0) or !(frame_h > 0)) return;
+
+    const src_w = @as(f32, @floatFromInt(image_width));
+    const src_h = @as(f32, @floatFromInt(image_height));
+    if (!(src_w > 0) or !(src_h > 0)) return;
+
+    const scaled = computeBackgroundImageSize(pass.fit, frame_w, frame_h, src_w, src_h) orelse return;
+    if (!(scaled.width > 0) or !(scaled.height > 0)) return;
+
+    const base_x = (frame_w - scaled.width) * pass.position.x;
+    const base_y = (frame_h - scaled.height) * pass.position.y;
+    const repeat_x = isRepeatX(pass.repeat);
+    const repeat_y = isRepeatY(pass.repeat);
+
+    const start_y = if (repeat_y)
+        repeatStart(base_y, scaled.height)
+    else
+        base_y;
+    const end_y = if (repeat_y)
+        frame_h
+    else
+        base_y + 0.001;
+
+    var tile_y = start_y;
+    while (tile_y < end_y) : (tile_y += scaled.height) {
+        const start_x = if (repeat_x)
+            repeatStart(base_x, scaled.width)
+        else
+            base_x;
+        const end_x = if (repeat_x)
+            frame_w
+        else
+            base_x + 0.001;
+
+        var tile_x = start_x;
+        while (tile_x < end_x) : (tile_x += scaled.width) {
+            framebuffer.blendStraightRgbaImage(
+                image_width,
+                image_height,
+                image_stride_bytes,
+                image_rgba,
+                .{
+                    .src_rect = .{
+                        .x = 0,
+                        .y = 0,
+                        .width = src_w,
+                        .height = src_h,
+                    },
+                    .dst_rect = .{
+                        .x = tile_x,
+                        .y = tile_y,
+                        .width = scaled.width,
+                        .height = scaled.height,
+                    },
+                    .boundary = .clamp_to_edge,
+                    .opacity = opacity,
+                },
+            );
+
+            if (!repeat_x) break;
+        }
+
+        if (!repeat_y) break;
+    }
+}
 
 /// Compose a software frame from the renderer CPU-side cell representation.
 ///
@@ -972,14 +1373,20 @@ fn blendPremulBgra(dst: []u8, src: [4]u8) void {
     dst[3] = overPremul(src[3], dst[3], src_a);
 }
 
-fn rgbaToPremulBgra(rgba: [4]u8) [4]u8 {
+fn rgbaToPremulStorage(rgba: [4]u8, pixel_format: PixelFormat) [4]u8 {
     const a = rgba[3];
-    return .{
-        scaleByAlpha(rgba[2], a),
-        scaleByAlpha(rgba[1], a),
-        scaleByAlpha(rgba[0], a),
-        a,
+    const r = scaleByAlpha(rgba[0], a);
+    const g = scaleByAlpha(rgba[1], a);
+    const b = scaleByAlpha(rgba[2], a);
+
+    return switch (pixel_format) {
+        .bgra8_premul => .{ b, g, r, a },
+        .rgba8_premul => .{ r, g, b, a },
     };
+}
+
+fn rgbaToPremulBgra(rgba: [4]u8) [4]u8 {
+    return rgbaToPremulStorage(rgba, .bgra8_premul);
 }
 
 const TestCellText = struct {
@@ -1546,6 +1953,147 @@ test "composeSoftwareFrame clips glyph with negative bearing and samples correct
         &[_]u8{
             0, 255, 0, 255,
             0, 0,   0, 255,
+        },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendStraightRgbaImage clamp-to-zero drops out-of-range samples" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 9, 8, 7, 6 });
+    const src = [_]u8{ 255, 0, 0, 255 };
+
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = -1,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .boundary = .clamp_to_zero,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 9, 8, 7, 6 },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendStraightRgbaImage clamp-to-edge samples border texel" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 0, 0, 0, 0 });
+    const src = [_]u8{ 255, 0, 0, 255 };
+
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = -1,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .boundary = .clamp_to_edge,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0, 0, 255, 255 },
+        fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass repeat wraps background image across x axis" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 3, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const image = [_]u8{
+        255, 0,   0, 255,
+        0,   255, 0, 255,
+    };
+
+    composeBackgroundImagePass(
+        &fb,
+        .{
+            .fit = .none,
+            .position = .{ .x = 0, .y = 0 },
+            .repeat = .repeat_x,
+            .opacity = 1.0,
+            .bg_color_rgba = .{ 0, 0, 0, 0 },
+        },
+        2,
+        1,
+        8,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0, 0,   255, 255,
+            0, 255, 0,   255,
+            0, 0,   255, 255,
+        },
+        fb.bytes,
+    );
+}
+
+test "composeBackgroundImagePass opacity zero keeps only background color" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 2, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const image = [_]u8{ 255, 0, 0, 255 };
+    composeBackgroundImagePass(
+        &fb,
+        .{
+            .fit = .fill,
+            .position = .{ .x = 0.5, .y = 0.5 },
+            .repeat = .no_repeat,
+            .opacity = 0,
+            .bg_color_rgba = .{ 20, 40, 60, 255 },
+        },
+        1,
+        1,
+        4,
+        image[0..],
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            60, 40, 20, 255,
+            60, 40, 20, 255,
         },
         fb.bytes,
     );
