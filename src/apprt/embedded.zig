@@ -122,15 +122,66 @@ fn softwarePresenterAvailabilityForEmbeddedConfig(
     software_frame_storage_support: u32,
 ) software_presenter.Availability {
     if (software_frame_cb == null) return .runtime_capability_missing;
-    const required_storage = softwarePresenterRequiredStorageForEmbeddedConfig(platform_tag);
-    if (!runtimeSoftwareFrameStorageSupported(
+    if (!softwarePresenterStorageSupportedForEmbeddedConfig(
+        platform_tag,
         software_frame_storage_support,
-        required_storage,
     )) {
         return .runtime_capability_missing;
     }
 
     return .available;
+}
+
+fn softwarePresenterStorageSupportedForEmbeddedConfig(
+    platform_tag: PlatformTag,
+    software_frame_storage_support: u32,
+) bool {
+    return softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+        platform_tag,
+        software_frame_storage_support,
+        embeddedSoftwareRendererCpuFlagsFromBuildConfig(),
+        build_config.software_frame_transport_mode,
+    );
+}
+
+fn softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+    platform_tag: PlatformTag,
+    software_frame_storage_support: u32,
+    cpu_flags: EmbeddedSoftwareRendererCpuFlags,
+    transport_mode: build_config.SoftwareFrameTransportMode,
+) bool {
+    const required_storage = softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
+        platform_tag,
+        cpu_flags,
+        transport_mode,
+    );
+    if (!runtimeSoftwareFrameStorageSupported(
+        software_frame_storage_support,
+        required_storage,
+    )) {
+        return false;
+    }
+
+    // When CPU route is effective in auto mode on metal, runtime may still
+    // fall back to platform route for unsupported effects. Require native-handle
+    // capability as a conservative compatibility gate to avoid session-level
+    // fallback only after runtime frame publication starts.
+    if (transport_mode == .auto and cpu_flags.effective) {
+        const os_tag: std.Target.Os.Tag = switch (platform_tag) {
+            .macos => .macos,
+            .ios => .ios,
+        };
+        if (renderer.Backend.softwareRouteForOsTag(os_tag) == .metal and
+            !runtimeSoftwareFrameStorageSupported(
+                software_frame_storage_support,
+                .native_texture_handle,
+            ))
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 fn shouldResetSoftwareSnapshotRuntimeFallback(
@@ -2664,6 +2715,54 @@ test "software presenter required storage for embedded runtime uses native textu
             .mvp = true,
             .effective = true,
         }, .native),
+    );
+}
+
+test "software presenter storage support for embedded runtime requires native fallback capability for auto cpu route on macOS" {
+    const shared_only =
+        softwareFrameStorageSupportMask(.shared_cpu_bytes);
+    const shared_and_native =
+        softwareFrameStorageSupportMask(.shared_cpu_bytes) |
+        softwareFrameStorageSupportMask(.native_texture_handle);
+
+    try std.testing.expect(
+        !softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+            .macos,
+            shared_only,
+            .{
+                .mvp = true,
+                .effective = true,
+            },
+            .auto,
+        ),
+    );
+    try std.testing.expect(
+        softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+            .macos,
+            shared_and_native,
+            .{
+                .mvp = true,
+                .effective = true,
+            },
+            .auto,
+        ),
+    );
+}
+
+test "software presenter storage support for embedded runtime keeps shared-only valid for forced shared transport on macOS" {
+    const shared_only =
+        softwareFrameStorageSupportMask(.shared_cpu_bytes);
+
+    try std.testing.expect(
+        softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+            .macos,
+            shared_only,
+            .{
+                .mvp = true,
+                .effective = true,
+            },
+            .shared,
+        ),
     );
 }
 
