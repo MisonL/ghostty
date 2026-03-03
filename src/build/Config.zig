@@ -89,7 +89,11 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         if (result.result.os.tag == .macos and
             builtin.target.os.tag.isDarwin())
         {
-            result = genericMacOSTarget(b, result.query.cpu_arch);
+            result = genericMacOSTarget(
+                b,
+                result.query.cpu_arch,
+                result.query.os_version_min,
+            );
         }
 
         // If we have no minimum OS version, we set the default based on
@@ -615,6 +619,40 @@ fn softwareRendererCpuSupported(target: std.Target) bool {
     };
 }
 
+test "softwareRendererCpuSupported requires macOS 14+" {
+    const stdx = std;
+    const macos_13 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+        .os_version_min = .{ .semver = .{ .major = 13, .minor = 0, .patch = 0 } },
+    });
+    const macos_14 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+        .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } },
+    });
+
+    try stdx.testing.expect(!softwareRendererCpuSupported(macos_13));
+    try stdx.testing.expect(softwareRendererCpuSupported(macos_14));
+}
+
+test "softwareRendererCpuSupported requires Linux 5.4+" {
+    const stdx = std;
+    const linux_53 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .os_version_min = .{ .semver = .{ .major = 5, .minor = 3, .patch = 0 } },
+    });
+    const linux_54 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .os_version_min = .{ .semver = .{ .major = 5, .minor = 4, .patch = 0 } },
+    });
+
+    try stdx.testing.expect(!softwareRendererCpuSupported(linux_53));
+    try stdx.testing.expect(softwareRendererCpuSupported(linux_54));
+}
+
 /// Returns the minimum OS version for the given OS tag. This shouldn't
 /// be used generally, it should only be used for Darwin-based OS currently.
 pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
@@ -648,11 +686,12 @@ pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
 pub fn genericMacOSTarget(
     b: *std.Build,
     arch: ?std.Target.Cpu.Arch,
+    os_version_min: ?std.Target.Query.OsVersion,
 ) std.Build.ResolvedTarget {
     return b.resolveTargetQuery(.{
         .cpu_arch = arch orelse builtin.target.cpu.arch,
         .os_tag = .macos,
-        .os_version_min = osVersionMin(.macos),
+        .os_version_min = os_version_min orelse osVersionMin(.macos),
     });
 }
 

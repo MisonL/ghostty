@@ -10,6 +10,7 @@ Usage:
     [--target <zig-target>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
+    [--mismatch-policy <skip|fail>] \
     [--mode <build|test>]
 
 Examples:
@@ -30,6 +31,7 @@ transport=""
 target=""
 app_runtime=""
 system_path=""
+mismatch_policy="skip"
 
 while (($# > 0)); do
   case "$1" in
@@ -51,6 +53,10 @@ while (($# > 0)); do
       ;;
     --system)
       system_path="${2:-}"
+      shift 2
+      ;;
+    --mismatch-policy)
+      mismatch_policy="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -81,6 +87,11 @@ if [[ "$mode" != "build" && "$mode" != "test" ]]; then
   exit 2
 fi
 
+if [[ "$mismatch_policy" != "skip" && "$mismatch_policy" != "fail" ]]; then
+  echo "invalid --mismatch-policy: $mismatch_policy" >&2
+  exit 2
+fi
+
 host_os="unknown"
 case "$(uname -s)" in
   Linux) host_os="linux" ;;
@@ -101,6 +112,10 @@ fi
 if [[ -n "$target_os" && "$host_os" != "$target_os" ]]; then
   echo "[software-compat] host=$host_os target=$target_os ($target) mismatch; skip on this host."
   echo "[software-compat] run this target on matching CI runner for authoritative validation."
+  if [[ "$mismatch_policy" == "fail" ]]; then
+    echo "[software-compat] mismatch-policy=fail; exiting with failure"
+    exit 1
+  fi
   exit 0
 fi
 

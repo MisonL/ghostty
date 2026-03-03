@@ -21,7 +21,7 @@ pub fn init(
     // Native macOS build
     const macos_native = try GhosttyLib.initStatic(b, &try deps.retarget(
         b,
-        Config.genericMacOSTarget(b, null),
+        Config.genericMacOSTarget(b, null, null),
     ));
 
     // iOS

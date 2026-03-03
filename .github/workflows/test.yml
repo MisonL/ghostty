@@ -1029,6 +1029,7 @@ jobs:
             ./.github/scripts/software-renderer-compat-check.sh \
             --mode test \
             --transport "${{ matrix.transport.transport_mode }}" \
+            --mismatch-policy fail \
             --target "${{ matrix.target.target }}" \
             --app-runtime none
 
@@ -1092,6 +1093,7 @@ jobs:
             ./.github/scripts/software-renderer-compat-check.sh \
             --mode test \
             --transport "${{ matrix.transport.transport_mode }}" \
+            --mismatch-policy fail \
             --target "${{ matrix.target.target }}" \
             --system "${{ steps.deps.outputs.deps }}"
 
