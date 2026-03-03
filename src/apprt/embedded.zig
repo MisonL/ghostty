@@ -162,25 +162,6 @@ fn softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
         return false;
     }
 
-    // When CPU route is effective in auto mode on metal, runtime may still
-    // fall back to platform route for unsupported effects. Require native-handle
-    // capability as a conservative compatibility gate to avoid session-level
-    // fallback only after runtime frame publication starts.
-    if (transport_mode == .auto and cpu_flags.effective) {
-        const os_tag: std.Target.Os.Tag = switch (platform_tag) {
-            .macos => .macos,
-            .ios => .ios,
-        };
-        if (renderer.Backend.softwareRouteForOsTag(os_tag) == .metal and
-            !runtimeSoftwareFrameStorageSupported(
-                software_frame_storage_support,
-                .native_texture_handle,
-            ))
-        {
-            return false;
-        }
-    }
-
     return true;
 }
 
@@ -2718,7 +2699,7 @@ test "software presenter required storage for embedded runtime uses native textu
     );
 }
 
-test "software presenter storage support for embedded runtime requires native fallback capability for auto cpu route on macOS" {
+test "software presenter storage support for embedded runtime requires only required storage for auto cpu route on macOS" {
     const shared_only =
         softwareFrameStorageSupportMask(.shared_cpu_bytes);
     const shared_and_native =
@@ -2726,7 +2707,7 @@ test "software presenter storage support for embedded runtime requires native fa
         softwareFrameStorageSupportMask(.native_texture_handle);
 
     try std.testing.expect(
-        !softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
+        softwarePresenterStorageSupportedForEmbeddedConfigWithCpuFlags(
             .macos,
             shared_only,
             .{

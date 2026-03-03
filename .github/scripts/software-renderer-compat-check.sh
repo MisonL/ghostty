@@ -9,6 +9,7 @@ Usage:
     [--transport <auto|shared|native>] \
     [--target <zig-target>] \
     [--allow-legacy-os <true|false>] \
+    [--expect-cpu-effective <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
     [--expected-host-os <linux|macos>] \
@@ -50,6 +51,7 @@ mode="test"
 transport="auto"
 target=""
 allow_legacy_os="false"
+expect_cpu_effective=""
 app_runtime=""
 system_path=""
 expected_host_os=""
@@ -57,33 +59,73 @@ mismatch_policy="skip"
 
 while (($# > 0)); do
   case "$1" in
+    --mode=*)
+      mode="${1#*=}"
+      shift
+      ;;
     --mode)
       mode="${2:-}"
       shift 2
+      ;;
+    --transport=*)
+      transport="${1#*=}"
+      shift
       ;;
     --transport)
       transport="${2:-}"
       shift 2
       ;;
+    --target=*)
+      target="${1#*=}"
+      shift
+      ;;
     --target)
       target="${2:-}"
       shift 2
+      ;;
+    --allow-legacy-os=*)
+      allow_legacy_os="${1#*=}"
+      shift
       ;;
     --allow-legacy-os)
       allow_legacy_os="${2:-}"
       shift 2
       ;;
+    --expect-cpu-effective=*)
+      expect_cpu_effective="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-effective)
+      expect_cpu_effective="${2:-}"
+      shift 2
+      ;;
+    --app-runtime=*)
+      app_runtime="${1#*=}"
+      shift
+      ;;
     --app-runtime)
       app_runtime="${2:-}"
       shift 2
+      ;;
+    --system=*)
+      system_path="${1#*=}"
+      shift
       ;;
     --system)
       system_path="${2:-}"
       shift 2
       ;;
+    --expected-host-os=*)
+      expected_host_os="${1#*=}"
+      shift
+      ;;
     --expected-host-os)
       expected_host_os="${2:-}"
       shift 2
+      ;;
+    --mismatch-policy=*)
+      mismatch_policy="${1#*=}"
+      shift
       ;;
     --mismatch-policy)
       mismatch_policy="${2:-}"
@@ -108,6 +150,11 @@ fi
 
 if [[ "$allow_legacy_os" != "true" && "$allow_legacy_os" != "false" ]]; then
   echo "invalid --allow-legacy-os: $allow_legacy_os" >&2
+  exit 2
+fi
+
+if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "true" && "$expect_cpu_effective" != "false" ]]; then
+  echo "invalid --expect-cpu-effective: $expect_cpu_effective" >&2
   exit 2
 fi
 
@@ -193,13 +240,41 @@ if [[ -n "$system_path" ]]; then
   cmd+=(--system "$system_path")
 fi
 
+cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
+cmd+=(--cache-dir "$cache_dir")
+
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os target=${target:-default}"
 echo "[software-compat] cmd: ${cmd[*]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
-trap 'rm -f "$log_file"' EXIT
+trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
+  if [[ -n "$expect_cpu_effective" ]]; then
+    options_file=""
+    while IFS= read -r candidate; do
+      if grep -q 'software_renderer_cpu_effective' "$candidate"; then
+        options_file="$candidate"
+        break
+      fi
+    done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
+
+    if [[ -z "$options_file" ]]; then
+      echo "[software-compat] expected-cpu-effective=$expect_cpu_effective but options.zig not found in cache"
+      exit 1
+    fi
+
+    if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
+      actual_cpu_effective="$(sed -nE 's/.*software_renderer_cpu_effective[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
+      if [[ -z "$actual_cpu_effective" ]]; then
+        actual_cpu_effective="unknown"
+      fi
+      echo "[software-compat] cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
+      exit 1
+    fi
+    echo "[software-compat] cpu-effective assertion matched expected=$expect_cpu_effective"
+  fi
+
   echo "[software-compat] success"
   exit 0
 fi

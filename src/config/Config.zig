@@ -2011,9 +2011,18 @@ keybind: Keybinds = .{},
 /// CPU-route compatibility fallback:
 ///
 /// When the software renderer CPU route is active, Ghostty automatically
-/// falls back to the platform presentation route while custom shaders are
-/// active (`custom-shader`), or when build-time transport mode is forced to
-/// native (`-Dsoftware-frame-transport-mode=native`).
+/// handles `custom-shader` according to build-time mode:
+///
+/// * `-Dsoftware-renderer-cpu-shader-mode=off`:
+///   always fallback to platform route while shaders are active.
+/// * `-Dsoftware-renderer-cpu-shader-mode=safe`:
+///   fallback to platform route when shader path exceeds
+///   `-Dsoftware-renderer-cpu-shader-timeout-ms` (default: `16` ms).
+/// * `-Dsoftware-renderer-cpu-shader-mode=full`:
+///   keep CPU route active for shader frames (best-effort).
+///
+/// Transport mode `-Dsoftware-frame-transport-mode=native` still forces
+/// the platform route.
 ///
 /// Build-time compatibility note: by default the CPU route only becomes
 /// effective for macOS >= 14 and Linux >= 5.4. For experimental testing on
@@ -3048,8 +3057,11 @@ keybind: Keybinds = .{},
 /// development, use [shadertoy.com](https://shadertoy.com).
 ///
 /// Compatibility note: when the software renderer CPU route is active
-/// (`software-renderer-experimental=true`), custom shaders automatically
-/// fall back to the platform presentation route.
+/// (`software-renderer-experimental=true`), custom shader behavior is
+/// controlled by:
+///
+/// * `-Dsoftware-renderer-cpu-shader-mode=off|safe|full`
+/// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.

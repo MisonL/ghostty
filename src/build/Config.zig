@@ -49,6 +49,8 @@ software_renderer_cpu_mvp: bool = false,
 software_renderer_cpu_allow_legacy_os: bool = false,
 software_renderer_cpu_effective: bool = false,
 software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
+software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode = .full,
+software_renderer_cpu_shader_timeout_ms: u32 = 16,
 
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
@@ -180,6 +182,16 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-frame-transport-mode",
         "Software frame transport mode for software renderer: auto/shared/native (native forces platform-route fallback for CPU route).",
     ) orelse .auto;
+    config.software_renderer_cpu_shader_mode = b.option(
+        SoftwareRendererCpuShaderMode,
+        "software-renderer-cpu-shader-mode",
+        "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route when shaders are active; safe=fallback after timeout budget; full=keep CPU route active.",
+    ) orelse .full;
+    config.software_renderer_cpu_shader_timeout_ms = b.option(
+        u32,
+        "software-renderer-cpu-shader-timeout-ms",
+        "CPU software renderer custom-shader timeout budget in milliseconds for safe mode fallback. Default: 16.",
+    ) orelse 16;
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -533,6 +545,16 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         "software_frame_transport_mode",
         self.software_frame_transport_mode,
     );
+    step.addOption(
+        SoftwareRendererCpuShaderMode,
+        "software_renderer_cpu_shader_mode",
+        self.software_renderer_cpu_shader_mode,
+    );
+    step.addOption(
+        u32,
+        "software_renderer_cpu_shader_timeout_ms",
+        self.software_renderer_cpu_shader_timeout_ms,
+    );
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -619,6 +641,11 @@ pub fn fromOptions() Config {
             SoftwareFrameTransportMode,
             @tagName(options.software_frame_transport_mode),
         ).?,
+        .software_renderer_cpu_shader_mode = std.meta.stringToEnum(
+            SoftwareRendererCpuShaderMode,
+            @tagName(options.software_renderer_cpu_shader_mode),
+        ).?,
+        .software_renderer_cpu_shader_timeout_ms = options.software_renderer_cpu_shader_timeout_ms,
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
@@ -698,6 +725,36 @@ test "softwareRendererCpuEffective allows unsupported target when legacy overrid
     try stdx.testing.expect(softwareRendererCpuEffective(linux_53, true, true));
 }
 
+test "softwareRendererCpuShaderMode string mapping" {
+    const stdx = std;
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuShaderMode.off,
+        std.meta.stringToEnum(SoftwareRendererCpuShaderMode, "off").?,
+    );
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuShaderMode.safe,
+        std.meta.stringToEnum(SoftwareRendererCpuShaderMode, "safe").?,
+    );
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuShaderMode.full,
+        std.meta.stringToEnum(SoftwareRendererCpuShaderMode, "full").?,
+    );
+    try stdx.testing.expect(
+        std.meta.stringToEnum(SoftwareRendererCpuShaderMode, "invalid") == null,
+    );
+}
+
+test "softwareRendererCpuShader default values stay stable" {
+    const config: Config = .{
+        .optimize = .Debug,
+        .target = undefined,
+        .wasm_target = .browser,
+        .env = undefined,
+    };
+    try std.testing.expectEqual(SoftwareRendererCpuShaderMode.full, config.software_renderer_cpu_shader_mode);
+    try std.testing.expectEqual(@as(u32, 16), config.software_renderer_cpu_shader_timeout_ms);
+}
+
 /// Returns the minimum OS version for the given OS tag. This shouldn't
 /// be used generally, it should only be used for Darwin-based OS currently.
 pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
@@ -770,6 +827,18 @@ pub const SoftwareFrameTransportMode = enum {
     /// Force native handle transport (backend support required), which
     /// disables the software renderer CPU route and uses platform route.
     native,
+};
+
+/// Controls CPU-route behavior when custom shaders are active.
+pub const SoftwareRendererCpuShaderMode = enum {
+    /// Always fallback to the platform route while custom shaders are active.
+    off,
+
+    /// Keep CPU route first, fallback to platform route when timeout is exceeded.
+    safe,
+
+    /// Keep CPU route active for custom shaders without timeout fallback.
+    full,
 };
 
 /// The release channel for the build.
