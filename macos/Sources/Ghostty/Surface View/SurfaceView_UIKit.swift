@@ -203,6 +203,19 @@ extension Ghostty {
             return imageView
         }
 
+        func clearSoftwareFrameOverlay() {
+            softwareFrameGeneration = 0
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let imageView = self.softwareFrameImageView else { return }
+
+                imageView.image = nil
+                imageView.removeFromSuperview()
+                self.softwareFrameImageView = nil
+            }
+        }
+
         // MARK: UIView
 
         override class var layerClass: AnyClass {

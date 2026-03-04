@@ -1314,6 +1314,8 @@ extension Ghostty.SurfaceView {
 
         if consumed {
             softwareFrameGeneration = frame.generation
+        } else {
+            clearSoftwareFrameOverlay()
         }
 
         return consumed

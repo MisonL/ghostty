@@ -612,6 +612,19 @@ extension Ghostty {
             return imageView
         }
 
+        func clearSoftwareFrameOverlay() {
+            softwareFrameGeneration = 0
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let imageView = self.softwareFrameImageView else { return }
+
+                imageView.image = nil
+                imageView.removeFromSuperview()
+                self.softwareFrameImageView = nil
+            }
+        }
+
         func setCursorShape(_ shape: ghostty_action_mouse_shape_e) {
             switch shape {
             case GHOSTTY_MOUSE_SHAPE_DEFAULT:
