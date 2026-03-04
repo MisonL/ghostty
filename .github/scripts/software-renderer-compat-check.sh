@@ -346,11 +346,6 @@ if [[ -n "$expect_full_custom_shader_bypass" && "$expect_full_custom_shader_bypa
   exit 2
 fi
 
-if [[ -n "$expect_full_custom_shader_bypass" && -n "$cpu_shader_mode" && "$cpu_shader_mode" != "full" ]]; then
-  echo "invalid --expect-full-custom-shader-bypass: requires --cpu-shader-mode full (or omit --cpu-shader-mode to use default full)" >&2
-  exit 2
-fi
-
 if [[ "$mode" != "build" && "$mode" != "test" ]]; then
   echo "invalid --mode: $mode" >&2
   exit 2
@@ -557,25 +552,24 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     fi
 
     if [[ -n "$expect_full_custom_shader_bypass" ]]; then
-      if ! grep -Eq "software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\\.?full([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_shader_mode" ]]; then
-          actual_cpu_shader_mode="unknown"
-        fi
-        report_failure \
-          "assertion config-mismatch" \
-          "full-custom-shader-bypass assertion requires effective cpu-shader-mode=full" \
-          "full-custom-shader-bypass assertion requires effective cpu-shader-mode=full actual=$actual_cpu_shader_mode file=$options_file"
+      actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+      if [[ -z "$actual_cpu_shader_mode" ]]; then
+        actual_cpu_shader_mode="unknown"
       fi
 
-      if [[ "$expect_full_custom_shader_bypass" == "false" ]]; then
+      actual_full_custom_shader_bypass="false"
+      if [[ "$actual_cpu_shader_mode" == "full" ]]; then
+        actual_full_custom_shader_bypass="true"
+      fi
+
+      if [[ "$actual_full_custom_shader_bypass" != "$expect_full_custom_shader_bypass" ]]; then
         report_failure \
           "assertion behavior-mismatch" \
-          "current behavior enforces bypass when cpu-shader-mode=full" \
-          "full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
+          "full-custom-shader-bypass assertion does not match effective cpu-shader-mode" \
+          "full-custom-shader-bypass mismatch expected=$expect_full_custom_shader_bypass actual=$actual_full_custom_shader_bypass cpu-shader-mode=$actual_cpu_shader_mode file=$options_file"
       fi
 
-      echo "[software-compat] full-custom-shader-bypass assertion matched expected=true (cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
+      echo "[software-compat] full-custom-shader-bypass assertion matched expected=$expect_full_custom_shader_bypass actual=$actual_full_custom_shader_bypass cpu-shader-mode=$actual_cpu_shader_mode"
     fi
   fi
 

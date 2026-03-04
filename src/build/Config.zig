@@ -658,7 +658,7 @@ pub fn baselineTarget(self: *const Config) std.Build.ResolvedTarget {
 /// to see what is and isn't available.
 pub fn fromOptions() Config {
     const options = @import("build_options");
-    return .{
+    const result: Config = .{
         // Unused at runtime.
         .optimize = undefined,
         .target = undefined,
@@ -698,6 +698,8 @@ pub fn fromOptions() Config {
         .wasm_shared = options.wasm_shared,
         .i18n = options.i18n,
     };
+    std.debug.assert(!result.software_renderer_cpu_effective or result.software_renderer_cpu_mvp);
+    return result;
 }
 
 fn softwareRendererCpuSupported(target: std.Target) bool {
