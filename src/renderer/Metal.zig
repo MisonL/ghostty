@@ -293,6 +293,22 @@ fn softwareFrameReleaseIOSurface(
     surface.release();
 }
 
+fn softwareFrameReleaseIOSurfaceSharedCpuBytes(
+    ctx: ?*anyopaque,
+    data: ?[*]const u8,
+    data_len: usize,
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    _ = data;
+    _ = data_len;
+    _ = handle;
+
+    const ptr = ctx orelse return;
+    const surface: *IOSurface = @ptrCast(@alignCast(ptr));
+    surface.unlock();
+    surface.release();
+}
+
 fn softwareFrameSharedCpuBytesAvailable(
     self: *const Metal,
     target: *const Target,
@@ -303,19 +319,13 @@ fn softwareFrameSharedCpuBytesAvailable(
 const SoftwareFrameSharedAvailabilityReason = enum {
     available,
     route_disabled,
-    sync_unimplemented,
 };
 
 fn softwareFrameSharedAvailabilityReasonForRouteEnabled(
     route_enabled: bool,
 ) SoftwareFrameSharedAvailabilityReason {
     if (!route_enabled) return .route_disabled;
-
-    // NOTE: shared CPU bytes publication for Metal still requires an explicit
-    // completion-safe readback/sync path. Even with completion-time publication,
-    // we currently don't have a stable shared-bytes path here, so keep it
-    // disabled to preserve correctness.
-    return .sync_unimplemented;
+    return .available;
 }
 
 fn softwareFrameSharedAvailabilityReasonLabel(
@@ -324,7 +334,6 @@ fn softwareFrameSharedAvailabilityReasonLabel(
     return switch (reason) {
         .available => "available",
         .route_disabled => "route-disabled",
-        .sync_unimplemented => "sync-unimplemented",
     };
 }
 
@@ -372,7 +381,7 @@ test "softwareFrameSharedAvailabilityReasonForRouteEnabled reports reason" {
         softwareFrameSharedAvailabilityReasonForRouteEnabled(false),
     );
     try std.testing.expectEqual(
-        SoftwareFrameSharedAvailabilityReason.sync_unimplemented,
+        SoftwareFrameSharedAvailabilityReason.available,
         softwareFrameSharedAvailabilityReasonForRouteEnabled(true),
     );
 }
@@ -383,8 +392,8 @@ test "softwareFrameSharedAvailabilityReasonLabel uses stable values" {
         softwareFrameSharedAvailabilityReasonLabel(.route_disabled),
     );
     try std.testing.expectEqualStrings(
-        "sync-unimplemented",
-        softwareFrameSharedAvailabilityReasonLabel(.sync_unimplemented),
+        "available",
+        softwareFrameSharedAvailabilityReasonLabel(.available),
     );
 }
 
@@ -420,16 +429,41 @@ fn publishSoftwareFrameSharedCpuBytes(
     height_u32: u32,
     stride_bytes: u32,
 ) ?apprt.surface.Message.SoftwareFrameReady {
-    _ = self;
-    _ = target;
-    _ = width_u32;
-    _ = height_u32;
-    _ = stride_bytes;
+    if (!softwareFrameSharedCpuBytesAvailable(self, target)) return null;
 
-    // NOTE: shared CPU byte publication for Metal needs explicit synchronization
-    // with GPU completion. This function is intentionally a conservative stub
-    // until a completion-safe readback path is implemented.
-    return null;
+    const surface = target.surface;
+    surface.retain();
+    var release_surface = true;
+    defer if (release_surface) surface.release();
+
+    // The caller publishes only from completion-safe points. Keep the
+    // IOSurface locked for the lifetime of the exported byte payload.
+    surface.lock();
+    var unlock_surface = true;
+    defer if (unlock_surface) surface.unlock();
+
+    const data_ptr = surface.getBaseAddress() orelse return null;
+    const stride_surface = std.math.cast(u32, surface.getBytesPerRow()) orelse return null;
+    if (stride_surface < stride_bytes) return null;
+    const data_len = std.math.mul(usize, @as(usize, @intCast(stride_surface)), @as(usize, @intCast(height_u32))) catch return null;
+
+    unlock_surface = false;
+    release_surface = false;
+
+    self.software_generation +%= 1;
+    return .{
+        .width_px = width_u32,
+        .height_px = height_u32,
+        .stride_bytes = stride_surface,
+        .generation = self.software_generation,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = data_ptr,
+        .data_len = data_len,
+        .handle = null,
+        .release_ctx = @ptrCast(surface),
+        .release_fn = &softwareFrameReleaseIOSurfaceSharedCpuBytes,
+    };
 }
 
 /// Publish the current render target as a software frame payload.
@@ -460,9 +494,13 @@ pub fn publishSoftwareFrame(
 
         if (transport_mode == .shared and !self.software_shared_fallback_warned) {
             self.software_shared_fallback_warned = true;
+            const reason_label: []const u8 = if (shared_available)
+                "runtime-publish-failed"
+            else
+                softwareFrameSharedAvailabilityReasonLabel(shared_availability_reason);
             log.warn(
                 "software frame transport shared requested but unavailable (reason={s}); falling back to native handles",
-                .{softwareFrameSharedAvailabilityReasonLabel(shared_availability_reason)},
+                .{reason_label},
             );
         }
     }

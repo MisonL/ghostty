@@ -3100,9 +3100,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     &frame.target,
                     self.size.screen,
                 )) |software_frame| {
-                    _ = self.surface_mailbox.push(.{
+                    if (self.surface_mailbox.push(.{
                         .software_frame_ready = software_frame,
-                    }, .instant);
+                    }, .instant) == 0) {
+                        software_frame.release();
+                    }
                 }
             }
         }
@@ -3149,9 +3151,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :blk null;
                 };
                 if (software_frame) |ready| {
-                    _ = self.surface_mailbox.push(.{
+                    if (self.surface_mailbox.push(.{
                         .software_frame_ready = ready,
-                    }, .instant);
+                    }, .instant) == 0) {
+                        ready.release();
+                    }
                 }
             }
 
