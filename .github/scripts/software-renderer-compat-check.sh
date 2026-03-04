@@ -41,8 +41,9 @@ Notes:
   e.g. macOS 11 / Linux 5.0 scenarios.
   --target accepts shorthand (e.g. x86_64-macos.11, x86_64-linux.5.0) and is
   auto-normalized to <major>.<minor>.<patch> for Zig.
-  cpu-shader-mode=full currently falls back to platform route while custom
+  cpu-shader-mode=safe/full currently falls back to platform route while custom
   shaders are active unless CPU custom-shader execution capability is available.
+  In safe mode, timeout must be > 0.
 EOF
 }
 
@@ -466,8 +467,11 @@ cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
-if [[ "${cpu_shader_mode:-full}" == "full" ]]; then
-  echo "[software-compat] note: cpu-shader-mode=full currently falls back to platform route while custom shaders are active unless CPU custom-shader execution capability is available."
+if [[ "${cpu_shader_mode:-full}" == "full" || "${cpu_shader_mode:-safe}" == "safe" ]]; then
+  echo "[software-compat] note: cpu-shader-mode=safe/full currently falls back to platform route while custom shaders are active unless CPU custom-shader execution capability is available."
+fi
+if [[ "${cpu_shader_mode:-}" == "safe" && -n "${cpu_shader_timeout_ms:-}" && "$cpu_shader_timeout_ms" == "0" ]]; then
+  echo "[software-compat] note: cpu-shader-mode=safe with timeout 0 forces platform-route fallback."
 fi
 if [[ -n "$expect_software_route_backend" ]]; then
   echo "[software-compat] expect-software-route-backend=$expect_software_route_backend"

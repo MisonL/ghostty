@@ -2016,14 +2016,15 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-mode=off`:
 ///   always fallback to platform route while shaders are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=safe`:
-///   keep current fallback behavior: platform route is used while shaders
-///   are active.
+///   use CPU route only when custom-shader execution capability is available
+///   and timeout budget is > 0; otherwise fallback to platform route while
+///   shaders are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=full`:
 ///   use CPU route only when custom-shader execution capability is available;
 ///   otherwise fallback to platform route while shaders are active.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
-/// `16` ms) only defines the `safe` target behavior boundary.
+/// `16` ms) must be > 0 in `safe` mode; timeout 0 forces platform fallback.
 ///
 /// Transport mode `-Dsoftware-frame-transport-mode=native` still forces
 /// the platform route.
@@ -3077,7 +3078,8 @@ keybind: Keybinds = .{},
 /// Current implementation status:
 ///
 /// * `off`: always platform-route fallback while shaders are active.
-/// * `safe`: keep platform-route fallback while shaders are active.
+/// * `safe`: use CPU route only when custom-shader execution capability is
+///   available and timeout budget is > 0; otherwise fallback to platform route.
 /// * `full`: use CPU route only when custom-shader execution capability is
 ///   available; otherwise fallback to platform route while shaders are active.
 ///

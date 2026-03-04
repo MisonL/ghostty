@@ -135,6 +135,7 @@ const SoftwareCpuRouteDisableReason = enum {
     config_presenter_legacy_gl,
     custom_shaders_mode_off,
     custom_shaders_unsupported,
+    custom_shaders_safe_timeout_invalid,
     transport_native,
 };
 
@@ -182,7 +183,10 @@ const CpuRouteDiagnosticsState = struct {
         const reason = decision.reason orelse return;
 
         self.last_fallback_reason = reason;
-        if (reason == .custom_shaders_mode_off or reason == .custom_shaders_unsupported) {
+        if (reason == .custom_shaders_mode_off or
+            reason == .custom_shaders_unsupported or
+            reason == .custom_shaders_safe_timeout_invalid)
+        {
             self.custom_shader_fallback_count +%= 1;
         }
     }
@@ -252,18 +256,21 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
             .enabled = false,
             .reason = .custom_shaders_mode_off,
         },
-        // CPU-route custom shader execution is still staged; keep
-        // platform-route fallback active for correctness.
-        .safe => return .{
-            .enabled = false,
-            .reason = .custom_shaders_unsupported,
+        .safe => {
+            if (!input.custom_shader_execution_available) return .{
+                .enabled = false,
+                .reason = .custom_shaders_unsupported,
+            };
+            if (input.cpu_shader_timeout_ms == 0) return .{
+                .enabled = false,
+                .reason = .custom_shaders_safe_timeout_invalid,
+            };
         },
         .full => if (!input.custom_shader_execution_available) return .{
             .enabled = false,
             .reason = .custom_shaders_unsupported,
         },
     };
-    _ = input.cpu_shader_timeout_ms;
     if (input.transport_mode_native) return .{
         .enabled = false,
         .reason = .transport_native,
@@ -375,6 +382,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when custom shaders disable CPU route
         /// because CPU-route shader execution is not yet available.
         cpu_custom_shader_unsupported_warned: bool = false,
+
+        /// One-shot warning guard when safe mode timeout budget is invalid.
+        cpu_custom_shader_safe_timeout_warned: bool = false,
 
         /// One-shot warning guard when runtime publishing disables CPU route.
         cpu_runtime_publishing_warned: bool = false,
@@ -1492,6 +1502,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .config_presenter_legacy_gl => &self.cpu_legacy_presenter_warned,
                 .custom_shaders_mode_off => &self.cpu_custom_shader_mode_off_warned,
                 .custom_shaders_unsupported => &self.cpu_custom_shader_unsupported_warned,
+                .custom_shaders_safe_timeout_invalid => &self.cpu_custom_shader_safe_timeout_warned,
                 .transport_native => &self.cpu_native_transport_warned,
                 .build_cpu_route_unavailable,
                 .build_renderer_not_software,
@@ -1506,6 +1517,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (!self.has_custom_shaders) {
                 self.cpu_custom_shader_mode_off_warned = false;
                 self.cpu_custom_shader_unsupported_warned = false;
+                self.cpu_custom_shader_safe_timeout_warned = false;
             }
             if (comptime build_config.software_frame_transport_mode != .native) {
                 self.cpu_native_transport_warned = false;
@@ -1538,6 +1550,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             warned.* = true;
 
             const shader_capability_reason: []const u8 = reason: {
+                if (reason == .custom_shaders_safe_timeout_invalid) {
+                    break :reason "timeout-budget-zero";
+                }
                 if (reason != .custom_shaders_unsupported) break :reason "n/a";
                 if (!self.has_custom_shaders) break :reason "n/a";
                 if (comptime build_config.software_renderer_cpu_shader_mode != .full) {
@@ -4943,6 +4958,33 @@ test "software cpu route decision disables when custom shaders are active and mo
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
 }
 
+test "software cpu route decision disables safe mode when timeout budget is zero" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+    input.cpu_shader_mode = .safe;
+    input.custom_shader_execution_available = true;
+    input.cpu_shader_timeout_ms = 0;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(
+        SoftwareCpuRouteDisableReason.custom_shaders_safe_timeout_invalid,
+        decision.reason.?,
+    );
+}
+
+test "software cpu route decision enables safe mode when execution is available and timeout is positive" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+    input.cpu_shader_mode = .safe;
+    input.custom_shader_execution_available = true;
+    input.cpu_shader_timeout_ms = 16;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(decision.enabled);
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), decision.reason);
+}
+
 test "software cpu route decision disables full mode when custom shader execution is unavailable" {
     var input = softwareCpuRouteDecisionInputDefaults();
     input.custom_shaders_active = true;
@@ -5024,12 +5066,16 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
         .reason = .custom_shaders_unsupported,
     });
     diagnostics.recordRouteDecision(.{
+        .enabled = false,
+        .reason = .custom_shaders_safe_timeout_invalid,
+    });
+    diagnostics.recordRouteDecision(.{
         .enabled = true,
         .reason = null,
     });
 
     const snapshot = diagnostics.snapshot();
-    try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 3), snapshot.custom_shader_fallback_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_count);
@@ -5037,7 +5083,7 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(
-        SoftwareCpuRouteDisableReason.custom_shaders_unsupported,
+        SoftwareCpuRouteDisableReason.custom_shaders_safe_timeout_invalid,
         snapshot.last_fallback_reason.?,
     );
 }

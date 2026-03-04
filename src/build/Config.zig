@@ -29,9 +29,9 @@ const software_renderer_cpu_min_linux: std.SemanticVersion = .{
 const software_renderer_cpu_mvp_help =
     "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. For legacy target bring-up examples: macOS 11 => zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 5.0 => zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.";
 const software_renderer_cpu_shader_mode_help =
-    "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=fallback to platform route while shaders are active (safe rollback path); full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route.";
+    "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=use CPU route only when custom-shader execution capability is available and timeout budget is > 0, otherwise fallback to platform route; full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route.";
 const software_renderer_cpu_shader_timeout_help =
-    "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. Current stage keeps safe/full on platform-route fallback unless execution capability is available. Default: 16.";
+    "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness. Default: 16.";
 const software_renderer_cpu_frame_damage_mode_help =
     "CPU software renderer frame-damage publishing mode: off|rects. off publishes full frames for each CPU-route update; rects tracks and reports damage rectangles (current stage still uses conservative full-frame composition).";
 const software_renderer_cpu_damage_rect_cap_help =
@@ -876,7 +876,7 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
         std.mem.indexOf(
             u8,
             software_renderer_cpu_shader_mode_help,
-            "safe=fallback to platform route while shaders are active",
+            "safe=use CPU route only when custom-shader execution capability is available and timeout budget is > 0, otherwise fallback to platform route",
         ) != null,
     );
     try std.testing.expect(
@@ -890,7 +890,7 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
         std.mem.indexOf(
             u8,
             software_renderer_cpu_shader_timeout_help,
-            "Current stage keeps safe/full on platform-route fallback unless execution capability is available",
+            "In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness",
         ) != null,
     );
     try std.testing.expect(
@@ -1041,7 +1041,8 @@ pub const SoftwareRendererCpuShaderMode = enum {
     /// Always fallback to the platform route while custom shaders are active.
     off,
 
-    /// Keep platform-route fallback while custom shaders are active.
+    /// Use CPU route only when custom-shader execution capability is available
+    /// and timeout budget is > 0; otherwise fallback to platform route.
     safe,
 
     /// Keep CPU route while custom shaders are active only when
