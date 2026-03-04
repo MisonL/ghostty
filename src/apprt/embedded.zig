@@ -2927,6 +2927,32 @@ test "runtimeOptionsFromV2 rejects size smaller than required prefix" {
     );
 }
 
+test "runtimeOptionsFromV2 rejects missing required callback" {
+    var opts = testValidRuntimeConfigV2();
+    opts.action = null;
+
+    try std.testing.expectError(
+        error.InvalidRuntimeConfig,
+        CAPI.runtimeOptionsFromV2(&opts),
+    );
+}
+
+test "runtimeOptionsFromV2 accepts forward-compatible larger declared size" {
+    var opts = testValidRuntimeConfigV2();
+    opts.struct_size = @sizeOf(App.OptionsV2) + 64;
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+
+    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    try std.testing.expectEqual(
+        opts.software_frame_storage_support,
+        mapped.software_frame_storage_support,
+    );
+    try std.testing.expect(mapped.software_frame_cb == opts.software_frame_cb);
+}
+
 test "runtimeOptionsFromV2 maps optional fields when full struct is provided" {
     var opts = testValidRuntimeConfigV2();
     opts.software_frame_storage_support = @intFromEnum(
