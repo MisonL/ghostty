@@ -60,16 +60,30 @@ const software_renderer_cpu_frame_damage_mode: cpu_renderer.FrameDamageMode =
         }
     else
         .off;
-const software_renderer_cpu_damage_rect_cap: u16 =
+const software_renderer_cpu_damage_rect_cap_configured: u16 =
     if (@hasDecl(build_config, "software_renderer_cpu_damage_rect_cap"))
         build_config.software_renderer_cpu_damage_rect_cap
     else
         0;
+const software_renderer_cpu_damage_rect_cap: u16 = effectiveCpuDamageRectCap(
+    software_renderer_cpu_frame_damage_mode,
+    software_renderer_cpu_damage_rect_cap_configured,
+);
 const software_renderer_cpu_damage_rect_pool_capacity: usize =
     @max(@as(usize, 1), @as(usize, software_renderer_cpu_damage_rect_cap));
 const max_retired_cpu_frame_pools: usize = 4;
 const cpu_frame_pool_deinit_wait_ms: u64 = 25;
 const cpu_damage_row_span_vertical_overscan_divisor: u32 = 4;
+
+fn effectiveCpuDamageRectCap(
+    frame_damage_mode: cpu_renderer.FrameDamageMode,
+    configured_cap: u16,
+) u16 {
+    return switch (frame_damage_mode) {
+        .off => configured_cap,
+        .rects => @max(@as(u16, 1), configured_cap),
+    };
+}
 
 fn cpuDamageRectForRowSpan(
     width_px: u32,
@@ -1105,6 +1119,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 build_config.software_renderer_cpu_mvp;
 
             if (comptime cpu_effective) {
+                if (comptime software_renderer_cpu_frame_damage_mode == .rects and
+                    software_renderer_cpu_damage_rect_cap_configured == 0)
+                {
+                    log.warn(
+                        "software renderer cpu damage rect cap 0 is invalid in rects mode; clamped to 1",
+                        .{},
+                    );
+                }
+
                 log.info(
                     "software renderer cpu-mvp route active target_os={s}",
                     .{@tagName(builtin.target.os.tag)},
@@ -4733,6 +4756,16 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
     };
+}
+
+test "effectiveCpuDamageRectCap keeps configured value when frame damage mode is off" {
+    try std.testing.expectEqual(@as(u16, 0), effectiveCpuDamageRectCap(.off, 0));
+    try std.testing.expectEqual(@as(u16, 8), effectiveCpuDamageRectCap(.off, 8));
+}
+
+test "effectiveCpuDamageRectCap clamps rects mode cap to at least one" {
+    try std.testing.expectEqual(@as(u16, 1), effectiveCpuDamageRectCap(.rects, 0));
+    try std.testing.expectEqual(@as(u16, 8), effectiveCpuDamageRectCap(.rects, 8));
 }
 
 test "cpu damage rect for row span clamps to surface bounds" {

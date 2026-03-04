@@ -35,7 +35,7 @@ const software_renderer_cpu_shader_timeout_help =
 const software_renderer_cpu_frame_damage_mode_help =
     "CPU software renderer frame-damage publishing mode: off|rects. off publishes full frames for each CPU-route update; rects tracks and reports damage rectangles (current stage still uses conservative full-frame composition).";
 const software_renderer_cpu_damage_rect_cap_help =
-    "Maximum number of tracked damage rectangles for CPU software renderer per frame (u16). Overflow degrades to one full-frame rect for correctness. Default: 64.";
+    "Maximum number of tracked damage rectangles for CPU software renderer per frame (u16). Overflow degrades to one full-frame rect for correctness. In rects mode, value 0 is auto-clamped to 1. Default: 64.";
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -214,6 +214,10 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-damage-rect-cap",
         software_renderer_cpu_damage_rect_cap_help,
     ) orelse 64;
+    config.software_renderer_cpu_damage_rect_cap = effectiveSoftwareRendererCpuDamageRectCap(
+        config.software_renderer_cpu_frame_damage_mode,
+        config.software_renderer_cpu_damage_rect_cap,
+    );
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -682,7 +686,13 @@ pub fn fromOptions() Config {
             SoftwareRendererCpuFrameDamageMode,
             @tagName(options.software_renderer_cpu_frame_damage_mode),
         ).?,
-        .software_renderer_cpu_damage_rect_cap = options.software_renderer_cpu_damage_rect_cap,
+        .software_renderer_cpu_damage_rect_cap = effectiveSoftwareRendererCpuDamageRectCap(
+            std.meta.stringToEnum(
+                SoftwareRendererCpuFrameDamageMode,
+                @tagName(options.software_renderer_cpu_frame_damage_mode),
+            ).?,
+            options.software_renderer_cpu_damage_rect_cap,
+        ),
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
@@ -704,6 +714,16 @@ fn softwareRendererCpuEffective(
     allow_legacy_os: bool,
 ) bool {
     return cpu_mvp and (allow_legacy_os or softwareRendererCpuSupported(target));
+}
+
+fn effectiveSoftwareRendererCpuDamageRectCap(
+    mode: SoftwareRendererCpuFrameDamageMode,
+    configured_cap: u16,
+) u16 {
+    return switch (mode) {
+        .off => configured_cap,
+        .rects => @max(@as(u16, 1), configured_cap),
+    };
 }
 
 test "softwareRendererCpuSupported requires macOS 14+" {
@@ -844,6 +864,35 @@ test "softwareRendererCpuShader help text keeps full bypass and safe fallback se
             software_renderer_cpu_damage_rect_cap_help,
             "Overflow degrades to one full-frame rect",
         ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_damage_rect_cap_help,
+            "0 is auto-clamped to 1",
+        ) != null,
+    );
+}
+
+test "effectiveSoftwareRendererCpuDamageRectCap keeps cap in off mode" {
+    try std.testing.expectEqual(
+        @as(u16, 0),
+        effectiveSoftwareRendererCpuDamageRectCap(.off, 0),
+    );
+    try std.testing.expectEqual(
+        @as(u16, 8),
+        effectiveSoftwareRendererCpuDamageRectCap(.off, 8),
+    );
+}
+
+test "effectiveSoftwareRendererCpuDamageRectCap clamps zero in rects mode" {
+    try std.testing.expectEqual(
+        @as(u16, 1),
+        effectiveSoftwareRendererCpuDamageRectCap(.rects, 0),
+    );
+    try std.testing.expectEqual(
+        @as(u16, 8),
+        effectiveSoftwareRendererCpuDamageRectCap(.rects, 8),
     );
 }
 
