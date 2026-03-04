@@ -1216,6 +1216,17 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Damage-mode rects compatibility spot-check on non-legacy threshold target.
+          - target:
+              target_label: macos-14.0-damage-rects
+              target: x86_64-macos.14.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: off
+              cpu_shader_timeout_ms: ""
+              cpu_frame_damage_mode: rects
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # Legacy target gate negative check: do not force legacy override.
           - target:
               target_label: macos-11.0-no-legacy

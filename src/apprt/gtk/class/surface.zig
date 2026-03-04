@@ -42,6 +42,7 @@ const macos = if (builtin.target.os.tag.isDarwin()) @import("macos") else void;
 
 const log = std.log.scoped(.gtk_ghostty_surface);
 const software_snapshot_failure_threshold: u32 = 3;
+const software_damage_metadata_failure_threshold: u32 = 3;
 const software_presenter_context_native_unsupported = "native_unsupported";
 const software_presenter_context_runtime_fallback = "runtime_fallback";
 const software_damage_metadata_warning_sample_modulus: u64 = 64;
@@ -68,6 +69,17 @@ fn noteSoftwareSnapshotFailure(
     last_failure_generation.* = generation;
     failure_streak.* +%= 1;
     return true;
+}
+
+fn shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+    unique_generation: bool,
+    runtime_fallback: bool,
+    failure_streak: u32,
+    threshold: u32,
+) bool {
+    return unique_generation and
+        !runtime_fallback and
+        failure_streak >= threshold;
 }
 
 pub const Surface = extern struct {
@@ -746,6 +758,8 @@ pub const Surface = extern struct {
         software_snapshot_failure_streak: u32 = 0,
         software_snapshot_failure_total: u64 = 0,
         software_snapshot_failure_generation: ?u64 = null,
+        software_damage_metadata_failure_streak: u32 = 0,
+        software_damage_metadata_failure_generation: ?u64 = null,
         software_damage_metadata_failure_total: u64 = 0,
         software_damage_metadata_warn_logged: bool = false,
         software_native_handle_unsupported_logged: bool = false,
@@ -2354,6 +2368,8 @@ pub const Surface = extern struct {
             priv.software_frame_generation = 0;
             priv.software_frame_generation_rendered = 0;
             priv.software_snapshot_failure_generation = null;
+            priv.software_damage_metadata_failure_generation = null;
+            priv.software_damage_metadata_failure_streak = 0;
             priv.software_damage_metadata_failure_total = 0;
             priv.software_damage_metadata_warn_logged = false;
             priv.software_native_handle_unsupported_logged = false;
@@ -2375,6 +2391,8 @@ pub const Surface = extern struct {
         priv.software_snapshot_runtime_fallback = false;
         priv.software_snapshot_failure_streak = 0;
         priv.software_snapshot_failure_generation = null;
+        priv.software_damage_metadata_failure_streak = 0;
+        priv.software_damage_metadata_failure_generation = null;
         priv.software_native_handle_unsupported_logged = false;
         log.info(
             "software snapshot runtime fallback reset reason={s} failure_total={}",
@@ -2408,6 +2426,12 @@ pub const Surface = extern struct {
         priv.software_frame_generation = generation;
         priv.software_snapshot_failure_streak = 0;
         priv.software_snapshot_failure_generation = null;
+    }
+
+    fn recordSoftwareSnapshotDamageMetadataSuccess(self: *Self) void {
+        const priv = self.private();
+        priv.software_damage_metadata_failure_streak = 0;
+        priv.software_damage_metadata_failure_generation = null;
     }
 
     fn recordSoftwareSnapshotFailure(
@@ -2450,11 +2474,55 @@ pub const Surface = extern struct {
             }
         }
 
-        if (!unique_generation) return;
-        if (priv.software_snapshot_runtime_fallback) return;
-        if (priv.software_snapshot_failure_streak < software_snapshot_failure_threshold) return;
+        if (!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+            unique_generation,
+            priv.software_snapshot_runtime_fallback,
+            priv.software_snapshot_failure_streak,
+            software_snapshot_failure_threshold,
+        )) return;
 
         self.activateSoftwareSnapshotRuntimeFallback("consecutive_failures");
+    }
+
+    fn recordSoftwareSnapshotDamageMetadataFailure(
+        self: *Self,
+        generation: u64,
+        err: anyerror,
+    ) void {
+        const priv = self.private();
+        const unique_generation = noteSoftwareSnapshotFailure(
+            &priv.software_damage_metadata_failure_streak,
+            &priv.software_damage_metadata_failure_total,
+            &priv.software_damage_metadata_failure_generation,
+            generation,
+        );
+
+        const metadata_failure_total = priv.software_damage_metadata_failure_total;
+        const should_log = shouldLogSoftwareSnapshotDamageMetadataWarning(
+            metadata_failure_total,
+            priv.software_damage_metadata_warn_logged,
+        );
+        priv.software_damage_metadata_warn_logged = true;
+        if (should_log and unique_generation) {
+            log.warn(
+                "software snapshot frame damage metadata rejected generation={} streak={} total={} err={}",
+                .{
+                    generation,
+                    priv.software_damage_metadata_failure_streak,
+                    metadata_failure_total,
+                    err,
+                },
+            );
+        }
+
+        if (!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+            unique_generation,
+            priv.software_snapshot_runtime_fallback,
+            priv.software_damage_metadata_failure_streak,
+            software_damage_metadata_failure_threshold,
+        )) return;
+
+        self.activateSoftwareSnapshotRuntimeFallback("damage_metadata_consecutive_failures");
     }
 
     pub fn softwareFrameReady(
@@ -2476,21 +2544,16 @@ pub const Surface = extern struct {
             return err;
         };
 
-        validateSoftwareFrameDamageMetadata(frame) catch |err| {
-            priv.software_damage_metadata_failure_total +%= 1;
-            const metadata_failure_total = priv.software_damage_metadata_failure_total;
-            const should_log = shouldLogSoftwareSnapshotDamageMetadataWarning(
-                metadata_failure_total,
-                priv.software_damage_metadata_warn_logged,
-            );
-            priv.software_damage_metadata_warn_logged = true;
-            if (should_log) {
-                log.warn(
-                    "software snapshot frame damage metadata ignored generation={} total={} err={}",
-                    .{ frame.generation, metadata_failure_total, err },
-                );
-            }
+        const damage_metadata_valid = damage_metadata_valid: {
+            validateSoftwareFrameDamageMetadata(frame) catch |err| {
+                self.recordSoftwareSnapshotDamageMetadataFailure(frame.generation, err);
+                break :damage_metadata_valid false;
+            };
+            break :damage_metadata_valid true;
         };
+        if (damage_metadata_valid) {
+            self.recordSoftwareSnapshotDamageMetadataSuccess();
+        }
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
@@ -2639,7 +2702,7 @@ pub const Surface = extern struct {
         self.setSoftwareSnapshotEnabled(snapshot_enabled);
 
         log.info(
-            "software presenter experimental={} requested={s} selected={s} reason={s} runtime_fallback={} failure_streak={} failure_total={}",
+            "software presenter experimental={} requested={s} selected={s} reason={s} runtime_fallback={} failure_streak={} failure_total={} metadata_failure_streak={} metadata_failure_total={}",
             .{
                 selection.experimental,
                 @tagName(selection.requested),
@@ -2648,6 +2711,8 @@ pub const Surface = extern struct {
                 priv.software_snapshot_runtime_fallback,
                 priv.software_snapshot_failure_streak,
                 priv.software_snapshot_failure_total,
+                priv.software_damage_metadata_failure_streak,
+                priv.software_damage_metadata_failure_total,
             },
         );
 
@@ -4591,6 +4656,74 @@ test "noteSoftwareSnapshotFailure deduplicates repeated generation for streak" {
     try std.testing.expectEqual(@as(u32, 2), failure_streak);
     try std.testing.expectEqual(@as(u64, 3), failure_total);
     try std.testing.expectEqual(@as(?u64, 43), last_failure_generation);
+}
+
+test "shouldActivateSoftwareSnapshotRuntimeFallbackForFailure requires unique non-fallback threshold state" {
+    try std.testing.expect(!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+        false,
+        false,
+        software_snapshot_failure_threshold,
+        software_snapshot_failure_threshold,
+    ));
+    try std.testing.expect(!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+        true,
+        true,
+        software_snapshot_failure_threshold,
+        software_snapshot_failure_threshold,
+    ));
+    try std.testing.expect(!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+        true,
+        false,
+        software_snapshot_failure_threshold - 1,
+        software_snapshot_failure_threshold,
+    ));
+    try std.testing.expect(shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+        true,
+        false,
+        software_snapshot_failure_threshold,
+        software_snapshot_failure_threshold,
+    ));
+}
+
+test "damage metadata failure streak uses generation de-duplication and threshold" {
+    var failure_streak: u32 = 0;
+    var failure_total: u64 = 0;
+    var last_failure_generation: ?u64 = null;
+
+    try std.testing.expect(noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        10,
+    ));
+    try std.testing.expect(!noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        10,
+    ));
+    try std.testing.expect(noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        11,
+    ));
+    try std.testing.expect(noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        12,
+    ));
+
+    try std.testing.expectEqual(@as(u32, 3), failure_streak);
+    try std.testing.expectEqual(@as(u64, 4), failure_total);
+    try std.testing.expectEqual(@as(?u64, 12), last_failure_generation);
+    try std.testing.expect(shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+        true,
+        false,
+        failure_streak,
+        software_damage_metadata_failure_threshold,
+    ));
 }
 
 test "shouldLogSoftwareSnapshotDamageMetadataWarning samples after first warning" {
