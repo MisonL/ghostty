@@ -947,6 +947,9 @@ fn repeatStart(origin: f32, step: f32) f32 {
 ///
 /// Each acquired slot is released through `SoftwareFrameReady.release_fn`,
 /// avoiding per-frame heap allocations in the hot path.
+///
+/// Concurrency contract: `acquire`/`deinitIdle` are called from the renderer
+/// thread. `release_fn` may be called from presenter/runtime callbacks.
 pub const FramePool = struct {
     const Slot = struct {
         bytes: []u8,
@@ -1002,12 +1005,17 @@ pub const FramePool = struct {
             alloc.free(slots);
         }
         while (i < slot_count) : (i += 1) {
+            const slot_bytes = try alloc.alloc(u8, len);
+            errdefer alloc.free(slot_bytes);
+            const slot_damage_rects = try alloc.alloc(
+                SoftwareFrameDamageRect,
+                damage_rect_capacity,
+            );
+            errdefer alloc.free(slot_damage_rects);
+
             slots[i] = .{
-                .bytes = try alloc.alloc(u8, len),
-                .damage_rects = try alloc.alloc(
-                    SoftwareFrameDamageRect,
-                    damage_rect_capacity,
-                ),
+                .bytes = slot_bytes,
+                .damage_rects = slot_damage_rects,
             };
         }
 
@@ -2150,6 +2158,48 @@ test "FramePool publish uses caller generation and release returns slot to idle"
 
     frame.release();
     try std.testing.expect(pool.isIdle());
+}
+
+test "FramePool publish truncates damage rects to slot capacity" {
+    const alloc = std.testing.allocator;
+    var pool = try FramePool.init(alloc, 1, 1, 1, .bgra8_premul, 1);
+    defer if (pool.isIdle()) pool.deinitIdle();
+
+    var acquired = pool.acquire() orelse return error.TestUnexpectedResult;
+    const frame = pool.publish(&acquired, 1, &.{
+        .{ .x = 1, .y = 1, .width = 1, .height = 1 },
+        .{ .x = 2, .y = 2, .width = 1, .height = 1 },
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), frame.damage_rects_len);
+    try std.testing.expect(frame.damage_rects != null);
+    try std.testing.expectEqualDeep(SoftwareFrameDamageRect{
+        .x_px = 1,
+        .y_px = 1,
+        .width_px = 1,
+        .height_px = 1,
+    }, frame.damage_rects.?[0]);
+
+    frame.release();
+}
+
+test "FramePool publish clears damage metadata on empty publish after prior damage" {
+    const alloc = std.testing.allocator;
+    var pool = try FramePool.init(alloc, 1, 1, 1, .bgra8_premul, 2);
+    defer if (pool.isIdle()) pool.deinitIdle();
+
+    var acquired = pool.acquire() orelse return error.TestUnexpectedResult;
+    var frame = pool.publish(&acquired, 1, &.{
+        .{ .x = 1, .y = 1, .width = 1, .height = 1 },
+    });
+    try std.testing.expectEqual(@as(usize, 1), frame.damage_rects_len);
+    frame.release();
+
+    acquired = pool.acquire() orelse return error.TestUnexpectedResult;
+    frame = pool.publish(&acquired, 2, &.{});
+    try std.testing.expectEqual(@as(usize, 0), frame.damage_rects_len);
+    try std.testing.expect(frame.damage_rects == null);
+    frame.release();
 }
 
 test "composeSoftwareFrame draws grayscale glyph over global background" {

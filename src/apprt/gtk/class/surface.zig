@@ -44,6 +44,31 @@ const log = std.log.scoped(.gtk_ghostty_surface);
 const software_snapshot_failure_threshold: u32 = 3;
 const software_presenter_context_native_unsupported = "native_unsupported";
 const software_presenter_context_runtime_fallback = "runtime_fallback";
+const software_damage_metadata_warning_sample_modulus: u64 = 64;
+
+fn shouldLogSoftwareSnapshotDamageMetadataWarning(
+    total_failures: u64,
+    warning_logged: bool,
+) bool {
+    if (!warning_logged) return true;
+    return total_failures % software_damage_metadata_warning_sample_modulus == 0;
+}
+
+fn noteSoftwareSnapshotFailure(
+    failure_streak: *u32,
+    failure_total: *u64,
+    last_failure_generation: *?u64,
+    generation: u64,
+) bool {
+    failure_total.* +%= 1;
+    if (last_failure_generation.*) |last| {
+        if (last == generation) return false;
+    }
+
+    last_failure_generation.* = generation;
+    failure_streak.* +%= 1;
+    return true;
+}
 
 pub const Surface = extern struct {
     const Self = @This();
@@ -720,6 +745,9 @@ pub const Surface = extern struct {
         software_snapshot_runtime_fallback: bool = false,
         software_snapshot_failure_streak: u32 = 0,
         software_snapshot_failure_total: u64 = 0,
+        software_snapshot_failure_generation: ?u64 = null,
+        software_damage_metadata_failure_total: u64 = 0,
+        software_damage_metadata_warn_logged: bool = false,
         software_native_handle_unsupported_logged: bool = false,
         software_frame_generation: u64 = 0,
         software_frame_generation_rendered: u64 = 0,
@@ -2249,6 +2277,29 @@ pub const Surface = extern struct {
         }
     }
 
+    fn validateSoftwareFrameDamageMetadata(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        if (frame.damage_rects_len == 0) return;
+
+        const damage_rects = frame.damage_rects orelse return error.InvalidSoftwareFrame;
+        const frame_w = @as(u64, frame.width_px);
+        const frame_h = @as(u64, frame.height_px);
+        for (damage_rects[0..frame.damage_rects_len]) |rect| {
+            if (rect.width_px == 0 or rect.height_px == 0) {
+                return error.InvalidSoftwareFrame;
+            }
+            if (rect.x_px >= frame.width_px or rect.y_px >= frame.height_px) {
+                return error.InvalidSoftwareFrame;
+            }
+            const x1 = @as(u64, rect.x_px) + @as(u64, rect.width_px);
+            const y1 = @as(u64, rect.y_px) + @as(u64, rect.height_px);
+            if (x1 > frame_w or y1 > frame_h) {
+                return error.InvalidSoftwareFrame;
+            }
+        }
+    }
+
     fn clearSoftwareSnapshotTexture(self: *Self) void {
         const priv = self.private();
 
@@ -2288,6 +2339,9 @@ pub const Surface = extern struct {
             self.clearSoftwareSnapshotTexture();
             priv.software_frame_generation = 0;
             priv.software_frame_generation_rendered = 0;
+            priv.software_snapshot_failure_generation = null;
+            priv.software_damage_metadata_failure_total = 0;
+            priv.software_damage_metadata_warn_logged = false;
             priv.software_native_handle_unsupported_logged = false;
             if (!priv.software_snapshot_runtime_fallback) {
                 priv.software_snapshot_failure_streak = 0;
@@ -2306,6 +2360,7 @@ pub const Surface = extern struct {
 
         priv.software_snapshot_runtime_fallback = false;
         priv.software_snapshot_failure_streak = 0;
+        priv.software_snapshot_failure_generation = null;
         priv.software_native_handle_unsupported_logged = false;
         log.info(
             "software snapshot runtime fallback reset reason={s} failure_total={}",
@@ -2338,6 +2393,7 @@ pub const Surface = extern struct {
         const priv = self.private();
         priv.software_frame_generation = generation;
         priv.software_snapshot_failure_streak = 0;
+        priv.software_snapshot_failure_generation = null;
     }
 
     fn recordSoftwareSnapshotFailure(
@@ -2348,18 +2404,20 @@ pub const Surface = extern struct {
         log_warning: bool,
     ) void {
         const priv = self.private();
-        priv.software_snapshot_failure_total +%= 1;
-        priv.software_snapshot_failure_streak +%= 1;
-        if (generation > priv.software_frame_generation) {
-            priv.software_frame_generation = generation;
-        }
+        const unique_generation = noteSoftwareSnapshotFailure(
+            &priv.software_snapshot_failure_streak,
+            &priv.software_snapshot_failure_total,
+            &priv.software_snapshot_failure_generation,
+            generation,
+        );
 
-        if (log_warning) {
+        if (log_warning and unique_generation) {
             if (err) |e| {
                 log.warn(
-                    "software snapshot frame rejected context={s} streak={} total={} err={}",
+                    "software snapshot frame rejected context={s} generation={} streak={} total={} err={}",
                     .{
                         context,
+                        generation,
                         priv.software_snapshot_failure_streak,
                         priv.software_snapshot_failure_total,
                         e,
@@ -2367,9 +2425,10 @@ pub const Surface = extern struct {
                 );
             } else {
                 log.warn(
-                    "software snapshot frame rejected context={s} streak={} total={}",
+                    "software snapshot frame rejected context={s} generation={} streak={} total={}",
                     .{
                         context,
+                        generation,
                         priv.software_snapshot_failure_streak,
                         priv.software_snapshot_failure_total,
                     },
@@ -2377,6 +2436,7 @@ pub const Surface = extern struct {
             }
         }
 
+        if (!unique_generation) return;
         if (priv.software_snapshot_runtime_fallback) return;
         if (priv.software_snapshot_failure_streak < software_snapshot_failure_threshold) return;
 
@@ -2395,12 +2455,28 @@ pub const Surface = extern struct {
             .auto, .snapshot => {},
         }
         if (!priv.software_snapshot_enabled) return;
+        if (frame.generation <= priv.software_frame_generation) return;
 
         validateSoftwareFrame(frame) catch |err| {
             self.recordSoftwareSnapshotFailure(frame.generation, "validate", err, true);
             return err;
         };
-        if (frame.generation <= priv.software_frame_generation) return;
+
+        validateSoftwareFrameDamageMetadata(frame) catch |err| {
+            priv.software_damage_metadata_failure_total +%= 1;
+            const metadata_failure_total = priv.software_damage_metadata_failure_total;
+            const should_log = shouldLogSoftwareSnapshotDamageMetadataWarning(
+                metadata_failure_total,
+                priv.software_damage_metadata_warn_logged,
+            );
+            priv.software_damage_metadata_warn_logged = true;
+            if (should_log) {
+                log.warn(
+                    "software snapshot frame damage metadata ignored generation={} total={} err={}",
+                    .{ frame.generation, metadata_failure_total, err },
+                );
+            }
+        };
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
@@ -4466,6 +4542,51 @@ test "computeFraction" {
     try std.testing.expectEqual(0.5, computeFraction(50));
 }
 
+test "noteSoftwareSnapshotFailure deduplicates repeated generation for streak" {
+    var failure_streak: u32 = 0;
+    var failure_total: u64 = 0;
+    var last_failure_generation: ?u64 = null;
+
+    try std.testing.expect(noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        42,
+    ));
+    try std.testing.expectEqual(@as(u32, 1), failure_streak);
+    try std.testing.expectEqual(@as(u64, 1), failure_total);
+    try std.testing.expectEqual(@as(?u64, 42), last_failure_generation);
+
+    try std.testing.expect(!noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        42,
+    ));
+    try std.testing.expectEqual(@as(u32, 1), failure_streak);
+    try std.testing.expectEqual(@as(u64, 2), failure_total);
+    try std.testing.expectEqual(@as(?u64, 42), last_failure_generation);
+
+    try std.testing.expect(noteSoftwareSnapshotFailure(
+        &failure_streak,
+        &failure_total,
+        &last_failure_generation,
+        43,
+    ));
+    try std.testing.expectEqual(@as(u32, 2), failure_streak);
+    try std.testing.expectEqual(@as(u64, 3), failure_total);
+    try std.testing.expectEqual(@as(?u64, 43), last_failure_generation);
+}
+
+test "shouldLogSoftwareSnapshotDamageMetadataWarning samples after first warning" {
+    try std.testing.expect(shouldLogSoftwareSnapshotDamageMetadataWarning(1, false));
+    try std.testing.expect(!shouldLogSoftwareSnapshotDamageMetadataWarning(2, true));
+    try std.testing.expect(shouldLogSoftwareSnapshotDamageMetadataWarning(
+        software_damage_metadata_warning_sample_modulus,
+        true,
+    ));
+}
+
 test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
     const frame: apprt.surface.Message.SoftwareFrameReady = .{
         .width_px = 4,
@@ -4479,6 +4600,38 @@ test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
     };
 
     try Surface.validateSoftwareFrame(frame);
+}
+
+test "validateSoftwareFrameDamageMetadata accepts in-bounds and edge-aligned damage rect payload" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 1,
+            .y_px = 1,
+            .width_px = 2,
+            .height_px = 1,
+        },
+        .{
+            .x_px = 0,
+            .y_px = 0,
+            .width_px = 4,
+            .height_px = 3,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try Surface.validateSoftwareFrame(frame);
+    try Surface.validateSoftwareFrameDamageMetadata(frame);
 }
 
 test "softwareSnapshotNativeHandleFailureContext maps unsupported runtime" {
@@ -4570,6 +4723,116 @@ test "validateSoftwareFrame rejects missing native handle payload" {
     };
 
     try std.testing.expectError(error.InvalidSoftwareFrame, Surface.validateSoftwareFrame(frame));
+}
+
+test "validateSoftwareFrameDamageMetadata rejects damage rect metadata without pointer" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects out-of-bounds damage rect" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 3,
+            .y_px = 2,
+            .width_px = 2,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects zero-sized damage rect" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 0,
+            .y_px = 0,
+            .width_px = 0,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects frame when any damage rect is invalid" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 0,
+            .y_px = 0,
+            .width_px = 1,
+            .height_px = 1,
+        },
+        .{
+            .x_px = 4,
+            .y_px = 0,
+            .width_px = 1,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
 }
 
 test "softwarePresenterSelectionFor chooses runtime fallback when snapshot repeatedly fails" {

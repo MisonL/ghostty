@@ -68,6 +68,8 @@ const software_renderer_cpu_damage_rect_cap: u16 =
 const software_renderer_cpu_damage_rect_pool_capacity: usize =
     @max(@as(usize, 1), @as(usize, software_renderer_cpu_damage_rect_cap));
 const max_retired_cpu_frame_pools: usize = 4;
+const cpu_frame_pool_deinit_wait_ms: u64 = 25;
+const cpu_damage_row_span_vertical_overscan_divisor: u32 = 4;
 
 fn cpuDamageRectForRowSpan(
     width_px: u32,
@@ -76,18 +78,31 @@ fn cpuDamageRectForRowSpan(
     cell_height_px: u32,
     row_min: u32,
     row_max_exclusive: u32,
+    row_count: u32,
 ) ?cpu_renderer.Rect {
     if (width_px == 0 or height_px == 0) return null;
     if (row_max_exclusive <= row_min) return null;
     if (cell_height_px == 0) return null;
 
+    const expanded_min = if (row_min > 0) row_min - 1 else 0;
+    const expanded_max = @min(row_count, row_max_exclusive + 1);
+    if (expanded_max <= expanded_min) return null;
+
     const y0_u64 = @as(u64, padding_top_px) +
-        @as(u64, row_min) * @as(u64, cell_height_px);
+        @as(u64, expanded_min) * @as(u64, cell_height_px);
     const y1_u64 = @as(u64, padding_top_px) +
-        @as(u64, row_max_exclusive) * @as(u64, cell_height_px);
+        @as(u64, expanded_max) * @as(u64, cell_height_px);
+    const overscan_px = @max(
+        @as(u32, 1),
+        cell_height_px / cpu_damage_row_span_vertical_overscan_divisor,
+    );
+    const overscan_u64 = @as(u64, overscan_px);
     const bound_h_u64 = @as(u64, height_px);
-    const y0 = @min(y0_u64, bound_h_u64);
-    const y1 = @min(y1_u64, bound_h_u64);
+    const y0 = @min(y0_u64 -| overscan_u64, bound_h_u64);
+    const y1 = @min(
+        std.math.add(u64, y1_u64, overscan_u64) catch std.math.maxInt(u64),
+        bound_h_u64,
+    );
     if (y1 <= y0) return null;
 
     return .{
@@ -1103,6 +1118,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             );
         }
 
+        fn waitForCpuFramePoolIdle(pool: *cpu_renderer.FramePool, timeout_ms: u64) bool {
+            if (pool.isIdle()) return true;
+
+            const start = std.time.Instant.now() catch return pool.isIdle();
+            const timeout_ns = std.math.mul(
+                u64,
+                timeout_ms,
+                std.time.ns_per_ms,
+            ) catch std.math.maxInt(u64);
+            while (true) {
+                if (pool.isIdle()) return true;
+                const now = std.time.Instant.now() catch break;
+                if (now.since(start) >= timeout_ns) break;
+                std.Thread.sleep(std.time.ns_per_ms);
+            }
+
+            return pool.isIdle();
+        }
+
         pub fn deinit(self: *Self) void {
             if (self.overlay) |*overlay| overlay.deinit(self.alloc);
             self.terminal_state.deinit(self.alloc);
@@ -1132,6 +1166,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.deinitShaders();
 
             if (self.cpu_frame_pool) |*pool| {
+                if (!pool.isIdle()) {
+                    _ = waitForCpuFramePoolIdle(pool, cpu_frame_pool_deinit_wait_ms);
+                }
+
                 if (pool.isIdle()) {
                     pool.deinitIdle();
                 } else {
@@ -1148,6 +1186,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.collectRetiredCpuFramePools();
             for (self.retired_cpu_frame_pools.items) |*pool| {
+                if (pool.isIdle()) {
+                    pool.deinitIdle();
+                    continue;
+                }
+
+                _ = waitForCpuFramePoolIdle(pool, cpu_frame_pool_deinit_wait_ms);
                 if (pool.isIdle()) {
                     pool.deinitIdle();
                     continue;
@@ -2082,6 +2126,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.cpu_rebuild_damage_row_max_exclusive = next;
         }
 
+        fn hasCpuNonTextCompositingDamage(self: *const Self) bool {
+            if (self.overlay != null) return true;
+            if (self.bg_image != null and self.config.bg_image != null) return true;
+
+            const kitty_placements = [_]ImageState.DrawPlacements{
+                .kitty_below_bg,
+                .kitty_below_text,
+                .kitty_above_text,
+            };
+            for (kitty_placements) |placement_type| {
+                if (kittyPlacementsSlice(&self.images, placement_type).len > 0) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         fn publishCpuSoftwareFrame(
             self: *Self,
             surface_size: anytype,
@@ -2097,7 +2159,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             switch (comptime software_renderer_cpu_frame_damage_mode) {
                 .off => {},
                 .rects => {
-                    if (force_full_damage or self.cpu_rebuild_damage_full) {
+                    if (force_full_damage or
+                        self.cpu_rebuild_damage_full or
+                        self.hasCpuNonTextCompositingDamage())
+                    {
                         try self.cpu_damage_tracker.markFull(
                             self.alloc,
                             width_px,
@@ -2112,6 +2177,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             self.size.cell.height,
                             row_min,
                             row_max,
+                            @intCast(self.cells.size.rows),
                         );
                         if (span_rect) |rect| {
                             try self.cpu_damage_tracker.markRect(
@@ -4677,12 +4743,13 @@ test "cpu damage rect for row span clamps to surface bounds" {
         20,
         0,
         8,
+        8,
     ).?;
     try std.testing.expectEqualDeep(cpu_renderer.Rect{
         .x = 0,
-        .y = 10,
+        .y = 5,
         .width = 800,
-        .height = 110,
+        .height = 115,
     }, rect);
 }
 
@@ -4694,6 +4761,7 @@ test "cpu damage rect for row span rejects empty and zero-cell-height spans" {
         20,
         3,
         3,
+        10,
     ) == null);
     try std.testing.expect(cpuDamageRectForRowSpan(
         800,
@@ -4702,7 +4770,62 @@ test "cpu damage rect for row span rejects empty and zero-cell-height spans" {
         0,
         0,
         1,
+        10,
     ) == null);
+}
+
+test "cpu damage rect for row span expands to neighbor rows" {
+    const rect = cpuDamageRectForRowSpan(
+        200,
+        200,
+        0,
+        20,
+        2,
+        3,
+        10,
+    ).?;
+    try std.testing.expectEqualDeep(cpu_renderer.Rect{
+        .x = 0,
+        .y = 15,
+        .width = 200,
+        .height = 70,
+    }, rect);
+}
+
+test "cpu damage rect for row span includes top spill for first row" {
+    const rect = cpuDamageRectForRowSpan(
+        200,
+        200,
+        10,
+        20,
+        0,
+        1,
+        10,
+    ).?;
+    try std.testing.expectEqualDeep(cpu_renderer.Rect{
+        .x = 0,
+        .y = 5,
+        .width = 200,
+        .height = 50,
+    }, rect);
+}
+
+test "cpu damage rect for row span includes bottom spill for last row" {
+    const rect = cpuDamageRectForRowSpan(
+        200,
+        230,
+        10,
+        20,
+        9,
+        10,
+        10,
+    ).?;
+    try std.testing.expectEqualDeep(cpu_renderer.Rect{
+        .x = 0,
+        .y = 165,
+        .width = 200,
+        .height = 50,
+    }, rect);
 }
 
 test "software cpu route decision enabled when all gates pass" {

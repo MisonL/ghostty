@@ -1109,8 +1109,7 @@ pub const Surface = struct {
         };
     }
 
-    pub fn softwareFrameReady(
-        self: *Surface,
+    fn validateSoftwareFramePayload(
         frame: apprt.surface.Message.SoftwareFrameReady,
     ) error{InvalidSoftwareFrame}!void {
         switch (frame.storage) {
@@ -1127,6 +1126,31 @@ pub const Surface = struct {
         if (frame.damage_rects_len > 0 and frame.damage_rects == null) {
             return error.InvalidSoftwareFrame;
         }
+    }
+
+    fn runtimeSoftwareFrameFromMessage(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) CAPI.RuntimeSoftwareFrame {
+        return .{
+            .width_px = frame.width_px,
+            .height_px = frame.height_px,
+            .stride_bytes = frame.stride_bytes,
+            .generation = frame.generation,
+            .pixel_format = frame.pixel_format,
+            .storage = frame.storage,
+            .data = frame.data,
+            .data_len = frame.data_len,
+            .handle = frame.handle,
+            .damage_rects = frame.damage_rects,
+            .damage_rects_len = frame.damage_rects_len,
+        };
+    }
+
+    pub fn softwareFrameReady(
+        self: *Surface,
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        try validateSoftwareFramePayload(frame);
 
         if (!self.software_frame_publishing_enabled) return;
 
@@ -1145,19 +1169,7 @@ pub const Surface = struct {
             return error.InvalidSoftwareFrame;
         }
 
-        const c_frame: CAPI.RuntimeSoftwareFrame = .{
-            .width_px = frame.width_px,
-            .height_px = frame.height_px,
-            .stride_bytes = frame.stride_bytes,
-            .generation = frame.generation,
-            .pixel_format = frame.pixel_format,
-            .storage = frame.storage,
-            .data = frame.data,
-            .data_len = frame.data_len,
-            .handle = frame.handle,
-            .damage_rects = frame.damage_rects,
-            .damage_rects_len = frame.damage_rects_len,
-        };
+        const c_frame = runtimeSoftwareFrameFromMessage(frame);
         if (!software_frame_cb(self.userdata, &c_frame)) {
             self.activateSoftwareFrameSessionFallback("callback_returned_false");
         }
@@ -2678,6 +2690,58 @@ test "ghostty.h RuntimeSoftwareFrame size matches" {
     try std.testing.expectEqual(
         @sizeOf(c.ghostty_runtime_software_frame_s),
         @sizeOf(CAPI.RuntimeSoftwareFrame),
+    );
+}
+
+test "runtimeSoftwareFrameFromMessage preserves payload and damage metadata" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{ .x_px = 1, .y_px = 2, .width_px = 3, .height_px = 4 },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 80,
+        .height_px = 24,
+        .stride_bytes = 320,
+        .generation = 9,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 1024,
+        .handle = null,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    const c_frame = Surface.runtimeSoftwareFrameFromMessage(frame);
+    try std.testing.expectEqual(frame.width_px, c_frame.width_px);
+    try std.testing.expectEqual(frame.height_px, c_frame.height_px);
+    try std.testing.expectEqual(frame.stride_bytes, c_frame.stride_bytes);
+    try std.testing.expectEqual(frame.generation, c_frame.generation);
+    try std.testing.expectEqual(frame.pixel_format, c_frame.pixel_format);
+    try std.testing.expectEqual(frame.storage, c_frame.storage);
+    try std.testing.expect(c_frame.data == frame.data);
+    try std.testing.expectEqual(frame.data_len, c_frame.data_len);
+    try std.testing.expect(c_frame.handle == frame.handle);
+    try std.testing.expect(c_frame.damage_rects == frame.damage_rects);
+    try std.testing.expectEqual(frame.damage_rects_len, c_frame.damage_rects_len);
+}
+
+test "validateSoftwareFramePayload rejects damage metadata length without pointer" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFramePayload(frame),
     );
 }
 
