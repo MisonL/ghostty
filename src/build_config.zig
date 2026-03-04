@@ -14,6 +14,7 @@ const BuildConfig = @import("build/Config.zig");
 pub const ReleaseChannel = BuildConfig.ReleaseChannel;
 pub const SoftwareFrameTransportMode = BuildConfig.SoftwareFrameTransportMode;
 pub const SoftwareRendererCpuShaderMode = BuildConfig.SoftwareRendererCpuShaderMode;
+pub const SoftwareRendererCpuFrameDamageMode = BuildConfig.SoftwareRendererCpuFrameDamageMode;
 
 /// The semantic version of this build.
 pub const version = options.app_version;
@@ -50,6 +51,9 @@ pub const software_frame_transport_mode: SoftwareFrameTransportMode = config.sof
 pub const software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode =
     config.software_renderer_cpu_shader_mode;
 pub const software_renderer_cpu_shader_timeout_ms: u32 = config.software_renderer_cpu_shader_timeout_ms;
+pub const software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode =
+    config.software_renderer_cpu_frame_damage_mode;
+pub const software_renderer_cpu_damage_rect_cap: u16 = config.software_renderer_cpu_damage_rect_cap;
 pub const i18n: bool = config.i18n;
 
 /// The bundle ID for the app. This is used in many places and is currently

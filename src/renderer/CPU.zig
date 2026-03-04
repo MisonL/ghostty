@@ -57,6 +57,174 @@ pub const Rect = struct {
     height: u32,
 };
 
+/// CPU-route frame damage publication mode.
+pub const FrameDamageMode = enum {
+    off,
+    rects,
+};
+
+/// Damage rectangle tracker with overflow-safe fallback semantics.
+pub const DamageTracker = struct {
+    rects: ArrayList(Rect) = .{},
+    max_rects: usize,
+    overflow_count: u64 = 0,
+
+    pub fn init(max_rects: u16) DamageTracker {
+        return .{
+            .max_rects = max_rects,
+        };
+    }
+
+    pub fn deinit(self: *DamageTracker, alloc: std.mem.Allocator) void {
+        self.rects.deinit(alloc);
+        self.* = undefined;
+    }
+
+    pub fn resetRetainingCapacity(self: *DamageTracker) void {
+        self.rects.clearRetainingCapacity();
+    }
+
+    pub fn hasDamage(self: *const DamageTracker) bool {
+        return self.rects.items.len > 0;
+    }
+
+    pub fn rectCount(self: *const DamageTracker) usize {
+        return self.rects.items.len;
+    }
+
+    pub fn overflowCount(self: *const DamageTracker) u64 {
+        return self.overflow_count;
+    }
+
+    pub fn slice(self: *const DamageTracker) []const Rect {
+        return self.rects.items;
+    }
+
+    pub fn markFull(
+        self: *DamageTracker,
+        alloc: std.mem.Allocator,
+        bounds_width: u32,
+        bounds_height: u32,
+    ) !void {
+        if (bounds_width == 0 or bounds_height == 0) return;
+        try self.markRect(alloc, bounds_width, bounds_height, .{
+            .x = 0,
+            .y = 0,
+            .width = bounds_width,
+            .height = bounds_height,
+        });
+    }
+
+    pub fn markRect(
+        self: *DamageTracker,
+        alloc: std.mem.Allocator,
+        bounds_width: u32,
+        bounds_height: u32,
+        rect: Rect,
+    ) !void {
+        const clipped = clipRectToBounds(bounds_width, bounds_height, rect) orelse return;
+
+        if (self.max_rects == 0) {
+            self.overflow_count +%= 1;
+            return;
+        }
+
+        var merged = clipped;
+        var i: usize = 0;
+        while (i < self.rects.items.len) {
+            const existing = self.rects.items[i];
+            if (!rectsTouchOrOverlap(existing, merged)) {
+                i += 1;
+                continue;
+            }
+
+            merged = rectUnion(existing, merged);
+            _ = self.rects.swapRemove(i);
+        }
+
+        try self.appendOrOverflow(alloc, bounds_width, bounds_height, merged);
+    }
+
+    fn appendOrOverflow(
+        self: *DamageTracker,
+        alloc: std.mem.Allocator,
+        bounds_width: u32,
+        bounds_height: u32,
+        rect: Rect,
+    ) !void {
+        if (self.rects.items.len < self.max_rects) {
+            try self.rects.append(alloc, rect);
+            return;
+        }
+
+        self.overflow_count +%= 1;
+        self.rects.clearRetainingCapacity();
+
+        const full = clipRectToBounds(bounds_width, bounds_height, .{
+            .x = 0,
+            .y = 0,
+            .width = bounds_width,
+            .height = bounds_height,
+        }) orelse return;
+        try self.rects.append(alloc, full);
+    }
+};
+
+fn clipRectToBounds(bounds_width: u32, bounds_height: u32, rect: Rect) ?Rect {
+    if (bounds_width == 0 or bounds_height == 0) return null;
+    if (rect.width == 0 or rect.height == 0) return null;
+
+    const x0 = @as(u64, rect.x);
+    const y0 = @as(u64, rect.y);
+    const x1 = @as(u64, rect.x) + @as(u64, rect.width);
+    const y1 = @as(u64, rect.y) + @as(u64, rect.height);
+    const bx1 = @as(u64, bounds_width);
+    const by1 = @as(u64, bounds_height);
+
+    if (x0 >= bx1 or y0 >= by1) return null;
+
+    const clipped_x1 = @min(x1, bx1);
+    const clipped_y1 = @min(y1, by1);
+    if (clipped_x1 <= x0 or clipped_y1 <= y0) return null;
+
+    return .{
+        .x = @intCast(x0),
+        .y = @intCast(y0),
+        .width = @intCast(clipped_x1 - x0),
+        .height = @intCast(clipped_y1 - y0),
+    };
+}
+
+fn rectsTouchOrOverlap(a: Rect, b: Rect) bool {
+    if (a.width == 0 or a.height == 0) return false;
+    if (b.width == 0 or b.height == 0) return false;
+
+    const ax0 = @as(u64, a.x);
+    const ay0 = @as(u64, a.y);
+    const ax1 = ax0 + @as(u64, a.width);
+    const ay1 = ay0 + @as(u64, a.height);
+
+    const bx0 = @as(u64, b.x);
+    const by0 = @as(u64, b.y);
+    const bx1 = bx0 + @as(u64, b.width);
+    const by1 = by0 + @as(u64, b.height);
+
+    return ax0 <= bx1 and bx0 <= ax1 and ay0 <= by1 and by0 <= ay1;
+}
+
+fn rectUnion(a: Rect, b: Rect) Rect {
+    const x0 = @min(@as(u64, a.x), @as(u64, b.x));
+    const y0 = @min(@as(u64, a.y), @as(u64, b.y));
+    const x1 = @max(@as(u64, a.x) + @as(u64, a.width), @as(u64, b.x) + @as(u64, b.width));
+    const y1 = @max(@as(u64, a.y) + @as(u64, a.height), @as(u64, b.y) + @as(u64, b.height));
+    return .{
+        .x = @intCast(x0),
+        .y = @intCast(y0),
+        .width = @intCast(x1 - x0),
+        .height = @intCast(y1 - y0),
+    };
+}
+
 pub const FloatRect = struct {
     x: f32,
     y: f32,
@@ -1819,6 +1987,108 @@ test "isRuntimeCompatibleWithCpuRoute keeps CPU route enabled for background and
     try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, false, true));
     try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, true, true));
     try std.testing.expect(!isRuntimeCompatibleWithCpuRoute(true, true, true));
+}
+
+test "DamageTracker clips rects to bounds" {
+    const alloc = std.testing.allocator;
+    var tracker = DamageTracker.init(8);
+    defer tracker.deinit(alloc);
+
+    try tracker.markRect(alloc, 10, 10, .{
+        .x = 8,
+        .y = 7,
+        .width = 6,
+        .height = 5,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.rectCount());
+    try std.testing.expectEqual(@as(u64, 0), tracker.overflowCount());
+    try std.testing.expectEqualDeep(Rect{
+        .x = 8,
+        .y = 7,
+        .width = 2,
+        .height = 3,
+    }, tracker.slice()[0]);
+}
+
+test "DamageTracker merges touching and overlapping rects" {
+    const alloc = std.testing.allocator;
+    var tracker = DamageTracker.init(8);
+    defer tracker.deinit(alloc);
+
+    try tracker.markRect(alloc, 20, 20, .{
+        .x = 2,
+        .y = 2,
+        .width = 4,
+        .height = 4,
+    });
+    try tracker.markRect(alloc, 20, 20, .{
+        .x = 6,
+        .y = 4,
+        .width = 3,
+        .height = 3,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.rectCount());
+    try std.testing.expectEqualDeep(Rect{
+        .x = 2,
+        .y = 2,
+        .width = 7,
+        .height = 5,
+    }, tracker.slice()[0]);
+}
+
+test "DamageTracker overflow degrades to full-frame rect" {
+    const alloc = std.testing.allocator;
+    var tracker = DamageTracker.init(2);
+    defer tracker.deinit(alloc);
+
+    try tracker.markRect(alloc, 10, 8, .{
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+    });
+    try tracker.markRect(alloc, 10, 8, .{
+        .x = 3,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+    });
+    try tracker.markRect(alloc, 10, 8, .{
+        .x = 6,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.rectCount());
+    try std.testing.expectEqual(@as(u64, 1), tracker.overflowCount());
+    try std.testing.expectEqualDeep(Rect{
+        .x = 0,
+        .y = 0,
+        .width = 10,
+        .height = 8,
+    }, tracker.slice()[0]);
+}
+
+test "DamageTracker resetRetainingCapacity clears damage while preserving overflow total" {
+    const alloc = std.testing.allocator;
+    var tracker = DamageTracker.init(0);
+    defer tracker.deinit(alloc);
+
+    try tracker.markRect(alloc, 10, 10, .{
+        .x = 1,
+        .y = 1,
+        .width = 2,
+        .height = 2,
+    });
+    try std.testing.expectEqual(@as(u64, 1), tracker.overflowCount());
+    try std.testing.expectEqual(@as(usize, 0), tracker.rectCount());
+
+    tracker.resetRetainingCapacity();
+    try std.testing.expect(!tracker.hasDamage());
+    try std.testing.expectEqual(@as(u64, 1), tracker.overflowCount());
 }
 
 test "FramePool publish uses caller generation and release returns slot to idle" {

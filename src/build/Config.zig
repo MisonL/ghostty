@@ -26,10 +26,16 @@ const software_renderer_cpu_min_linux: std.SemanticVersion = .{
     .minor = 4,
     .patch = 0,
 };
+const software_renderer_cpu_mvp_help =
+    "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. For legacy target bring-up examples: macOS 11 => zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 5.0 => zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.";
 const software_renderer_cpu_shader_mode_help =
     "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=fallback to platform route while shaders are active (safe rollback path); full=keep CPU route while shaders are active and bypass custom-shader effects in current stage.";
 const software_renderer_cpu_shader_timeout_help =
     "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. Current stage keeps safe on platform-route fallback. Default: 16.";
+const software_renderer_cpu_frame_damage_mode_help =
+    "CPU software renderer frame-damage publishing mode: off|rects. off publishes full frames for each CPU-route update; rects tracks and reports damage rectangles (current stage still uses conservative full-frame composition).";
+const software_renderer_cpu_damage_rect_cap_help =
+    "Maximum number of tracked damage rectangles for CPU software renderer per frame (u16). Overflow degrades to one full-frame rect for correctness. Default: 64.";
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -55,6 +61,8 @@ software_renderer_cpu_effective: bool = false,
 software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode = .full,
 software_renderer_cpu_shader_timeout_ms: u32 = 16,
+software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode = .rects,
+software_renderer_cpu_damage_rect_cap: u16 = 64,
 
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
@@ -168,7 +176,7 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
     config.software_renderer_cpu_mvp = b.option(
         bool,
         "software-renderer-cpu-mvp",
-        "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. For legacy target bring-up examples: macOS 11 => zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 5.0 => zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.",
+        software_renderer_cpu_mvp_help,
     ) orelse false;
     config.software_renderer_cpu_allow_legacy_os = b.option(
         bool,
@@ -196,6 +204,16 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-shader-timeout-ms",
         software_renderer_cpu_shader_timeout_help,
     ) orelse 16;
+    config.software_renderer_cpu_frame_damage_mode = b.option(
+        SoftwareRendererCpuFrameDamageMode,
+        "software-renderer-cpu-frame-damage-mode",
+        software_renderer_cpu_frame_damage_mode_help,
+    ) orelse .rects;
+    config.software_renderer_cpu_damage_rect_cap = b.option(
+        u16,
+        "software-renderer-cpu-damage-rect-cap",
+        software_renderer_cpu_damage_rect_cap_help,
+    ) orelse 64;
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -559,6 +577,16 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         "software_renderer_cpu_shader_timeout_ms",
         self.software_renderer_cpu_shader_timeout_ms,
     );
+    step.addOption(
+        SoftwareRendererCpuFrameDamageMode,
+        "software_renderer_cpu_frame_damage_mode",
+        self.software_renderer_cpu_frame_damage_mode,
+    );
+    step.addOption(
+        u16,
+        "software_renderer_cpu_damage_rect_cap",
+        self.software_renderer_cpu_damage_rect_cap,
+    );
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -650,6 +678,11 @@ pub fn fromOptions() Config {
             @tagName(options.software_renderer_cpu_shader_mode),
         ).?,
         .software_renderer_cpu_shader_timeout_ms = options.software_renderer_cpu_shader_timeout_ms,
+        .software_renderer_cpu_frame_damage_mode = std.meta.stringToEnum(
+            SoftwareRendererCpuFrameDamageMode,
+            @tagName(options.software_renderer_cpu_frame_damage_mode),
+        ).?,
+        .software_renderer_cpu_damage_rect_cap = options.software_renderer_cpu_damage_rect_cap,
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
@@ -769,6 +802,11 @@ test "softwareRendererCpuShader default values stay stable" {
     };
     try std.testing.expectEqual(SoftwareRendererCpuShaderMode.full, config.software_renderer_cpu_shader_mode);
     try std.testing.expectEqual(@as(u32, 16), config.software_renderer_cpu_shader_timeout_ms);
+    try std.testing.expectEqual(
+        SoftwareRendererCpuFrameDamageMode.rects,
+        config.software_renderer_cpu_frame_damage_mode,
+    );
+    try std.testing.expectEqual(@as(u16, 64), config.software_renderer_cpu_damage_rect_cap);
 }
 
 test "softwareRendererCpuShader help text keeps full bypass and safe fallback semantics" {
@@ -792,6 +830,44 @@ test "softwareRendererCpuShader help text keeps full bypass and safe fallback se
             software_renderer_cpu_shader_timeout_help,
             "Current stage keeps safe on platform-route fallback",
         ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_frame_damage_mode_help,
+            "off publishes full frames",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_damage_rect_cap_help,
+            "Overflow degrades to one full-frame rect",
+        ) != null,
+    );
+}
+
+test "softwareRendererCpuFrameDamageMode string mapping" {
+    const stdx = std;
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuFrameDamageMode.off,
+        std.meta.stringToEnum(SoftwareRendererCpuFrameDamageMode, "off").?,
+    );
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuFrameDamageMode.rects,
+        std.meta.stringToEnum(SoftwareRendererCpuFrameDamageMode, "rects").?,
+    );
+    try stdx.testing.expect(
+        std.meta.stringToEnum(SoftwareRendererCpuFrameDamageMode, "invalid") == null,
+    );
+}
+
+test "softwareRendererCpuMvp help text keeps support threshold wording in sync" {
+    try std.testing.expect(
+        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "macOS >= 14") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "Linux >= 5.4") != null,
     );
 }
 
@@ -880,6 +956,15 @@ pub const SoftwareRendererCpuShaderMode = enum {
     /// Keep CPU route while custom shaders are active.
     /// Current stage bypasses custom-shader effects on this route.
     full,
+};
+
+/// Controls CPU-route frame publication damage behavior.
+pub const SoftwareRendererCpuFrameDamageMode = enum {
+    /// Disable damage tracking and treat each publish as full-frame.
+    off,
+
+    /// Track damage rectangles with overflow-safe degradation.
+    rects,
 };
 
 /// The release channel for the build.

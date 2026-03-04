@@ -11,9 +11,13 @@ Usage:
     [--allow-legacy-os <true|false>] \
     [--cpu-shader-mode <off|safe|full>] \
     [--cpu-shader-timeout-ms <u32>] \
+    [--cpu-frame-damage-mode <off|rects>] \
+    [--cpu-damage-rect-cap <u16>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
     [--expect-cpu-shader-timeout-ms <u32>] \
+    [--expect-cpu-frame-damage-mode <off|rects>] \
+    [--expect-cpu-damage-rect-cap <u16>] \
     [--expect-full-custom-shader-bypass <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
@@ -60,15 +64,32 @@ normalize_target_for_zig() {
   printf '%s' "$raw_target"
 }
 
+report_failure() {
+  local failure_class="$1"
+  local hint="$2"
+  shift 2
+
+  echo "[software-compat] failure-class=$failure_class"
+  echo "[software-compat] hint: $hint"
+  for detail in "$@"; do
+    echo "[software-compat] $detail"
+  done
+  exit 1
+}
+
 mode="test"
 transport="auto"
 target=""
 allow_legacy_os="false"
 cpu_shader_mode=""
 cpu_shader_timeout_ms=""
+cpu_frame_damage_mode=""
+cpu_damage_rect_cap=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
 expect_cpu_shader_timeout_ms=""
+expect_cpu_frame_damage_mode=""
+expect_cpu_damage_rect_cap=""
 expect_full_custom_shader_bypass=""
 app_runtime=""
 system_path=""
@@ -125,6 +146,22 @@ while (($# > 0)); do
       cpu_shader_timeout_ms="${2:-}"
       shift 2
       ;;
+    --cpu-frame-damage-mode=*)
+      cpu_frame_damage_mode="${1#*=}"
+      shift
+      ;;
+    --cpu-frame-damage-mode)
+      cpu_frame_damage_mode="${2:-}"
+      shift 2
+      ;;
+    --cpu-damage-rect-cap=*)
+      cpu_damage_rect_cap="${1#*=}"
+      shift
+      ;;
+    --cpu-damage-rect-cap)
+      cpu_damage_rect_cap="${2:-}"
+      shift 2
+      ;;
     --expect-cpu-effective=*)
       expect_cpu_effective="${1#*=}"
       shift
@@ -147,6 +184,22 @@ while (($# > 0)); do
       ;;
     --expect-cpu-shader-timeout-ms)
       expect_cpu_shader_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-frame-damage-mode=*)
+      expect_cpu_frame_damage_mode="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-frame-damage-mode)
+      expect_cpu_frame_damage_mode="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-damage-rect-cap=*)
+      expect_cpu_damage_rect_cap="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-damage-rect-cap)
+      expect_cpu_damage_rect_cap="${2:-}"
       shift 2
       ;;
     --expect-full-custom-shader-bypass=*)
@@ -229,6 +282,24 @@ if [[ -n "$cpu_shader_timeout_ms" ]]; then
   fi
 fi
 
+if [[ -n "$cpu_frame_damage_mode" && "$cpu_frame_damage_mode" != "off" && "$cpu_frame_damage_mode" != "rects" ]]; then
+  echo "invalid --cpu-frame-damage-mode: $cpu_frame_damage_mode (expected: off|rects)" >&2
+  exit 2
+fi
+
+if [[ -n "$cpu_damage_rect_cap" ]]; then
+  if ! [[ "$cpu_damage_rect_cap" =~ ^[0-9]+$ ]]; then
+    echo "invalid --cpu-damage-rect-cap: $cpu_damage_rect_cap (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_damage_rect_cap} > 5 )) || {
+    (( ${#cpu_damage_rect_cap} == 5 )) && (( cpu_damage_rect_cap > 65535 ))
+  }; then
+    echo "invalid --cpu-damage-rect-cap: $cpu_damage_rect_cap (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "true" && "$expect_cpu_effective" != "false" ]]; then
   echo "invalid --expect-cpu-effective: $expect_cpu_effective" >&2
   exit 2
@@ -248,6 +319,24 @@ if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
     (( ${#expect_cpu_shader_timeout_ms} == 10 )) && (( expect_cpu_shader_timeout_ms > 4294967295 ))
   }; then
     echo "invalid --expect-cpu-shader-timeout-ms: $expect_cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$expect_cpu_frame_damage_mode" && "$expect_cpu_frame_damage_mode" != "off" && "$expect_cpu_frame_damage_mode" != "rects" ]]; then
+  echo "invalid --expect-cpu-frame-damage-mode: $expect_cpu_frame_damage_mode (expected: off|rects)" >&2
+  exit 2
+fi
+
+if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
+  if ! [[ "$expect_cpu_damage_rect_cap" =~ ^[0-9]+$ ]]; then
+    echo "invalid --expect-cpu-damage-rect-cap: $expect_cpu_damage_rect_cap (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#expect_cpu_damage_rect_cap} > 5 )) || {
+    (( ${#expect_cpu_damage_rect_cap} == 5 )) && (( expect_cpu_damage_rect_cap > 65535 ))
+  }; then
+    echo "invalid --expect-cpu-damage-rect-cap: $expect_cpu_damage_rect_cap (expected: 0..65535)" >&2
     exit 2
   fi
 fi
@@ -337,6 +426,12 @@ fi
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-timeout-ms=$cpu_shader_timeout_ms")
 fi
+if [[ -n "$cpu_frame_damage_mode" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-frame-damage-mode=$cpu_frame_damage_mode")
+fi
+if [[ -n "$cpu_damage_rect_cap" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-damage-rect-cap=$cpu_damage_rect_cap")
+fi
 cmd+=("-Dsoftware-frame-transport-mode=$transport")
 cmd+=(-Demit-macos-app=false)
 
@@ -355,7 +450,7 @@ fi
 cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
 if [[ "${cpu_shader_mode:-full}" == "full" ]]; then
   echo "[software-compat] note: cpu-shader-mode=full currently keeps CPU-route compatibility enabled, but custom-shader effects are bypassed on the CPU route."
 fi
@@ -365,18 +460,30 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_full_custom_shader_bypass" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_full_custom_shader_bypass" ]]; then
     options_file=""
+    options_candidates=()
     while IFS= read -r candidate; do
-      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_timeout_ms' "$candidate"; then
+      options_candidates+=("$candidate")
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap' "$candidate"; then
         options_file="$candidate"
         break
       fi
     done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
 
     if [[ -z "$options_file" ]]; then
-      echo "[software-compat] assertions requested but options.zig not found in cache expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}"
-      exit 1
+      options_candidates_count="${#options_candidates[@]}"
+      options_preview="<none>"
+      if (( options_candidates_count > 0 )); then
+        options_preview="$(printf '%s,' "${options_candidates[@]:0:5}")"
+        options_preview="${options_preview%,}"
+      fi
+      report_failure \
+        "environment options-zig-missing" \
+        "verify Zig cache layout and build options export symbols" \
+        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}" \
+        "cache-root=$cache_dir/c options-candidates=$options_candidates_count" \
+        "options-candidates-preview=$options_preview"
     fi
 
     if [[ -n "$expect_cpu_effective" ]]; then
@@ -385,8 +492,10 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         if [[ -z "$actual_cpu_effective" ]]; then
           actual_cpu_effective="unknown"
         fi
-        echo "[software-compat] cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
-        exit 1
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
       fi
       echo "[software-compat] cpu-effective assertion matched expected=$expect_cpu_effective"
     fi
@@ -397,8 +506,10 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         if [[ -z "$actual_cpu_shader_mode" ]]; then
           actual_cpu_shader_mode="unknown"
         fi
-        echo "[software-compat] cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$actual_cpu_shader_mode file=$options_file"
-        exit 1
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$actual_cpu_shader_mode file=$options_file"
       fi
       echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
     fi
@@ -409,10 +520,40 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         if [[ -z "$actual_cpu_shader_timeout_ms" ]]; then
           actual_cpu_shader_timeout_ms="unknown"
         fi
-        echo "[software-compat] cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$actual_cpu_shader_timeout_ms file=$options_file"
-        exit 1
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$actual_cpu_shader_timeout_ms file=$options_file"
       fi
       echo "[software-compat] cpu-shader-timeout-ms assertion matched expected=$expect_cpu_shader_timeout_ms"
+    fi
+
+    if [[ -n "$expect_cpu_frame_damage_mode" ]]; then
+      if ! grep -Eq "software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\\.?$expect_cpu_frame_damage_mode([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_frame_damage_mode="$(sed -nE 's/.*software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_frame_damage_mode" ]]; then
+          actual_cpu_frame_damage_mode="unknown"
+        fi
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-frame-damage-mode mismatch expected=$expect_cpu_frame_damage_mode actual=$actual_cpu_frame_damage_mode file=$options_file"
+      fi
+      echo "[software-compat] cpu-frame-damage-mode assertion matched expected=$expect_cpu_frame_damage_mode"
+    fi
+
+    if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
+      if ! grep -Eq "software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*$expect_cpu_damage_rect_cap([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_damage_rect_cap="$(sed -nE 's/.*software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_damage_rect_cap" ]]; then
+          actual_cpu_damage_rect_cap="unknown"
+        fi
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-damage-rect-cap mismatch expected=$expect_cpu_damage_rect_cap actual=$actual_cpu_damage_rect_cap file=$options_file"
+      fi
+      echo "[software-compat] cpu-damage-rect-cap assertion matched expected=$expect_cpu_damage_rect_cap"
     fi
 
     if [[ -n "$expect_full_custom_shader_bypass" ]]; then
@@ -421,13 +562,17 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         if [[ -z "$actual_cpu_shader_mode" ]]; then
           actual_cpu_shader_mode="unknown"
         fi
-        echo "[software-compat] full-custom-shader-bypass assertion requires effective cpu-shader-mode=full actual=$actual_cpu_shader_mode file=$options_file"
-        exit 1
+        report_failure \
+          "assertion config-mismatch" \
+          "full-custom-shader-bypass assertion requires effective cpu-shader-mode=full" \
+          "full-custom-shader-bypass assertion requires effective cpu-shader-mode=full actual=$actual_cpu_shader_mode file=$options_file"
       fi
 
       if [[ "$expect_full_custom_shader_bypass" == "false" ]]; then
-        echo "[software-compat] full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
-        exit 1
+        report_failure \
+          "assertion behavior-mismatch" \
+          "current behavior enforces bypass when cpu-shader-mode=full" \
+          "full-custom-shader-bypass mismatch expected=false actual=true (current behavior: cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
       fi
 
       echo "[software-compat] full-custom-shader-bypass assertion matched expected=true (cpu-shader-mode=full keeps CPU-route compatibility enabled while custom-shader effects are bypassed on the CPU route)"
@@ -439,17 +584,15 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
 fi
 
 if grep -Eq 'recompile with -fPIC|ld\.lld: relocation' "$log_file"; then
-  echo "[software-compat] failure-class=environment toolchain-linker-pic"
-  echo "[software-compat] hint: verify host/runner and third-party archive PIC compatibility"
-  exit 1
+  report_failure \
+    "environment toolchain-linker-pic" \
+    "verify host/runner and third-party archive PIC compatibility"
 fi
 
 if grep -Eq 'xcodebuild.*(CodeSign|codesign)|Library .* not found|Testing cancelled because the build failed' "$log_file"; then
-  echo "[software-compat] failure-class=environment xcode-build-chain"
-  echo "[software-compat] hint: verify Xcode selection and build environment"
-  exit 1
+  report_failure \
+    "environment xcode-build-chain" \
+    "verify Xcode selection and build environment"
 fi
 
-echo "[software-compat] failure-class=logic-or-runtime"
-echo "[software-compat] hint: inspect logs above for regression details"
-exit 1
+report_failure "logic-or-runtime" "inspect logs above for regression details"

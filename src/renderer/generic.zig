@@ -52,6 +52,19 @@ const software_renderer_cpu_effective =
             build_config.software_renderer_cpu_mvp)
     else
         false;
+const software_renderer_cpu_frame_damage_mode: cpu_renderer.FrameDamageMode =
+    if (@hasDecl(build_config, "software_renderer_cpu_frame_damage_mode"))
+        switch (build_config.software_renderer_cpu_frame_damage_mode) {
+            .off => .off,
+            .rects => .rects,
+        }
+    else
+        .off;
+const software_renderer_cpu_damage_rect_cap: u16 =
+    if (@hasDecl(build_config, "software_renderer_cpu_damage_rect_cap"))
+        build_config.software_renderer_cpu_damage_rect_cap
+    else
+        0;
 const max_retired_cpu_frame_pools: usize = 4;
 
 const SoftwareCpuRouteDisableReason = enum {
@@ -86,6 +99,9 @@ const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
     custom_shader_bypass_count: u64,
     publish_retry_count: u64,
+    cpu_damage_rect_count: u64,
+    cpu_damage_rect_overflow_count: u64,
+    cpu_publish_skipped_no_damage_count: u64,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
 };
@@ -94,6 +110,9 @@ const CpuRouteDiagnosticsState = struct {
     custom_shader_fallback_count: u64 = 0,
     custom_shader_bypass_count: u64 = 0,
     publish_retry_count: u64 = 0,
+    cpu_damage_rect_count: u64 = 0,
+    cpu_damage_rect_overflow_count: u64 = 0,
+    cpu_publish_skipped_no_damage_count: u64 = 0,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
 
@@ -119,11 +138,27 @@ const CpuRouteDiagnosticsState = struct {
         self.last_cpu_frame_ms = duration_ns / std.time.ns_per_ms;
     }
 
+    fn recordDamageStats(
+        self: *CpuRouteDiagnosticsState,
+        rect_count: usize,
+        overflow_count: u64,
+    ) void {
+        self.cpu_damage_rect_count = @intCast(rect_count);
+        self.cpu_damage_rect_overflow_count = overflow_count;
+    }
+
+    fn recordPublishSkippedNoDamage(self: *CpuRouteDiagnosticsState) void {
+        self.cpu_publish_skipped_no_damage_count +%= 1;
+    }
+
     fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
         return .{
             .custom_shader_fallback_count = self.custom_shader_fallback_count,
             .custom_shader_bypass_count = self.custom_shader_bypass_count,
             .publish_retry_count = self.publish_retry_count,
+            .cpu_damage_rect_count = self.cpu_damage_rect_count,
+            .cpu_damage_rect_overflow_count = self.cpu_damage_rect_overflow_count,
+            .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
             .last_cpu_frame_ms = self.last_cpu_frame_ms,
             .last_fallback_reason = self.last_fallback_reason,
         };
@@ -310,6 +345,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// Runtime diagnostics state for software renderer CPU route.
         cpu_route_diagnostics: CpuRouteDiagnosticsState = .{},
+
+        /// CPU-route frame damage tracker (current stage publishes conservative
+        /// full-frame damage regions while preparing incremental updates).
+        cpu_damage_tracker: cpu_renderer.DamageTracker =
+            cpu_renderer.DamageTracker.init(software_renderer_cpu_damage_rect_cap),
 
         /// Flag to indicate that our focus state changed for custom
         /// shaders to update their state.
@@ -1048,6 +1088,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.font_shaper_cache.deinit(self.alloc);
 
             self.config.deinit();
+            self.cpu_damage_tracker.deinit(self.alloc);
 
             self.images.deinit(self.alloc);
 
@@ -1993,6 +2034,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const height_px = std.math.cast(u32, surface_size.height) orelse return false;
             if (width_px == 0 or height_px == 0) return false;
 
+            self.cpu_damage_tracker.resetRetainingCapacity();
+            switch (comptime software_renderer_cpu_frame_damage_mode) {
+                .off => {},
+                .rects => try self.cpu_damage_tracker.markFull(
+                    self.alloc,
+                    width_px,
+                    height_px,
+                ),
+            }
+            self.cpu_route_diagnostics.recordDamageStats(
+                self.cpu_damage_tracker.rectCount(),
+                self.cpu_damage_tracker.overflowCount(),
+            );
+
             var pool = self.ensureCpuFramePool(width_px, height_px) catch |err| switch (err) {
                 error.CpuFramePoolRetiredPressure => return false,
                 else => return err,
@@ -2554,6 +2609,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             if (!needs_redraw) {
                 if (use_software_cpu_path) {
+                    if (comptime software_renderer_cpu_frame_damage_mode == .rects) {
+                        self.cpu_route_diagnostics.recordPublishSkippedNoDamage();
+                    }
                     return;
                 }
 
@@ -4609,6 +4667,9 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_fallback_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(
         SoftwareCpuRouteDisableReason.custom_shaders_unsupported,
@@ -4622,12 +4683,18 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     diagnostics.recordCustomShaderBypass();
     diagnostics.recordPublishRetry();
     diagnostics.recordPublishRetry();
+    diagnostics.recordDamageStats(3, 1);
+    diagnostics.recordPublishSkippedNoDamage();
+    diagnostics.recordPublishSkippedNoDamage();
     diagnostics.recordCpuFramePublished((17 * std.time.ns_per_ms) + (500 * std.time.ns_per_us));
 
     const snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u64, 3), snapshot.cpu_damage_rect_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_damage_rect_overflow_count);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
 }
