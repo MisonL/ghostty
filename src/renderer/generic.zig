@@ -2250,7 +2250,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             defer self.font_grid.lock.unlockShared();
 
             var framebuffer = acquired.framebuffer;
-            const text_layer = self.ensureCpuTextLayer(width_px, height_px) catch null;
+            const has_non_text_compositing = self.hasCpuNonTextCompositingDamage();
+            const text_layer = if (has_non_text_compositing)
+                self.ensureCpuTextLayer(width_px, height_px) catch null
+            else
+                null;
 
             if (text_layer) |layer| {
                 self.composeCpuBackground(&framebuffer);
