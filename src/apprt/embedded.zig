@@ -1915,10 +1915,25 @@ pub const CAPI = struct {
         opts: ?*const apprt.runtime.App.Options,
         config: ?*const Config,
     ) ?*App {
-        const runtime_opts = opts orelse return null;
-        const config_ptr = config orelse return null;
+        const runtime_opts = opts orelse {
+            log.err("error validating runtime config: null runtime config pointer", .{});
+            return null;
+        };
+        const config_ptr = config orelse {
+            log.err("error initializing app: null config pointer", .{});
+            return null;
+        };
         const mapped_opts = runtimeOptionsResolve(runtime_opts) catch |err| {
-            log.err("error validating runtime config err={}", .{err});
+            log.err(
+                "error validating runtime config err={} version={} size={} expected_version={} min_size={}",
+                .{
+                    err,
+                    runtime_opts.struct_version,
+                    runtime_opts.struct_size,
+                    apprt.runtime.App.runtime_config_version,
+                    apprt.runtime.App.runtime_config_min_size,
+                },
+            );
             return null;
         };
         return app_new_(mapped_opts, config_ptr) catch |err| {
