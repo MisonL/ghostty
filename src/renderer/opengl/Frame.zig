@@ -19,6 +19,9 @@ pub const Options = struct {};
 
 renderer: *Renderer,
 target: *Target,
+publish_software_frame: bool,
+publish_width_px: u32,
+publish_height_px: u32,
 
 /// Begin encoding a frame.
 pub fn begin(
@@ -28,12 +31,18 @@ pub fn begin(
     renderer: *Renderer,
     /// The target is presented via the provided renderer's API when completed.
     target: *Target,
+    publish_software_frame: bool,
+    publish_width_px: u32,
+    publish_height_px: u32,
 ) !Self {
     _ = opts;
 
     return .{
         .renderer = renderer,
         .target = target,
+        .publish_software_frame = publish_software_frame,
+        .publish_width_px = publish_width_px,
+        .publish_height_px = publish_height_px,
     };
 }
 
@@ -67,5 +76,11 @@ pub fn complete(self: *const Self, sync: bool) void {
     }
 
     // Report the health to the renderer.
-    self.renderer.frameCompleted(health);
+    self.renderer.frameCompleted(
+        health,
+        self.target,
+        self.publish_software_frame,
+        self.publish_width_px,
+        self.publish_height_px,
+    );
 }

@@ -34,6 +34,9 @@ pub fn begin(
     renderer: *Renderer,
     /// The target is presented via the provided renderer's API when completed.
     target: *Target,
+    publish_software_frame: bool,
+    publish_width_px: u32,
+    publish_height_px: u32,
 ) !Self {
     const buffer = opts.queue.msgSend(
         objc.Object,
@@ -48,6 +51,9 @@ pub fn begin(
             .renderer = renderer,
             .target = target,
             .sync = false,
+            .publish_software_frame = publish_software_frame,
+            .publish_width_px = publish_width_px,
+            .publish_height_px = publish_height_px,
         },
         &bufferCompleted,
     );
@@ -60,6 +66,9 @@ const CompletionBlock = objc.Block(struct {
     renderer: *Renderer,
     target: *Target,
     sync: bool,
+    publish_software_frame: bool,
+    publish_width_px: u32,
+    publish_height_px: u32,
 }, .{
     objc.c.id, // MTLCommandBuffer
 }, void);
@@ -87,7 +96,13 @@ fn bufferCompleted(
         };
     }
 
-    block.renderer.frameCompleted(health);
+    block.renderer.frameCompleted(
+        health,
+        block.target,
+        block.publish_software_frame,
+        block.publish_width_px,
+        block.publish_height_px,
+    );
 }
 
 /// Add a render pass to this frame with the provided attachments.

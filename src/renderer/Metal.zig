@@ -37,6 +37,8 @@ pub const custom_shader_y_is_down = true;
 
 /// Triple buffering.
 pub const swap_chain_count = 3;
+/// Publish software frames only after GPU completion callbacks.
+pub const softwareFramePublicationOnCompletion = true;
 
 const log = std.log.scoped(.metal);
 
@@ -309,12 +311,10 @@ fn softwareFrameSharedAvailabilityReasonForRouteEnabled(
 ) SoftwareFrameSharedAvailabilityReason {
     if (!route_enabled) return .route_disabled;
 
-    // NOTE: publishSoftwareFrame is called before the current command buffer is
-    // committed/completed (see renderer/generic.zig drawFrame). Exposing IOSurface
-    // CPU bytes here would race with in-flight GPU writes and may read stale or
-    // undefined contents. Keep the shared path explicitly disabled until frame
-    // publication is moved to a completion-safe point or an explicit readback/sync
-    // path is added.
+    // NOTE: shared CPU bytes publication for Metal still requires an explicit
+    // completion-safe readback/sync path. Even with completion-time publication,
+    // we currently don't have a stable shared-bytes path here, so keep it
+    // disabled to preserve correctness.
     return .sync_unimplemented;
 }
 
@@ -625,8 +625,18 @@ pub inline fn beginFrame(
     renderer: *Renderer,
     /// The target is presented via the provided renderer's API when completed.
     target: *Target,
+    publish_software_frame: bool,
+    publish_width_px: u32,
+    publish_height_px: u32,
 ) !Frame {
-    return try Frame.begin(.{ .queue = self.queue }, renderer, target);
+    return try Frame.begin(
+        .{ .queue = self.queue },
+        renderer,
+        target,
+        publish_software_frame,
+        publish_width_px,
+        publish_height_px,
+    );
 }
 
 fn chooseDevice() error{NoMetalDevice}!objc.Object {

@@ -2918,7 +2918,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             // Get a frame context from the graphics API.
-            var frame_ctx = try self.api.beginFrame(self, &frame.target);
+            const publish_software_frame =
+                self.software_frame_publishing and
+                self.config.software_renderer_experimental and
+                self.config.software_renderer_presenter != .@"legacy-gl";
+            const publish_software_frame_on_completion =
+                comptime @hasDecl(GraphicsAPI, "softwareFramePublicationOnCompletion") and
+                GraphicsAPI.softwareFramePublicationOnCompletion;
+
+            var frame_ctx = try self.api.beginFrame(
+                self,
+                &frame.target,
+                publish_software_frame and publish_software_frame_on_completion,
+                self.size.screen.width,
+                self.size.screen.height,
+            );
             defer frame_ctx.complete(sync);
 
             {
@@ -3051,11 +3065,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
             }
 
-            const publish_software_frame =
-                self.software_frame_publishing and
-                self.config.software_renderer_experimental and
-                self.config.software_renderer_presenter != .@"legacy-gl";
-            if (publish_software_frame and @hasDecl(GraphicsAPI, "publishSoftwareFrame")) {
+            if (publish_software_frame and
+                @hasDecl(GraphicsAPI, "publishSoftwareFrame") and
+                !publish_software_frame_on_completion)
+            {
                 if (try self.api.publishSoftwareFrame(
                     &frame.target,
                     self.size.screen,
@@ -3071,7 +3084,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         pub fn frameCompleted(
             self: *Self,
             health: Health,
+            completed_target: ?*const Target,
+            publish_software_frame: bool,
+            publish_width_px: u32,
+            publish_height_px: u32,
         ) void {
+            const publish_software_frame_on_completion =
+                comptime @hasDecl(GraphicsAPI, "softwareFramePublicationOnCompletion") and
+                GraphicsAPI.softwareFramePublicationOnCompletion;
+
             // If our health value hasn't changed, then we do nothing. We don't
             // do a cmpxchg here because strict atomicity isn't important.
             if (self.health.load(.seq_cst) != health) {
@@ -3082,6 +3103,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 _ = self.surface_mailbox.push(.{
                     .renderer_health = health,
                 }, .{ .forever = {} });
+            }
+
+            if (health == .healthy and
+                @hasDecl(GraphicsAPI, "publishSoftwareFrame") and
+                publish_software_frame_on_completion and
+                publish_software_frame and
+                completed_target != null)
+            {
+                const software_frame = self.api.publishSoftwareFrame(
+                    completed_target.?,
+                    .{
+                        .width = publish_width_px,
+                        .height = publish_height_px,
+                    },
+                ) catch |err| blk: {
+                    log.warn("error publishing software frame on completion err={}", .{err});
+                    break :blk null;
+                };
+                if (software_frame) |ready| {
+                    _ = self.surface_mailbox.push(.{
+                        .software_frame_ready = ready,
+                    }, .instant);
+                }
             }
 
             // Always release our semaphore

@@ -2019,9 +2019,8 @@ keybind: Keybinds = .{},
 ///   keep current fallback behavior: platform route is used while shaders
 ///   are active.
 /// * `-Dsoftware-renderer-cpu-shader-mode=full`:
-///   keep CPU route active while shaders are configured. In the current stage,
-///   the custom-shader effect pass is bypassed on CPU route (not full shader
-///   execution yet).
+///   use CPU route only when custom-shader execution capability is available;
+///   otherwise fallback to platform route while shaders are active.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) only defines the `safe` target behavior boundary.
@@ -3079,8 +3078,8 @@ keybind: Keybinds = .{},
 ///
 /// * `off`: always platform-route fallback while shaders are active.
 /// * `safe`: keep platform-route fallback while shaders are active.
-/// * `full`: keep CPU route active, but bypass the custom-shader effect pass
-///   at this stage (so custom-shader visuals are not fully executed yet).
+/// * `full`: use CPU route only when custom-shader execution capability is
+///   available; otherwise fallback to platform route while shaders are active.
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.

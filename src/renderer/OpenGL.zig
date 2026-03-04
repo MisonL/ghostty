@@ -31,6 +31,8 @@ pub const custom_shader_y_is_down = false;
 /// Because OpenGL's frame completion is always
 /// sync, we have no need for multi-buffering.
 pub const swap_chain_count = 1;
+/// OpenGL publishes software frames during draw; no completion callback staging.
+pub const softwareFramePublicationOnCompletion = false;
 
 const log = std.log.scoped(.opengl);
 
@@ -548,7 +550,17 @@ pub inline fn beginFrame(
     renderer: *Renderer,
     /// The target is presented via the provided renderer's API when completed.
     target: *Target,
+    publish_software_frame: bool,
+    publish_width_px: u32,
+    publish_height_px: u32,
 ) !Frame {
     _ = self;
-    return try Frame.begin(.{}, renderer, target);
+    return try Frame.begin(
+        .{},
+        renderer,
+        target,
+        publish_software_frame,
+        publish_width_px,
+        publish_height_px,
+    );
 }
