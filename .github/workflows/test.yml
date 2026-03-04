@@ -10,7 +10,7 @@ name: Test
 # We only want the latest commit to test for any non-main ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name != 'main' && github.ref || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.repository == 'ghostty-org/ghostty' }}
 
 jobs:
   # Determines whether other jobs should be skipped. Modify this if there

@@ -7,7 +7,7 @@ name: Nix
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name != 'main' && github.ref || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.repository == 'ghostty-org/ghostty' }}
 
 jobs:
   required:
