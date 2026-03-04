@@ -1073,6 +1073,17 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Below-minimum target explicit legacy-override positive check.
+          - target:
+              target_label: linux-4.19-legacy
+              target: x86_64-linux.4.19.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # Safe mode timeout=0 compatibility spot-check (must stay build-valid).
           - target:
               target_label: linux-5.0-safe-timeout0
@@ -1241,6 +1252,17 @@ jobs:
               target: x86_64-macos.10.15.0
               force_allow_legacy_os: "false"
               expect_cpu_effective: "false"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # Below-minimum target explicit legacy-override positive check.
+          - target:
+              target_label: macos-10.15-legacy
+              target: x86_64-macos.10.15.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
               cpu_shader_mode: safe
               cpu_shader_timeout_ms: "16"
             transport:
