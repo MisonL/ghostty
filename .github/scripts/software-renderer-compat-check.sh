@@ -32,13 +32,13 @@ Examples:
 
   .github/scripts/software-renderer-compat-check.sh \
     --transport native \
-    --target x86_64-macos.11.0.0 \
+    --target x86_64-macos.10.15.0 \
     --allow-legacy-os true \
     --system /path/to/deps
 
 Notes:
   --allow-legacy-os=true is intended for legacy-target compatibility checks,
-  e.g. macOS 11 / Linux 5.0 scenarios.
+  e.g. macOS 10.15 / Linux 4.19 scenarios.
   --target accepts shorthand (e.g. x86_64-macos.11, x86_64-linux.5.0) and is
   auto-normalized to <major>.<minor>.<patch> for Zig.
   cpu-shader-mode=safe/full currently falls back to platform route while custom

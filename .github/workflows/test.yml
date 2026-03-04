@@ -995,7 +995,7 @@ jobs:
             expect_cpu_effective: "true"
             cpu_shader_mode: off
             cpu_shader_timeout_ms: ""
-          - target_label: linux-5.0-fallback
+          - target_label: linux-5.0-safe
             target: x86_64-linux.5.0.0
             expect_cpu_effective: "true"
             cpu_shader_mode: safe
@@ -1019,7 +1019,7 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
-          # Legacy target full-mode compatibility spot-check.
+          # Minimum-target full-mode compatibility spot-check.
           - target:
               target_label: linux-5.0-full
               target: x86_64-linux.5.0.0
@@ -1029,7 +1029,7 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
-          # Legacy target full-mode non-auto transport spot-check.
+          # Minimum-target full-mode non-auto transport spot-check.
           - target:
               target_label: linux-5.0-full-shared
               target: x86_64-linux.5.0.0
@@ -1062,10 +1062,10 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
-          # Legacy target gate negative check: do not force legacy override.
+          # Below-minimum target gate negative check: do not force legacy override.
           - target:
-              target_label: linux-5.0-no-legacy
-              target: x86_64-linux.5.0.0
+              target_label: linux-4.19-no-legacy
+              target: x86_64-linux.4.19.0
               force_allow_legacy_os: "false"
               expect_cpu_effective: "false"
               cpu_shader_mode: safe
@@ -1075,8 +1075,8 @@ jobs:
               transport_mode: auto
           # Safe mode timeout=0 compatibility spot-check (must stay build-valid).
           - target:
-              target_label: linux-5.4-safe-timeout0
-              target: x86_64-linux.5.4.0
+              target_label: linux-5.0-safe-timeout0
+              target: x86_64-linux.5.0.0
               expect_cpu_effective: "true"
               cpu_shader_mode: safe
               cpu_shader_timeout_ms: "0"
@@ -1119,7 +1119,7 @@ jobs:
             if [[ "${target}" =~ ^[^-]+-linux\.([0-9]+)\.([0-9]+)(\..*)?$ ]]; then
               target_major="${BASH_REMATCH[1]}"
               target_minor="${BASH_REMATCH[2]}"
-              if (( target_major < 5 || (target_major == 5 && target_minor < 4) )); then
+              if (( target_major < 5 )); then
                 allow_legacy_os=true
               fi
             else
@@ -1189,7 +1189,7 @@ jobs:
             expect_cpu_effective: "true"
             cpu_shader_mode: full
             cpu_shader_timeout_ms: ""
-          - target_label: macos-11.0-fallback
+          - target_label: macos-11.0-safe
             target: x86_64-macos.11.0.0
             expect_cpu_effective: "true"
             cpu_shader_mode: safe
@@ -1202,7 +1202,7 @@ jobs:
           - transport_label: native-forced
             transport_mode: native
         include:
-          # Legacy target full-mode compatibility spot-check.
+          # Minimum-target full-mode compatibility spot-check.
           - target:
               target_label: macos-11.0-full
               target: x86_64-macos.11.0.0
@@ -1235,10 +1235,10 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
-          # Legacy target gate negative check: do not force legacy override.
+          # Below-minimum target gate negative check: do not force legacy override.
           - target:
-              target_label: macos-11.0-no-legacy
-              target: x86_64-macos.11.0.0
+              target_label: macos-10.15-no-legacy
+              target: x86_64-macos.10.15.0
               force_allow_legacy_os: "false"
               expect_cpu_effective: "false"
               cpu_shader_mode: safe
@@ -1301,7 +1301,7 @@ jobs:
           if [[ -n "${target}" ]]; then
             if [[ "${target}" =~ ^[^-]+-macos\.([0-9]+)(\..*)?$ ]]; then
               target_major="${BASH_REMATCH[1]}"
-              if (( target_major < 14 )); then
+              if (( target_major < 11 )); then
                 allow_legacy_os=true
               fi
             else

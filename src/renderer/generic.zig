@@ -1141,7 +1141,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             log.warn(
-                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} allow_legacy_os={}; requires macOS >= 14 or Linux >= 5.4, falling back to platform route",
+                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} allow_legacy_os={}; requires macOS >= 11 or Linux >= 5.0, falling back to platform route",
                 .{
                     @tagName(builtin.target.os.tag),
                     @tagName(build_config.software_renderer_route_backend),

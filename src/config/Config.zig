@@ -2030,16 +2030,16 @@ keybind: Keybinds = .{},
 /// the platform route.
 ///
 /// Build-time compatibility note: by default the CPU route only becomes
-/// effective for macOS >= 14 and Linux >= 5.4. For experimental testing on
+/// effective for macOS >= 11 and Linux >= 5.0. For experimental testing on
 /// older systems, the build option `-Dsoftware-renderer-cpu-allow-legacy-os=true`
 /// can override this gate.
 ///
 /// Examples for legacy targets:
 ///
-/// * macOS 11:
-///   `zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
-/// * Linux 5.0:
-///   `zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
+/// * macOS 10.15:
+///   `zig build -Dtarget=aarch64-macos.10.15.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
+/// * Linux 4.19:
+///   `zig build -Dtarget=x86_64-linux.4.19.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true`
 ///
 /// This can be changed at runtime and will affect new frames.
 @"software-renderer-experimental": bool = false,

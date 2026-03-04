@@ -17,17 +17,17 @@ const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
 
 const software_renderer_cpu_min_macos: std.SemanticVersion = .{
-    .major = 14,
+    .major = 11,
     .minor = 0,
     .patch = 0,
 };
 const software_renderer_cpu_min_linux: std.SemanticVersion = .{
     .major = 5,
-    .minor = 4,
+    .minor = 0,
     .patch = 0,
 };
 const software_renderer_cpu_mvp_help =
-    "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 14 and Linux >= 5.4 unless legacy override is enabled. For legacy target bring-up examples: macOS 11 => zig build -Dtarget=aarch64-macos.11.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 5.0 => zig build -Dtarget=x86_64-linux.5.0.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.";
+    "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 11 and Linux >= 5.0 unless legacy override is enabled. For legacy target bring-up examples: macOS 10.15 => zig build -Dtarget=aarch64-macos.10.15.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 4.19 => zig build -Dtarget=x86_64-linux.4.19.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.";
 const software_renderer_cpu_shader_mode_help =
     "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=use CPU route only when custom-shader execution capability is available and timeout budget is > 0, otherwise fallback to platform route; full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route.";
 const software_renderer_cpu_shader_timeout_help =
@@ -743,72 +743,72 @@ fn effectiveSoftwareRendererCpuDamageRectCap(
     };
 }
 
-test "softwareRendererCpuSupported requires macOS 14+" {
+test "softwareRendererCpuSupported requires macOS 11+" {
     const stdx = std;
+    const macos_10_15 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+        .os_version_min = .{ .semver = .{ .major = 10, .minor = 15, .patch = 0 } },
+    });
     const macos_11 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .macos,
         .os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } },
     });
-    const macos_14 = try stdx.zig.system.resolveTargetQuery(.{
-        .cpu_arch = .x86_64,
-        .os_tag = .macos,
-        .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } },
-    });
 
-    try stdx.testing.expect(!softwareRendererCpuSupported(macos_11));
-    try stdx.testing.expect(softwareRendererCpuSupported(macos_14));
+    try stdx.testing.expect(!softwareRendererCpuSupported(macos_10_15));
+    try stdx.testing.expect(softwareRendererCpuSupported(macos_11));
 }
 
-test "softwareRendererCpuSupported requires Linux 5.4+" {
+test "softwareRendererCpuSupported requires Linux 5.0+" {
     const stdx = std;
+    const linux_4_19 = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .os_version_min = .{ .semver = .{ .major = 4, .minor = 19, .patch = 0 } },
+    });
     const linux_50 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .linux,
         .os_version_min = .{ .semver = .{ .major = 5, .minor = 0, .patch = 0 } },
     });
-    const linux_54 = try stdx.zig.system.resolveTargetQuery(.{
-        .cpu_arch = .x86_64,
-        .os_tag = .linux,
-        .os_version_min = .{ .semver = .{ .major = 5, .minor = 4, .patch = 0 } },
-    });
 
-    try stdx.testing.expect(!softwareRendererCpuSupported(linux_50));
-    try stdx.testing.expect(softwareRendererCpuSupported(linux_54));
+    try stdx.testing.expect(!softwareRendererCpuSupported(linux_4_19));
+    try stdx.testing.expect(softwareRendererCpuSupported(linux_50));
 }
 
 test "softwareRendererCpuEffective keeps legacy override disabled by default" {
     const stdx = std;
-    const linux_50 = try stdx.zig.system.resolveTargetQuery(.{
+    const linux_4_19 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .linux,
-        .os_version_min = .{ .semver = .{ .major = 5, .minor = 0, .patch = 0 } },
+        .os_version_min = .{ .semver = .{ .major = 4, .minor = 19, .patch = 0 } },
     });
-    const macos_11 = try stdx.zig.system.resolveTargetQuery(.{
+    const macos_10_15 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .macos,
-        .os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } },
+        .os_version_min = .{ .semver = .{ .major = 10, .minor = 15, .patch = 0 } },
     });
 
-    try stdx.testing.expect(!softwareRendererCpuEffective(linux_50, true, false));
-    try stdx.testing.expect(!softwareRendererCpuEffective(macos_11, true, false));
+    try stdx.testing.expect(!softwareRendererCpuEffective(linux_4_19, true, false));
+    try stdx.testing.expect(!softwareRendererCpuEffective(macos_10_15, true, false));
 }
 
 test "softwareRendererCpuEffective allows unsupported target when legacy override enabled" {
     const stdx = std;
-    const linux_50 = try stdx.zig.system.resolveTargetQuery(.{
+    const linux_4_19 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .linux,
-        .os_version_min = .{ .semver = .{ .major = 5, .minor = 0, .patch = 0 } },
+        .os_version_min = .{ .semver = .{ .major = 4, .minor = 19, .patch = 0 } },
     });
-    const macos_11 = try stdx.zig.system.resolveTargetQuery(.{
+    const macos_10_15 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .macos,
-        .os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } },
+        .os_version_min = .{ .semver = .{ .major = 10, .minor = 15, .patch = 0 } },
     });
 
-    try stdx.testing.expect(softwareRendererCpuEffective(linux_50, true, true));
-    try stdx.testing.expect(softwareRendererCpuEffective(macos_11, true, true));
+    try stdx.testing.expect(softwareRendererCpuEffective(linux_4_19, true, true));
+    try stdx.testing.expect(softwareRendererCpuEffective(macos_10_15, true, true));
 }
 
 test "softwareRendererRouteBackend maps by target OS tag" {
@@ -955,10 +955,10 @@ test "softwareRendererCpuFrameDamageMode string mapping" {
 
 test "softwareRendererCpuMvp help text keeps support threshold wording in sync" {
     try std.testing.expect(
-        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "macOS >= 14") != null,
+        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "macOS >= 11") != null,
     );
     try std.testing.expect(
-        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "Linux >= 5.4") != null,
+        std.mem.indexOf(u8, software_renderer_cpu_mvp_help, "Linux >= 5.0") != null,
     );
 }
 
