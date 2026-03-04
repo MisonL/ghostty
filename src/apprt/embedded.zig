@@ -1124,6 +1124,10 @@ pub const Surface = struct {
             },
         }
 
+        if (frame.damage_rects_len > 0 and frame.damage_rects == null) {
+            return error.InvalidSoftwareFrame;
+        }
+
         if (!self.software_frame_publishing_enabled) return;
 
         const software_frame_cb = self.app.opts.software_frame_cb orelse {
@@ -1151,6 +1155,8 @@ pub const Surface = struct {
             .data = frame.data,
             .data_len = frame.data_len,
             .handle = frame.handle,
+            .damage_rects = frame.damage_rects,
+            .damage_rects_len = frame.damage_rects_len,
         };
         if (!software_frame_cb(self.userdata, &c_frame)) {
             self.activateSoftwareFrameSessionFallback("callback_returned_false");
@@ -1674,6 +1680,7 @@ pub const CAPI = struct {
     // ghostty_runtime_software_frame_* C ABI mirrors.
     const RuntimeSoftwareFramePixelFormat = apprt.surface.Message.SoftwareFramePixelFormat;
     const RuntimeSoftwareFrameStorage = apprt.surface.Message.SoftwareFrameStorage;
+    const RuntimeSoftwareDamageRect = apprt.surface.Message.SoftwareFrameDamageRect;
     const RuntimeSoftwareFrameStorageSupport = enum(u32) {
         none = 0,
         shared_cpu_bytes = 1 << 0,
@@ -1689,6 +1696,8 @@ pub const CAPI = struct {
         data: ?[*]const u8 = null,
         data_len: usize = 0,
         handle: ?*anyopaque = null,
+        damage_rects: ?[*]const RuntimeSoftwareDamageRect = null,
+        damage_rects_len: usize = 0,
     };
 
     // ghostty_text_s
@@ -2653,6 +2662,14 @@ test "ghostty.h RuntimeSoftwareFrameStorageSupport" {
     try lib.checkGhosttyHEnum(
         CAPI.RuntimeSoftwareFrameStorageSupport,
         "GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_",
+    );
+}
+
+test "ghostty.h RuntimeSoftwareDamageRect size matches" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        @sizeOf(c.ghostty_runtime_software_damage_rect_s),
+        @sizeOf(CAPI.RuntimeSoftwareDamageRect),
     );
 }
 

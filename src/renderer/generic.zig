@@ -65,7 +65,38 @@ const software_renderer_cpu_damage_rect_cap: u16 =
         build_config.software_renderer_cpu_damage_rect_cap
     else
         0;
+const software_renderer_cpu_damage_rect_pool_capacity: usize =
+    @max(@as(usize, 1), @as(usize, software_renderer_cpu_damage_rect_cap));
 const max_retired_cpu_frame_pools: usize = 4;
+
+fn cpuDamageRectForRowSpan(
+    width_px: u32,
+    height_px: u32,
+    padding_top_px: u32,
+    cell_height_px: u32,
+    row_min: u32,
+    row_max_exclusive: u32,
+) ?cpu_renderer.Rect {
+    if (width_px == 0 or height_px == 0) return null;
+    if (row_max_exclusive <= row_min) return null;
+    if (cell_height_px == 0) return null;
+
+    const y0_u64 = @as(u64, padding_top_px) +
+        @as(u64, row_min) * @as(u64, cell_height_px);
+    const y1_u64 = @as(u64, padding_top_px) +
+        @as(u64, row_max_exclusive) * @as(u64, cell_height_px);
+    const bound_h_u64 = @as(u64, height_px);
+    const y0 = @min(y0_u64, bound_h_u64);
+    const y1 = @min(y1_u64, bound_h_u64);
+    if (y1 <= y0) return null;
+
+    return .{
+        .x = 0,
+        .y = @intCast(y0),
+        .width = width_px,
+        .height = @intCast(y1 - y0),
+    };
+}
 
 const SoftwareCpuRouteDisableReason = enum {
     build_cpu_route_unavailable,
@@ -346,10 +377,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Runtime diagnostics state for software renderer CPU route.
         cpu_route_diagnostics: CpuRouteDiagnosticsState = .{},
 
-        /// CPU-route frame damage tracker (current stage publishes conservative
-        /// full-frame damage regions while preparing incremental updates).
+        /// CPU-route frame damage tracker.
         cpu_damage_tracker: cpu_renderer.DamageTracker =
             cpu_renderer.DamageTracker.init(software_renderer_cpu_damage_rect_cap),
+
+        /// Pending CPU damage state captured during cell rebuild.
+        cpu_rebuild_damage_full: bool = true,
+        cpu_rebuild_damage_row_min: ?u32 = null,
+        cpu_rebuild_damage_row_max_exclusive: u32 = 0,
 
         /// Flag to indicate that our focus state changed for custom
         /// shaders to update their state.
@@ -1539,6 +1574,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 width_px,
                 height_px,
                 .bgra8_premul,
+                software_renderer_cpu_damage_rect_pool_capacity,
             );
             return &self.cpu_frame_pool.?;
         }
@@ -2024,9 +2060,32 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
+        fn resetCpuRebuildDamage(self: *Self, full: bool) void {
+            self.cpu_rebuild_damage_full = full;
+            self.cpu_rebuild_damage_row_min = null;
+            self.cpu_rebuild_damage_row_max_exclusive = 0;
+        }
+
+        fn noteCpuRebuildDirtyRow(self: *Self, row: u32) void {
+            if (self.cpu_rebuild_damage_full) return;
+            const next = row + 1;
+            if (self.cpu_rebuild_damage_row_min) |min_row| {
+                self.cpu_rebuild_damage_row_min = @min(min_row, row);
+                self.cpu_rebuild_damage_row_max_exclusive = @max(
+                    self.cpu_rebuild_damage_row_max_exclusive,
+                    next,
+                );
+                return;
+            }
+
+            self.cpu_rebuild_damage_row_min = row;
+            self.cpu_rebuild_damage_row_max_exclusive = next;
+        }
+
         fn publishCpuSoftwareFrame(
             self: *Self,
             surface_size: anytype,
+            force_full_damage: bool,
         ) !bool {
             self.collectRetiredCpuFramePools();
 
@@ -2037,11 +2096,45 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.cpu_damage_tracker.resetRetainingCapacity();
             switch (comptime software_renderer_cpu_frame_damage_mode) {
                 .off => {},
-                .rects => try self.cpu_damage_tracker.markFull(
-                    self.alloc,
-                    width_px,
-                    height_px,
-                ),
+                .rects => {
+                    if (force_full_damage or self.cpu_rebuild_damage_full) {
+                        try self.cpu_damage_tracker.markFull(
+                            self.alloc,
+                            width_px,
+                            height_px,
+                        );
+                    } else if (self.cpu_rebuild_damage_row_min) |row_min| {
+                        const row_max = self.cpu_rebuild_damage_row_max_exclusive;
+                        const span_rect = cpuDamageRectForRowSpan(
+                            width_px,
+                            height_px,
+                            self.size.padding.top,
+                            self.size.cell.height,
+                            row_min,
+                            row_max,
+                        );
+                        if (span_rect) |rect| {
+                            try self.cpu_damage_tracker.markRect(
+                                self.alloc,
+                                width_px,
+                                height_px,
+                                rect,
+                            );
+                        } else {
+                            try self.cpu_damage_tracker.markFull(
+                                self.alloc,
+                                width_px,
+                                height_px,
+                            );
+                        }
+                    } else {
+                        try self.cpu_damage_tracker.markFull(
+                            self.alloc,
+                            width_px,
+                            height_px,
+                        );
+                    }
+                },
             }
             self.cpu_route_diagnostics.recordDamageStats(
                 self.cpu_damage_tracker.rectCount(),
@@ -2052,7 +2145,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 error.CpuFramePoolRetiredPressure => return false,
                 else => return err,
             };
-            const acquired = pool.acquire() orelse {
+            var acquired = pool.acquire() orelse {
                 if (!self.cpu_frame_pool_exhausted_warned) {
                     self.cpu_frame_pool_exhausted_warned = true;
                     log.warn(
@@ -2161,7 +2254,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             self.cpu_frame_generation +%= 1;
-            const frame = pool.publish(acquired, self.cpu_frame_generation);
+            const frame = pool.publish(
+                &acquired,
+                self.cpu_frame_generation,
+                self.cpu_damage_tracker.slice(),
+            );
             if (self.surface_mailbox.push(.{
                 .software_frame_ready = frame,
             }, .instant) == 0) {
@@ -2590,13 +2687,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // don't need to since the previous frame should be identical.
             const use_software_cpu_path = self.shouldUseSoftwareCpuFramePath();
             if (!use_software_cpu_path) self.cpu_publish_pending = false;
+            const has_animations = self.hasAnimations();
 
             const needs_redraw =
                 size_changed or
                 self.cells_rebuilt or
-                self.hasAnimations() or
+                has_animations or
                 sync or
                 (use_software_cpu_path and self.cpu_publish_pending);
+
+            const force_full_cpu_damage =
+                size_changed or
+                has_animations or
+                sync or
+                self.cpu_publish_pending;
 
             // Keep renderer geometry in sync before any CPU/GPU publish path.
             if (size_changed) {
@@ -2639,7 +2743,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 const publish_start = std.time.Instant.now() catch null;
-                const published = try self.publishCpuSoftwareFrame(surface_size);
+                const published = try self.publishCpuSoftwareFrame(
+                    surface_size,
+                    force_full_cpu_damage,
+                );
                 if (!published) {
                     self.cpu_route_diagnostics.recordPublishRetry();
                     self.cpu_publish_pending = true;
@@ -3508,6 +3615,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             const rebuild = state.dirty == .full or grid_size_diff;
+            self.resetCpuRebuildDamage(rebuild);
             if (rebuild) {
                 // If we are doing a full rebuild, then we clear the entire cell buffer.
                 self.cells.reset();
@@ -3592,6 +3700,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     // Clear the cells if the row is dirty
                     self.cells.clear(y);
                 }
+
+                self.noteCpuRebuildDirtyRow(@intCast(y_usize));
 
                 // Unmark the dirty state in our render state.
                 dirty.* = false;
@@ -4557,6 +4667,42 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
     };
+}
+
+test "cpu damage rect for row span clamps to surface bounds" {
+    const rect = cpuDamageRectForRowSpan(
+        800,
+        120,
+        10,
+        20,
+        0,
+        8,
+    ).?;
+    try std.testing.expectEqualDeep(cpu_renderer.Rect{
+        .x = 0,
+        .y = 10,
+        .width = 800,
+        .height = 110,
+    }, rect);
+}
+
+test "cpu damage rect for row span rejects empty and zero-cell-height spans" {
+    try std.testing.expect(cpuDamageRectForRowSpan(
+        800,
+        120,
+        10,
+        20,
+        3,
+        3,
+    ) == null);
+    try std.testing.expect(cpuDamageRectForRowSpan(
+        800,
+        120,
+        10,
+        0,
+        0,
+        1,
+    ) == null);
 }
 
 test "software cpu route decision enabled when all gates pass" {

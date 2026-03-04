@@ -999,6 +999,13 @@ typedef enum {
 } ghostty_runtime_software_frame_storage_support_e;
 
 typedef struct {
+  uint32_t x_px;
+  uint32_t y_px;
+  uint32_t width_px;
+  uint32_t height_px;
+} ghostty_runtime_software_damage_rect_s;
+
+typedef struct {
   uint32_t width_px;
   uint32_t height_px;
   uint32_t stride_bytes;
@@ -1008,6 +1015,8 @@ typedef struct {
   const uint8_t* data;
   size_t data_len;
   void* handle;
+  const ghostty_runtime_software_damage_rect_s* damage_rects;
+  size_t damage_rects_len;
 } ghostty_runtime_software_frame_s;
 
 typedef bool (*ghostty_runtime_software_frame_cb)(

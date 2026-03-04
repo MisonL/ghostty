@@ -143,6 +143,13 @@ pub const Message = union(enum) {
         native_texture_handle,
     };
 
+    pub const SoftwareFrameDamageRect = extern struct {
+        x_px: u32,
+        y_px: u32,
+        width_px: u32,
+        height_px: u32,
+    };
+
     /// Optional callback to release any owned payload associated with a
     /// software frame once it has been consumed.
     pub const SoftwareFrameReleaseFn =
@@ -167,6 +174,10 @@ pub const Message = union(enum) {
 
         /// Optional native handle payload when storage is native_texture_handle.
         handle: ?*anyopaque = null,
+
+        /// Optional damage rectangle payload to describe updated regions.
+        damage_rects: ?[*]const SoftwareFrameDamageRect = null,
+        damage_rects_len: usize = 0,
 
         /// Optional callback context and function used to release `data` and/or
         /// `handle` ownership after delivery to apprt.

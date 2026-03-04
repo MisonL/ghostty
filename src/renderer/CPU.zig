@@ -50,6 +50,7 @@ pub const CPU = switch (routed_backend) {
 };
 
 pub const PixelFormat = apprt.surface.Message.SoftwareFramePixelFormat;
+pub const SoftwareFrameDamageRect = apprt.surface.Message.SoftwareFrameDamageRect;
 pub const Rect = struct {
     x: u32,
     y: u32,
@@ -949,6 +950,8 @@ fn repeatStart(origin: f32, step: f32) f32 {
 pub const FramePool = struct {
     const Slot = struct {
         bytes: []u8,
+        damage_rects: []SoftwareFrameDamageRect,
+        damage_rects_len: usize = 0,
         in_use: std.atomic.Value(u8) = .{ .raw = 0 },
     };
 
@@ -971,6 +974,7 @@ pub const FramePool = struct {
         width_px: u32,
         height_px: u32,
         pixel_format: PixelFormat,
+        damage_rect_capacity: usize,
     ) !FramePool {
         if (slot_count == 0) return error.InvalidFrameSize;
 
@@ -991,12 +995,19 @@ pub const FramePool = struct {
 
         var i: usize = 0;
         errdefer {
-            for (slots[0..i]) |slot| alloc.free(slot.bytes);
+            for (slots[0..i]) |slot| {
+                alloc.free(slot.damage_rects);
+                alloc.free(slot.bytes);
+            }
             alloc.free(slots);
         }
         while (i < slot_count) : (i += 1) {
             slots[i] = .{
                 .bytes = try alloc.alloc(u8, len),
+                .damage_rects = try alloc.alloc(
+                    SoftwareFrameDamageRect,
+                    damage_rect_capacity,
+                ),
             };
         }
 
@@ -1021,7 +1032,10 @@ pub const FramePool = struct {
 
     pub fn deinitIdle(self: *FramePool) void {
         std.debug.assert(self.isIdle());
-        for (self.slots) |slot| self.alloc.free(slot.bytes);
+        for (self.slots) |slot| {
+            self.alloc.free(slot.damage_rects);
+            self.alloc.free(slot.bytes);
+        }
         self.alloc.free(self.slots);
         self.* = undefined;
     }
@@ -1072,9 +1086,22 @@ pub const FramePool = struct {
 
     pub fn publish(
         _: *const FramePool,
-        acquired: Acquired,
+        acquired: *Acquired,
         generation: u64,
+        damage_rects: []const Rect,
     ) apprt.surface.Message.SoftwareFrameReady {
+        const slot = acquired.slot;
+        const copy_len = @min(slot.damage_rects.len, damage_rects.len);
+        for (damage_rects[0..copy_len], 0..) |rect, i| {
+            slot.damage_rects[i] = .{
+                .x_px = rect.x,
+                .y_px = rect.y,
+                .width_px = rect.width,
+                .height_px = rect.height,
+            };
+        }
+        slot.damage_rects_len = copy_len;
+
         return .{
             .width_px = acquired.framebuffer.width_px,
             .height_px = acquired.framebuffer.height_px,
@@ -1085,7 +1112,12 @@ pub const FramePool = struct {
             .data = acquired.framebuffer.bytes.ptr,
             .data_len = acquired.framebuffer.bytes.len,
             .handle = null,
-            .release_ctx = @ptrCast(acquired.slot),
+            .damage_rects = if (slot.damage_rects_len > 0)
+                slot.damage_rects.ptr
+            else
+                null,
+            .damage_rects_len = slot.damage_rects_len,
+            .release_ctx = @ptrCast(slot),
             .release_fn = &releaseFramePoolSlot,
         };
     }
@@ -2093,17 +2125,27 @@ test "DamageTracker resetRetainingCapacity clears damage while preserving overfl
 
 test "FramePool publish uses caller generation and release returns slot to idle" {
     const alloc = std.testing.allocator;
-    var pool = try FramePool.init(alloc, 1, 1, 1, .bgra8_premul);
+    var pool = try FramePool.init(alloc, 1, 1, 1, .bgra8_premul, 2);
     defer if (pool.isIdle()) pool.deinitIdle();
 
     try std.testing.expect(pool.isIdle());
 
-    const acquired = pool.acquire() orelse return error.TestUnexpectedResult;
+    var acquired = pool.acquire() orelse return error.TestUnexpectedResult;
     try std.testing.expect(!pool.isIdle());
 
-    const frame = pool.publish(acquired, 99);
+    const frame = pool.publish(&acquired, 99, &.{
+        .{ .x = 1, .y = 2, .width = 3, .height = 4 },
+    });
     try std.testing.expectEqual(@as(u64, 99), frame.generation);
     try std.testing.expectEqual(@as(usize, 4), frame.data_len);
+    try std.testing.expectEqual(@as(usize, 1), frame.damage_rects_len);
+    try std.testing.expect(frame.damage_rects != null);
+    try std.testing.expectEqualDeep(SoftwareFrameDamageRect{
+        .x_px = 1,
+        .y_px = 2,
+        .width_px = 3,
+        .height_px = 4,
+    }, frame.damage_rects.?[0]);
     try std.testing.expect(frame.release_fn != null);
 
     frame.release();
