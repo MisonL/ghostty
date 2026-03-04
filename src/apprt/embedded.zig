@@ -36,7 +36,7 @@ fn softwarePresenterDecisionForEmbeddedConfig(
     experimental: bool,
     requested: Config.SoftwareRendererPresenter,
     platform_tag: PlatformTag,
-    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_cb: ?App.SoftwareFrameCallback,
     software_frame_storage_support: u32,
     runtime_fallback: bool,
 ) software_presenter.Decision {
@@ -130,7 +130,7 @@ fn softwarePresenterRequiredStorageForEmbeddedConfig(
 
 fn softwarePresenterAvailabilityForEmbeddedConfig(
     platform_tag: PlatformTag,
-    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_cb: ?App.SoftwareFrameCallback,
     software_frame_storage_support: u32,
 ) software_presenter.Availability {
     if (software_frame_cb == null) return .runtime_capability_missing;
@@ -146,7 +146,7 @@ fn softwarePresenterAvailabilityForEmbeddedConfig(
 
 fn softwarePresenterCapabilityMissingContextForEmbeddedConfig(
     platform_tag: PlatformTag,
-    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_cb: ?App.SoftwareFrameCallback,
     software_frame_storage_support: u32,
 ) []const u8 {
     if (software_frame_cb == null) return software_presenter_context_callback_missing;
@@ -165,7 +165,7 @@ fn softwarePresenterCapabilityMissingContextForEmbeddedConfig(
 fn softwarePresenterUnavailableContextForEmbeddedConfig(
     reason: software_presenter.Reason,
     platform_tag: PlatformTag,
-    software_frame_cb: ?App.Options.SoftwareFrameCallback,
+    software_frame_cb: ?App.SoftwareFrameCallback,
     software_frame_storage_support: u32,
 ) []const u8 {
     return switch (reason) {
@@ -223,7 +223,7 @@ fn shouldResetSoftwareSnapshotRuntimeFallback(
 }
 
 pub const App = struct {
-    pub const runtime_config_v2_version: u32 = 2;
+    pub const runtime_config_version: u32 = 2;
 
     const AppUD = ?*anyopaque;
     const SurfaceUD = ?*anyopaque;
@@ -249,12 +249,11 @@ pub const App = struct {
     ) callconv(.c) void;
     const CloseSurfaceCallback = *const fn (SurfaceUD, bool) callconv(.c) void;
 
-    /// Because we only expect the embedding API to be used in embedded
-    /// environments, the options are extern so that we can expose it
-    /// directly to a C callconv and not pay for any translation costs.
-    ///
     /// C type: ghostty_runtime_config_s
     pub const Options = extern struct {
+        struct_size: u32 = @sizeOf(Options),
+        struct_version: u32 = runtime_config_version,
+
         /// Userdata that is passed to all the callbacks.
         userdata: AppUD = null,
 
@@ -263,23 +262,23 @@ pub const App = struct {
 
         /// Callback called to wakeup the event loop. This should trigger
         /// a full tick of the app loop.
-        wakeup: WakeupCallback,
+        wakeup: ?WakeupCallback = null,
 
         /// Callback called to handle an action.
-        action: ActionCallback,
+        action: ?ActionCallback = null,
 
         /// Read the clipboard value. The return value must be preserved
         /// by the host until the next call. If there is no valid clipboard
         /// value then this should return null.
-        read_clipboard: ReadClipboardCallback,
+        read_clipboard: ?ReadClipboardCallback = null,
 
         /// This may be called after a read clipboard call to request
         /// confirmation that the clipboard value is safe to read. The embedder
         /// must call complete_clipboard_request with the given request.
-        confirm_read_clipboard: ConfirmReadClipboardCallback,
+        confirm_read_clipboard: ?ConfirmReadClipboardCallback = null,
 
         /// Write the clipboard value.
-        write_clipboard: WriteClipboardCallback,
+        write_clipboard: ?WriteClipboardCallback = null,
 
         /// Software frame storage support bitmask and callback bridge.
         software_frame_storage_support: SoftwareFrameStorageSupport = 0,
@@ -289,26 +288,23 @@ pub const App = struct {
         close_surface: ?CloseSurfaceCallback = null,
     };
 
-    /// C type: ghostty_runtime_config_v2_s
-    pub const OptionsV2 = extern struct {
-        struct_size: u32 = @sizeOf(OptionsV2),
-        struct_version: u32 = runtime_config_v2_version,
+    pub const runtime_config_min_size: u32 = @offsetOf(
+        Options,
+        "software_frame_storage_support",
+    );
+
+    const ResolvedOptions = struct {
         userdata: AppUD = null,
         supports_selection_clipboard: bool = false,
-        wakeup: ?WakeupCallback = null,
-        action: ?ActionCallback = null,
-        read_clipboard: ?ReadClipboardCallback = null,
-        confirm_read_clipboard: ?ConfirmReadClipboardCallback = null,
-        write_clipboard: ?WriteClipboardCallback = null,
+        wakeup: WakeupCallback,
+        action: ActionCallback,
+        read_clipboard: ReadClipboardCallback,
+        confirm_read_clipboard: ConfirmReadClipboardCallback,
+        write_clipboard: WriteClipboardCallback,
         software_frame_storage_support: SoftwareFrameStorageSupport = 0,
         software_frame_cb: ?SoftwareFrameCallback = null,
         close_surface: ?CloseSurfaceCallback = null,
     };
-
-    pub const runtime_config_v2_min_size: u32 = @offsetOf(
-        OptionsV2,
-        "software_frame_storage_support",
-    );
 
     /// This is the key event sent for ghostty_surface_key and
     /// ghostty_app_key.
@@ -348,7 +344,7 @@ pub const App = struct {
     };
 
     core_app: *CoreApp,
-    opts: Options,
+    opts: ResolvedOptions,
     keymap: input.Keymap,
 
     /// The configuration for the app. This is owned by this structure.
@@ -358,7 +354,7 @@ pub const App = struct {
         self: *App,
         core_app: *CoreApp,
         config: *const Config,
-        opts: Options,
+        opts: ResolvedOptions,
     ) !void {
         // We have to clone the config.
         const alloc = core_app.alloc;
@@ -1846,23 +1842,23 @@ pub const CAPI = struct {
         }
     }
 
-    pub const RuntimeOptionsV2Error = error{InvalidRuntimeConfig};
+    pub const RuntimeOptionsError = error{InvalidRuntimeConfig};
 
-    fn runtimeOptionsV2Load(
-        opts: *const apprt.runtime.App.OptionsV2,
-    ) RuntimeOptionsV2Error!apprt.runtime.App.OptionsV2 {
-        if (opts.struct_version != apprt.runtime.App.runtime_config_v2_version) {
+    fn runtimeOptionsLoad(
+        opts: *const apprt.runtime.App.Options,
+    ) RuntimeOptionsError!apprt.runtime.App.Options {
+        if (opts.struct_version != apprt.runtime.App.runtime_config_version) {
             return error.InvalidRuntimeConfig;
         }
 
         const provided_size = @as(usize, opts.struct_size);
-        const min_size = @as(usize, apprt.runtime.App.runtime_config_v2_min_size);
+        const min_size = @as(usize, apprt.runtime.App.runtime_config_min_size);
         if (provided_size < min_size) {
             return error.InvalidRuntimeConfig;
         }
 
-        var loaded = std.mem.zeroes(apprt.runtime.App.OptionsV2);
-        const copy_len = @min(provided_size, @sizeOf(apprt.runtime.App.OptionsV2));
+        var loaded = std.mem.zeroes(apprt.runtime.App.Options);
+        const copy_len = @min(provided_size, @sizeOf(apprt.runtime.App.Options));
         @memcpy(
             std.mem.asBytes(&loaded)[0..copy_len],
             std.mem.asBytes(opts)[0..copy_len],
@@ -1870,10 +1866,10 @@ pub const CAPI = struct {
         return loaded;
     }
 
-    fn runtimeOptionsFromV2(
-        opts: *const apprt.runtime.App.OptionsV2,
-    ) RuntimeOptionsV2Error!apprt.runtime.App.Options {
-        const loaded = try runtimeOptionsV2Load(opts);
+    fn runtimeOptionsResolve(
+        opts: *const apprt.runtime.App.Options,
+    ) RuntimeOptionsError!App.ResolvedOptions {
+        const loaded = try runtimeOptionsLoad(opts);
         return .{
             .userdata = loaded.userdata,
             .supports_selection_clipboard = loaded.supports_selection_clipboard,
@@ -1888,8 +1884,8 @@ pub const CAPI = struct {
         };
     }
 
-    /// Returns a zeroed runtime config v2 with size/version initialized.
-    export fn ghostty_runtime_config_v2_new() apprt.runtime.App.OptionsV2 {
+    /// Returns a zeroed runtime config with size/version initialized.
+    export fn ghostty_runtime_config_new() apprt.runtime.App.Options {
         return .{};
     }
 
@@ -1898,23 +1894,10 @@ pub const CAPI = struct {
         opts: ?*const apprt.runtime.App.Options,
         config: ?*const Config,
     ) ?*App {
-        const opts_v1 = opts orelse return null;
+        const runtime_opts = opts orelse return null;
         const config_ptr = config orelse return null;
-        return app_new_(opts_v1.*, config_ptr) catch |err| {
-            log.err("error initializing app err={}", .{err});
-            return null;
-        };
-    }
-
-    /// Create a new app with runtime config ABI v2 negotiation.
-    export fn ghostty_app_new_v2(
-        opts: ?*const apprt.runtime.App.OptionsV2,
-        config: ?*const Config,
-    ) ?*App {
-        const opts_v2 = opts orelse return null;
-        const config_ptr = config orelse return null;
-        const mapped_opts = runtimeOptionsFromV2(opts_v2) catch |err| {
-            log.err("error validating runtime config v2 err={}", .{err});
+        const mapped_opts = runtimeOptionsResolve(runtime_opts) catch |err| {
+            log.err("error validating runtime config err={}", .{err});
             return null;
         };
         return app_new_(mapped_opts, config_ptr) catch |err| {
@@ -1924,7 +1907,7 @@ pub const CAPI = struct {
     }
 
     fn app_new_(
-        opts: apprt.runtime.App.Options,
+        opts: App.ResolvedOptions,
         config: *const Config,
     ) !*App {
         const core_app = try CoreApp.create(global.alloc);
@@ -2787,29 +2770,29 @@ test "ghostty.h RuntimeSoftwareFrame size matches" {
     );
 }
 
-test "ghostty.h RuntimeConfigV2 size matches" {
+test "ghostty.h RuntimeConfig size matches" {
     const c = @import("ghostty.h");
     try std.testing.expectEqual(
-        @sizeOf(c.ghostty_runtime_config_v2_s),
-        @sizeOf(App.OptionsV2),
+        @sizeOf(c.ghostty_runtime_config_s),
+        @sizeOf(App.Options),
     );
 }
 
-test "ghostty.h RuntimeConfigV2 min size matches offset" {
+test "ghostty.h RuntimeConfig min size matches offset" {
     const c = @import("ghostty.h");
     try std.testing.expectEqual(
         @as(u32, @intCast(@offsetOf(
-            c.ghostty_runtime_config_v2_s,
+            c.ghostty_runtime_config_s,
             "software_frame_storage_support",
         ))),
-        c.GHOSTTY_RUNTIME_CONFIG_V2_MIN_SIZE,
+        c.GHOSTTY_RUNTIME_CONFIG_MIN_SIZE,
     );
 }
 
-test "ghostty_runtime_config_v2_new initializes size and version" {
-    const opts = CAPI.ghostty_runtime_config_v2_new();
-    try std.testing.expectEqual(@as(u32, @sizeOf(App.OptionsV2)), opts.struct_size);
-    try std.testing.expectEqual(App.runtime_config_v2_version, opts.struct_version);
+test "ghostty_runtime_config_new initializes size and version" {
+    const opts = CAPI.ghostty_runtime_config_new();
+    try std.testing.expectEqual(@as(u32, @sizeOf(App.Options)), opts.struct_size);
+    try std.testing.expectEqual(App.runtime_config_version, opts.struct_version);
 }
 
 test "runtimeSoftwareFrameFromMessage preserves payload and damage metadata" {
@@ -2897,8 +2880,8 @@ fn testRuntimeWriteClipboardNoop(
 
 fn testRuntimeCloseSurfaceNoop(_: ?*anyopaque, _: bool) callconv(.c) void {}
 
-fn testValidRuntimeConfigV2() App.OptionsV2 {
-    var opts = CAPI.ghostty_runtime_config_v2_new();
+fn testValidRuntimeConfig() App.Options {
+    var opts = CAPI.ghostty_runtime_config_new();
     opts.wakeup = &testRuntimeWakeupNoop;
     opts.action = &testRuntimeActionNoop;
     opts.read_clipboard = &testRuntimeReadClipboardNoop;
@@ -2907,45 +2890,45 @@ fn testValidRuntimeConfigV2() App.OptionsV2 {
     return opts;
 }
 
-test "runtimeOptionsFromV2 rejects invalid version" {
-    var opts = testValidRuntimeConfigV2();
+test "runtimeOptionsResolve rejects invalid version" {
+    var opts = testValidRuntimeConfig();
     opts.struct_version = 0;
 
     try std.testing.expectError(
         error.InvalidRuntimeConfig,
-        CAPI.runtimeOptionsFromV2(&opts),
+        CAPI.runtimeOptionsResolve(&opts),
     );
 }
 
-test "runtimeOptionsFromV2 rejects size smaller than required prefix" {
-    var opts = testValidRuntimeConfigV2();
-    opts.struct_size = App.runtime_config_v2_min_size - 1;
+test "runtimeOptionsResolve rejects size smaller than required prefix" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = App.runtime_config_min_size - 1;
 
     try std.testing.expectError(
         error.InvalidRuntimeConfig,
-        CAPI.runtimeOptionsFromV2(&opts),
+        CAPI.runtimeOptionsResolve(&opts),
     );
 }
 
-test "runtimeOptionsFromV2 rejects missing required callback" {
-    var opts = testValidRuntimeConfigV2();
+test "runtimeOptionsResolve rejects missing required callback" {
+    var opts = testValidRuntimeConfig();
     opts.action = null;
 
     try std.testing.expectError(
         error.InvalidRuntimeConfig,
-        CAPI.runtimeOptionsFromV2(&opts),
+        CAPI.runtimeOptionsResolve(&opts),
     );
 }
 
-test "runtimeOptionsFromV2 accepts forward-compatible larger declared size" {
-    var opts = testValidRuntimeConfigV2();
-    opts.struct_size = @sizeOf(App.OptionsV2) + 64;
+test "runtimeOptionsResolve accepts forward-compatible larger declared size" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = @sizeOf(App.Options) + 64;
     opts.software_frame_storage_support = @intFromEnum(
         CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
     );
     opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
 
-    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
     try std.testing.expectEqual(
         opts.software_frame_storage_support,
         mapped.software_frame_storage_support,
@@ -2953,15 +2936,15 @@ test "runtimeOptionsFromV2 accepts forward-compatible larger declared size" {
     try std.testing.expect(mapped.software_frame_cb == opts.software_frame_cb);
 }
 
-test "runtimeOptionsFromV2 maps optional fields when full struct is provided" {
-    var opts = testValidRuntimeConfigV2();
+test "runtimeOptionsResolve maps optional fields when full struct is provided" {
+    var opts = testValidRuntimeConfig();
     opts.software_frame_storage_support = @intFromEnum(
         CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
     );
     opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
     opts.close_surface = &testRuntimeCloseSurfaceNoop;
 
-    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
     try std.testing.expectEqual(opts.userdata, mapped.userdata);
     try std.testing.expectEqual(
         opts.software_frame_storage_support,
@@ -2971,16 +2954,16 @@ test "runtimeOptionsFromV2 maps optional fields when full struct is provided" {
     try std.testing.expect(mapped.close_surface == opts.close_surface);
 }
 
-test "runtimeOptionsFromV2 supports prefix-only callers by defaulting optional fields" {
-    var opts = testValidRuntimeConfigV2();
-    opts.struct_size = App.runtime_config_v2_min_size;
+test "runtimeOptionsResolve supports prefix-only callers by defaulting optional fields" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = App.runtime_config_min_size;
     opts.software_frame_storage_support = @intFromEnum(
         CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
     );
     opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
     opts.close_surface = &testRuntimeCloseSurfaceNoop;
 
-    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
     try std.testing.expectEqual(@as(u32, 0), mapped.software_frame_storage_support);
     try std.testing.expect(mapped.software_frame_cb == null);
     try std.testing.expect(mapped.close_surface == null);
