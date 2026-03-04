@@ -57,7 +57,7 @@ extension Ghostty {
 
             // Create our "runtime" config. The "runtime" is the configuration that ghostty
             // uses to interface with the application runtime environment.
-            var runtime_cfg = ghostty_runtime_config_s()
+            var runtime_cfg = ghostty_runtime_config_v2_new()
             runtime_cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
             runtime_cfg.supports_selection_clipboard = true
             runtime_cfg.wakeup_cb = { userdata in App.wakeup(userdata) }
@@ -77,8 +77,8 @@ extension Ghostty {
             App.configureSoftwareFrameRuntimeCallbacks(&runtime_cfg)
 
             // Create the ghostty app.
-            guard let app = ghostty_app_new(&runtime_cfg, config.config) else {
-                logger.critical("ghostty_app_new failed")
+            guard let app = ghostty_app_new_v2(&runtime_cfg, config.config) else {
+                logger.critical("ghostty_app_new_v2 failed")
                 readiness = .error
                 return
             }
@@ -118,7 +118,7 @@ extension Ghostty {
 #endif
         }
 
-        static private func configureSoftwareFrameRuntimeCallbacks(_ runtimeConfig: inout ghostty_runtime_config_s) {
+        static private func configureSoftwareFrameRuntimeCallbacks(_ runtimeConfig: inout ghostty_runtime_config_v2_s) {
             #if os(macOS)
             let nativeStorageSupport = GHOSTTY_RUNTIME_SOFTWARE_FRAME_STORAGE_SUPPORT_NATIVE_TEXTURE_HANDLE.rawValue
             #else
