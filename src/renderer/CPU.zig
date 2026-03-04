@@ -34,13 +34,45 @@ pub const RuntimeCapability = enum {
     custom_shader_execution,
 };
 
-/// Runtime capability query for CPU-route feature gating.
+/// Runtime capability unavailability reasons for CPU-route feature gating.
+pub const RuntimeCapabilityUnavailableReason = enum {
+    /// CPU execution of custom-shader effect passes has not been implemented.
+    custom_shader_execution_unimplemented,
+};
+
+/// Runtime capability status for CPU-route feature gating.
+pub const RuntimeCapabilityStatus = union(enum) {
+    available: void,
+    unavailable: RuntimeCapabilityUnavailableReason,
+};
+
+/// Runtime capability status query for CPU-route feature gating.
 ///
 /// Custom shader execution is intentionally disabled for now while the
 /// execution path is being staged.
-pub fn supportsRuntimeCapability(capability: RuntimeCapability) bool {
+pub fn runtimeCapabilityStatus(capability: RuntimeCapability) RuntimeCapabilityStatus {
     return switch (capability) {
-        .custom_shader_execution => false,
+        .custom_shader_execution => .{
+            .unavailable = .custom_shader_execution_unimplemented,
+        },
+    };
+}
+
+/// Runtime capability query for CPU-route feature gating.
+pub fn supportsRuntimeCapability(capability: RuntimeCapability) bool {
+    return switch (runtimeCapabilityStatus(capability)) {
+        .available => true,
+        .unavailable => false,
+    };
+}
+
+/// Runtime capability reason query for diagnostics.
+pub fn runtimeCapabilityUnavailableReason(
+    capability: RuntimeCapability,
+) ?RuntimeCapabilityUnavailableReason {
+    return switch (runtimeCapabilityStatus(capability)) {
+        .available => null,
+        .unavailable => |reason| reason,
     };
 }
 
@@ -2044,6 +2076,19 @@ test "isMvpEffective requires both effective route and MVP opt-in" {
 
 test "supportsRuntimeCapability reports custom shader execution as unavailable" {
     try std.testing.expect(!supportsRuntimeCapability(.custom_shader_execution));
+}
+
+test "runtimeCapabilityStatus reports custom shader execution unimplemented" {
+    const status = runtimeCapabilityStatus(.custom_shader_execution);
+    try std.testing.expect(status == .unavailable);
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.custom_shader_execution_unimplemented,
+        status.unavailable,
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.custom_shader_execution_unimplemented,
+        runtimeCapabilityUnavailableReason(.custom_shader_execution).?,
+    );
 }
 
 test "isRuntimeCompatibleWithCpuRoute gates custom shader execution by runtime capability" {

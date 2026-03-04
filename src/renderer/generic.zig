@@ -1537,8 +1537,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (warned.*) return;
             warned.* = true;
 
+            const shader_capability_reason: []const u8 = reason: {
+                if (reason != .custom_shaders_unsupported) break :reason "n/a";
+                if (!self.has_custom_shaders) break :reason "n/a";
+                if (comptime build_config.software_renderer_cpu_shader_mode != .full) {
+                    break :reason "n/a";
+                }
+
+                if (@hasDecl(cpu_renderer, "runtimeCapabilityUnavailableReason")) {
+                    if (cpu_renderer.runtimeCapabilityUnavailableReason(
+                        .custom_shader_execution,
+                    )) |capability_reason| {
+                        break :reason @tagName(capability_reason);
+                    }
+                }
+
+                break :reason "unknown";
+            };
+
             log.warn(
-                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_timeout_ms={} transport={s}; using platform route",
+                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_timeout_ms={} transport={s} shader_capability_reason={s}; using platform route",
                 .{
                     @tagName(reason),
                     self.software_frame_publishing,
@@ -1548,6 +1566,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     @tagName(build_config.software_renderer_cpu_shader_mode),
                     build_config.software_renderer_cpu_shader_timeout_ms,
                     @tagName(build_config.software_frame_transport_mode),
+                    shader_capability_reason,
                 },
             );
         }
