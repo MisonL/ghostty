@@ -391,6 +391,26 @@ if [[ -n "$target" ]]; then
   esac
 fi
 
+if [[ -z "$expect_software_route_backend" ]]; then
+  route_os="$target_os"
+  if [[ -z "$route_os" ]]; then
+    if [[ -n "$expected_host_os" ]]; then
+      route_os="$expected_host_os"
+    else
+      route_os="$host_os"
+    fi
+  fi
+
+  case "$route_os" in
+    macos|ios)
+      expect_software_route_backend="metal"
+      ;;
+    linux)
+      expect_software_route_backend="opengl"
+      ;;
+  esac
+fi
+
 # Local planning/validation should not be blocked by cross-host old-target checks.
 # CI should run these checks on matching runners.
 if [[ -n "$target_os" && "$host_os" != "$target_os" ]]; then
