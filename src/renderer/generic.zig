@@ -1120,15 +1120,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 log.info(
-                    "software renderer cpu-mvp route active target_os={s}",
-                    .{@tagName(builtin.target.os.tag)},
+                    "software renderer cpu-mvp route active target_os={s} route_backend={s} allow_legacy_os={}",
+                    .{
+                        @tagName(builtin.target.os.tag),
+                        @tagName(build_config.software_renderer_route_backend),
+                        build_config.software_renderer_cpu_allow_legacy_os,
+                    },
                 );
                 return;
             }
 
             log.warn(
-                "software renderer cpu-mvp requested but unavailable target_os={s}; requires macOS >= 14 or Linux >= 5.4, falling back to platform route",
-                .{@tagName(builtin.target.os.tag)},
+                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} allow_legacy_os={}; requires macOS >= 14 or Linux >= 5.4, falling back to platform route",
+                .{
+                    @tagName(builtin.target.os.tag),
+                    @tagName(build_config.software_renderer_route_backend),
+                    build_config.software_renderer_cpu_allow_legacy_os,
+                },
             );
         }
 
