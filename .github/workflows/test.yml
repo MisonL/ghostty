@@ -1073,6 +1073,16 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Safe mode timeout=0 compatibility spot-check (must stay build-valid).
+          - target:
+              target_label: linux-5.4-safe-timeout0
+              target: x86_64-linux.5.4.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "0"
+            transport:
+              transport_label: auto
+              transport_mode: auto
     name: Test software renderer (linux cpu-mvp, ${{ matrix.target.target_label }}, ${{ matrix.transport.transport_label }})
     runs-on: namespace-profile-ghostty-sm
     needs: test
@@ -1233,6 +1243,16 @@ jobs:
               expect_cpu_effective: "false"
               cpu_shader_mode: safe
               cpu_shader_timeout_ms: "16"
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # Safe mode timeout=0 compatibility spot-check (must stay build-valid).
+          - target:
+              target_label: macos-11.0-safe-timeout0
+              target: x86_64-macos.11.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "0"
             transport:
               transport_label: auto
               transport_mode: auto
