@@ -1134,6 +1134,7 @@ jobs:
             --allow-legacy-os="${allow_legacy_os}"
             --expected-host-os linux
             --mismatch-policy fail
+            --expect-software-route-backend opengl
           )
           if [[ -n "${{ matrix.target.cpu_shader_mode }}" ]]; then
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
@@ -1302,6 +1303,7 @@ jobs:
             --allow-legacy-os="${allow_legacy_os}"
             --expected-host-os macos
             --mismatch-policy fail
+            --expect-software-route-backend metal
           )
           if [[ -n "${{ matrix.target.cpu_shader_mode }}" ]]; then
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")

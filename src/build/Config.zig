@@ -46,6 +46,7 @@ wasm_target: WasmTarget,
 /// Comptime interfaces
 app_runtime: ApprtRuntime = .none,
 renderer: RendererBackend = .opengl,
+software_renderer_route_backend: RendererBackend = .opengl,
 font_backend: FontBackend = .freetype,
 
 /// Feature flags
@@ -172,6 +173,7 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "renderer",
         "The app runtime to use. Not all values supported on all platforms.",
     ) orelse RendererBackend.default(target.result, wasm_target);
+    config.software_renderer_route_backend = softwareRendererRouteBackend(target.result);
 
     config.software_renderer_cpu_mvp = b.option(
         bool,
@@ -594,6 +596,11 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
+    step.addOption(
+        RendererBackend,
+        "software_renderer_route_backend",
+        self.software_renderer_route_backend,
+    );
     step.addOption(ExeEntrypoint, "exe_entrypoint", self.exe_entrypoint);
     step.addOption(WasmTarget, "wasm_target", self.wasm_target);
     step.addOption(bool, "wasm_shared", self.wasm_shared);
@@ -669,6 +676,10 @@ pub fn fromOptions() Config {
         .app_runtime = std.meta.stringToEnum(ApprtRuntime, @tagName(options.app_runtime)).?,
         .font_backend = std.meta.stringToEnum(FontBackend, @tagName(options.font_backend)).?,
         .renderer = std.meta.stringToEnum(RendererBackend, @tagName(options.renderer)).?,
+        .software_renderer_route_backend = std.meta.stringToEnum(
+            RendererBackend,
+            @tagName(options.software_renderer_route_backend),
+        ).?,
         .snap = options.snap,
         .software_renderer_cpu_mvp = options.software_renderer_cpu_mvp,
         .software_renderer_cpu_allow_legacy_os = options.software_renderer_cpu_allow_legacy_os,
@@ -716,6 +727,10 @@ fn softwareRendererCpuEffective(
     allow_legacy_os: bool,
 ) bool {
     return cpu_mvp and (allow_legacy_os or softwareRendererCpuSupported(target));
+}
+
+fn softwareRendererRouteBackend(target: std.Target) RendererBackend {
+    return RendererBackend.softwareRouteForOsTag(target.os.tag);
 }
 
 fn effectiveSoftwareRendererCpuDamageRectCap(
@@ -794,6 +809,31 @@ test "softwareRendererCpuEffective allows unsupported target when legacy overrid
 
     try stdx.testing.expect(softwareRendererCpuEffective(linux_50, true, true));
     try stdx.testing.expect(softwareRendererCpuEffective(macos_11, true, true));
+}
+
+test "softwareRendererRouteBackend maps by target OS tag" {
+    const stdx = std;
+    const linux = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+    });
+    const freebsd = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freebsd,
+    });
+    const macos = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+    });
+    const ios = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .ios,
+    });
+
+    try stdx.testing.expectEqual(RendererBackend.opengl, softwareRendererRouteBackend(linux));
+    try stdx.testing.expectEqual(RendererBackend.opengl, softwareRendererRouteBackend(freebsd));
+    try stdx.testing.expectEqual(RendererBackend.metal, softwareRendererRouteBackend(macos));
+    try stdx.testing.expectEqual(RendererBackend.metal, softwareRendererRouteBackend(ios));
 }
 
 test "softwareRendererCpuShaderMode string mapping" {
