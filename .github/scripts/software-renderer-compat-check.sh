@@ -18,7 +18,6 @@ Usage:
     [--expect-cpu-shader-timeout-ms <u32>] \
     [--expect-cpu-frame-damage-mode <off|rects>] \
     [--expect-cpu-damage-rect-cap <u16>] \
-    [--expect-full-custom-shader-bypass <true|false>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
     [--expected-host-os <linux|macos>] \
@@ -41,8 +40,8 @@ Notes:
   e.g. macOS 11 / Linux 5.0 scenarios.
   --target accepts shorthand (e.g. x86_64-macos.11, x86_64-linux.5.0) and is
   auto-normalized to <major>.<minor>.<patch> for Zig.
-  cpu-shader-mode=full currently keeps CPU-route compatibility enabled,
-  but custom-shader effects are bypassed on the CPU route.
+  cpu-shader-mode=full currently falls back to platform route while custom
+  shaders are active unless CPU custom-shader execution capability is available.
 EOF
 }
 
@@ -90,7 +89,6 @@ expect_cpu_shader_mode=""
 expect_cpu_shader_timeout_ms=""
 expect_cpu_frame_damage_mode=""
 expect_cpu_damage_rect_cap=""
-expect_full_custom_shader_bypass=""
 app_runtime=""
 system_path=""
 expected_host_os=""
@@ -200,14 +198,6 @@ while (($# > 0)); do
       ;;
     --expect-cpu-damage-rect-cap)
       expect_cpu_damage_rect_cap="${2:-}"
-      shift 2
-      ;;
-    --expect-full-custom-shader-bypass=*)
-      expect_full_custom_shader_bypass="${1#*=}"
-      shift
-      ;;
-    --expect-full-custom-shader-bypass)
-      expect_full_custom_shader_bypass="${2:-}"
       shift 2
       ;;
     --app-runtime=*)
@@ -341,11 +331,6 @@ if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
   fi
 fi
 
-if [[ -n "$expect_full_custom_shader_bypass" && "$expect_full_custom_shader_bypass" != "true" && "$expect_full_custom_shader_bypass" != "false" ]]; then
-  echo "invalid --expect-full-custom-shader-bypass: $expect_full_custom_shader_bypass (expected: true|false)" >&2
-  exit 2
-fi
-
 if [[ "$mode" != "build" && "$mode" != "test" ]]; then
   echo "invalid --mode: $mode" >&2
   exit 2
@@ -447,7 +432,7 @@ cmd+=(--cache-dir "$cache_dir")
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
 if [[ "${cpu_shader_mode:-full}" == "full" ]]; then
-  echo "[software-compat] note: cpu-shader-mode=full currently keeps CPU-route compatibility enabled, but custom-shader effects are bypassed on the CPU route."
+  echo "[software-compat] note: cpu-shader-mode=full currently falls back to platform route while custom shaders are active unless CPU custom-shader execution capability is available."
 fi
 echo "[software-compat] cmd: ${cmd[*]}"
 
@@ -455,7 +440,7 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_full_custom_shader_bypass" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" ]]; then
     options_file=""
     options_candidates=()
     while IFS= read -r candidate; do
@@ -476,7 +461,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       report_failure \
         "environment options-zig-missing" \
         "verify Zig cache layout and build options export symbols" \
-        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-full-custom-shader-bypass=${expect_full_custom_shader_bypass:-<unset>}" \
+        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>}" \
         "cache-root=$cache_dir/c options-candidates=$options_candidates_count" \
         "options-candidates-preview=$options_preview"
     fi
@@ -551,26 +536,6 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       echo "[software-compat] cpu-damage-rect-cap assertion matched expected=$expect_cpu_damage_rect_cap"
     fi
 
-    if [[ -n "$expect_full_custom_shader_bypass" ]]; then
-      actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-      if [[ -z "$actual_cpu_shader_mode" ]]; then
-        actual_cpu_shader_mode="unknown"
-      fi
-
-      actual_full_custom_shader_bypass="false"
-      if [[ "$actual_cpu_shader_mode" == "full" ]]; then
-        actual_full_custom_shader_bypass="true"
-      fi
-
-      if [[ "$actual_full_custom_shader_bypass" != "$expect_full_custom_shader_bypass" ]]; then
-        report_failure \
-          "assertion behavior-mismatch" \
-          "full-custom-shader-bypass assertion does not match effective cpu-shader-mode" \
-          "full-custom-shader-bypass mismatch expected=$expect_full_custom_shader_bypass actual=$actual_full_custom_shader_bypass cpu-shader-mode=$actual_cpu_shader_mode file=$options_file"
-      fi
-
-      echo "[software-compat] full-custom-shader-bypass assertion matched expected=$expect_full_custom_shader_bypass actual=$actual_full_custom_shader_bypass cpu-shader-mode=$actual_cpu_shader_mode"
-    fi
   fi
 
   echo "[software-compat] success"

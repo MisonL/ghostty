@@ -145,6 +145,7 @@ const SoftwareCpuRouteDecisionInput = struct {
     software_renderer_experimental: bool,
     software_renderer_presenter: configpkg.Config.SoftwareRendererPresenter,
     custom_shaders_active: bool,
+    custom_shader_execution_available: bool,
     cpu_shader_mode: build_config.SoftwareRendererCpuShaderMode,
     cpu_shader_timeout_ms: u32,
     transport_mode_native: bool,
@@ -257,7 +258,10 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
             .enabled = false,
             .reason = .custom_shaders_unsupported,
         },
-        .full => {},
+        .full => if (!input.custom_shader_execution_available) return .{
+            .enabled = false,
+            .reason = .custom_shaders_unsupported,
+        },
     };
     _ = input.cpu_shader_timeout_ms;
     if (input.transport_mode_native) return .{
@@ -265,15 +269,6 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
         .reason = .transport_native,
     };
     return .{ .enabled = true };
-}
-
-fn softwareCpuRouteBypassesCustomShaders(
-    input: SoftwareCpuRouteDecisionInput,
-    decision: SoftwareCpuRouteDecision,
-) bool {
-    return decision.enabled and
-        input.custom_shaders_active and
-        input.cpu_shader_mode == .full;
 }
 
 /// Create a renderer type with the provided graphics API wrapper.
@@ -380,10 +375,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// One-shot warning guard when custom shaders disable CPU route
         /// because CPU-route shader execution is not yet available.
         cpu_custom_shader_unsupported_warned: bool = false,
-
-        /// One-shot warning guard when full mode keeps CPU route active
-        /// but custom-shader effects are currently bypassed.
-        cpu_custom_shader_bypass_warned: bool = false,
 
         /// One-shot warning guard when runtime publishing disables CPU route.
         cpu_runtime_publishing_warned: bool = false,
@@ -1414,10 +1405,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// True if our renderer has animations so that a higher frequency
         /// timer is used.
         pub fn hasAnimations(self: *const Self) bool {
-            if (!self.has_custom_shaders) return false;
-            const input = self.softwareCpuRouteDecisionInput();
-            const decision = decideSoftwareCpuRoute(input);
-            return !softwareCpuRouteBypassesCustomShaders(input, decision);
+            return self.has_custom_shaders;
         }
 
         /// True if our renderer is using vsync. If true, the renderer or apprt
@@ -1516,16 +1504,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
-        fn maybeLogSoftwareCpuRouteCustomShaderBypass(self: *Self) void {
-            if (self.cpu_custom_shader_bypass_warned) return;
-            self.cpu_custom_shader_bypass_warned = true;
-
-            log.warn(
-                "software renderer cpu route remains enabled in custom-shader full mode; custom-shader effects are currently bypassed (not executed) on cpu route",
-                .{},
-            );
-        }
-
         fn softwareCpuRouteDecisionInput(self: *const Self) SoftwareCpuRouteDecisionInput {
             return .{
                 .cpu_route_build_effective = software_renderer_cpu_effective,
@@ -1534,6 +1512,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .software_renderer_experimental = self.config.software_renderer_experimental,
                 .software_renderer_presenter = self.config.software_renderer_presenter,
                 .custom_shaders_active = self.has_custom_shaders,
+                .custom_shader_execution_available = cpu_renderer.supportsRuntimeCapability(
+                    .custom_shader_execution,
+                ),
                 .cpu_shader_mode = build_config.software_renderer_cpu_shader_mode,
                 .cpu_shader_timeout_ms = build_config.software_renderer_cpu_shader_timeout_ms,
                 .transport_mode_native = build_config.software_frame_transport_mode == .native,
@@ -1571,12 +1552,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.cpu_route_diagnostics.recordRouteDecision(decision);
             if (!decision.enabled) {
                 self.maybeLogSoftwareCpuRouteDisabled(decision.reason.?);
-                self.cpu_custom_shader_bypass_warned = false;
-            } else if (softwareCpuRouteBypassesCustomShaders(input, decision)) {
-                self.maybeLogSoftwareCpuRouteCustomShaderBypass();
-                self.cpu_route_diagnostics.recordCustomShaderBypass();
-            } else {
-                self.cpu_custom_shader_bypass_warned = false;
             }
 
             return decision.enabled;
@@ -4756,6 +4731,7 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .software_renderer_experimental = true,
         .software_renderer_presenter = .auto,
         .custom_shaders_active = false,
+        .custom_shader_execution_available = false,
         .cpu_shader_mode = .off,
         .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
@@ -4879,7 +4855,6 @@ test "software cpu route decision disables when custom shaders are active and mo
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_mode_off, decision.reason.?);
-    try std.testing.expect(!softwareCpuRouteBypassesCustomShaders(input, decision));
 }
 
 test "software cpu route decision disables when custom shaders are active and mode is safe" {
@@ -4891,30 +4866,39 @@ test "software cpu route decision disables when custom shaders are active and mo
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
-    try std.testing.expect(!softwareCpuRouteBypassesCustomShaders(input, decision));
 }
 
-test "software cpu route decision keeps cpu route when custom shaders are active and mode is full" {
+test "software cpu route decision disables full mode when custom shader execution is unavailable" {
     var input = softwareCpuRouteDecisionInputDefaults();
     input.custom_shaders_active = true;
     input.cpu_shader_mode = .full;
 
     const decision = decideSoftwareCpuRoute(input);
-    try std.testing.expect(decision.enabled);
-    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), decision.reason);
-    try std.testing.expect(softwareCpuRouteBypassesCustomShaders(input, decision));
+    try std.testing.expect(!decision.enabled);
+    try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
 }
 
 test "software cpu route decision full mode still respects transport gate" {
     var input = softwareCpuRouteDecisionInputDefaults();
     input.custom_shaders_active = true;
     input.cpu_shader_mode = .full;
+    input.custom_shader_execution_available = true;
     input.transport_mode_native = true;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.transport_native, decision.reason.?);
-    try std.testing.expect(!softwareCpuRouteBypassesCustomShaders(input, decision));
+}
+
+test "software cpu route decision enables full mode when custom shader execution is available" {
+    var input = softwareCpuRouteDecisionInputDefaults();
+    input.custom_shaders_active = true;
+    input.cpu_shader_mode = .full;
+    input.custom_shader_execution_available = true;
+
+    const decision = decideSoftwareCpuRoute(input);
+    try std.testing.expect(decision.enabled);
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), decision.reason);
 }
 
 test "software cpu route decision disables when presenter is legacy-gl" {

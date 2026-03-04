@@ -1138,9 +1138,6 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_mode }}" ]]; then
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
             compat_args+=(--expect-cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
-            if [[ "${{ matrix.target.cpu_shader_mode }}" == "full" ]]; then
-              compat_args+=(--expect-full-custom-shader-bypass true)
-            fi
           fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
@@ -1309,9 +1306,6 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_mode }}" ]]; then
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
             compat_args+=(--expect-cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
-            if [[ "${{ matrix.target.cpu_shader_mode }}" == "full" ]]; then
-              compat_args+=(--expect-full-custom-shader-bypass true)
-            fi
           fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")

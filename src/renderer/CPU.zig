@@ -27,6 +27,23 @@ pub fn isMvpEffective(
     return software_renderer_cpu_effective and software_renderer_cpu_mvp;
 }
 
+/// CPU-route runtime capabilities.
+///
+/// Extend this enum as new CPU execution paths become available.
+pub const RuntimeCapability = enum {
+    custom_shader_execution,
+};
+
+/// Runtime capability query for CPU-route feature gating.
+///
+/// Custom shader execution is intentionally disabled for now while the
+/// execution path is being staged.
+pub fn supportsRuntimeCapability(capability: RuntimeCapability) bool {
+    return switch (capability) {
+        .custom_shader_execution => false,
+    };
+}
+
 /// Runtime feature-compatibility helper for CPU-route presentation.
 ///
 /// Custom shaders still force fallback to the platform route. Background
@@ -38,7 +55,10 @@ pub fn isRuntimeCompatibleWithCpuRoute(
 ) bool {
     _ = background_image_active;
     _ = kitty_images_active;
-    return !custom_shaders_active;
+    if (custom_shaders_active and !supportsRuntimeCapability(.custom_shader_execution)) {
+        return false;
+    }
+    return true;
 }
 
 /// Runtime API shim used by renderer.GenericRenderer while CPU internals
@@ -2022,11 +2042,18 @@ test "isMvpEffective requires both effective route and MVP opt-in" {
     try std.testing.expect(!isMvpEffective(false, false));
 }
 
-test "isRuntimeCompatibleWithCpuRoute keeps CPU route enabled for background and kitty images" {
+test "supportsRuntimeCapability reports custom shader execution as unavailable" {
+    try std.testing.expect(!supportsRuntimeCapability(.custom_shader_execution));
+}
+
+test "isRuntimeCompatibleWithCpuRoute gates custom shader execution by runtime capability" {
     try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, true, false));
     try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, false, true));
     try std.testing.expect(isRuntimeCompatibleWithCpuRoute(false, true, true));
-    try std.testing.expect(!isRuntimeCompatibleWithCpuRoute(true, true, true));
+    try std.testing.expectEqual(
+        supportsRuntimeCapability(.custom_shader_execution),
+        isRuntimeCompatibleWithCpuRoute(true, true, true),
+    );
 }
 
 test "DamageTracker clips rects to bounds" {
