@@ -1844,6 +1844,27 @@ pub const CAPI = struct {
 
     pub const RuntimeOptionsError = error{InvalidRuntimeConfig};
 
+    fn runtimeOptionsFieldEnd(comptime field: []const u8) usize {
+        return @offsetOf(apprt.runtime.App.Options, field) +
+            @sizeOf(@FieldType(apprt.runtime.App.Options, field));
+    }
+
+    fn runtimeOptionsSafeCopyLen(provided_size: usize) usize {
+        const bounded_size = @min(provided_size, @sizeOf(apprt.runtime.App.Options));
+
+        var copy_len = @as(usize, apprt.runtime.App.runtime_config_min_size);
+        const storage_support_end = runtimeOptionsFieldEnd("software_frame_storage_support");
+        if (bounded_size >= storage_support_end) copy_len = storage_support_end;
+
+        const software_frame_cb_end = runtimeOptionsFieldEnd("software_frame_cb");
+        if (bounded_size >= software_frame_cb_end) copy_len = software_frame_cb_end;
+
+        const close_surface_end = runtimeOptionsFieldEnd("close_surface");
+        if (bounded_size >= close_surface_end) copy_len = close_surface_end;
+
+        return copy_len;
+    }
+
     fn runtimeOptionsLoad(
         opts: *const apprt.runtime.App.Options,
     ) RuntimeOptionsError!apprt.runtime.App.Options {
@@ -1858,7 +1879,7 @@ pub const CAPI = struct {
         }
 
         var loaded = std.mem.zeroes(apprt.runtime.App.Options);
-        const copy_len = @min(provided_size, @sizeOf(apprt.runtime.App.Options));
+        const copy_len = runtimeOptionsSafeCopyLen(provided_size);
         @memcpy(
             std.mem.asBytes(&loaded)[0..copy_len],
             std.mem.asBytes(opts)[0..copy_len],
@@ -2778,6 +2799,22 @@ test "ghostty.h RuntimeConfig size matches" {
     );
 }
 
+test "ghostty.h RuntimeConfig macros match Zig constants" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        App.runtime_config_version,
+        c.GHOSTTY_RUNTIME_CONFIG_VERSION,
+    );
+    try std.testing.expectEqual(
+        @as(u32, @sizeOf(App.Options)),
+        c.GHOSTTY_RUNTIME_CONFIG_SIZE,
+    );
+    try std.testing.expectEqual(
+        App.runtime_config_min_size,
+        c.GHOSTTY_RUNTIME_CONFIG_MIN_SIZE,
+    );
+}
+
 test "ghostty.h RuntimeConfig min size matches offset" {
     const c = @import("ghostty.h");
     try std.testing.expectEqual(
@@ -2786,6 +2823,40 @@ test "ghostty.h RuntimeConfig min size matches offset" {
             "software_frame_storage_support",
         ))),
         c.GHOSTTY_RUNTIME_CONFIG_MIN_SIZE,
+    );
+}
+
+test "ghostty.h RuntimeConfig optional field offsets match" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        @as(u32, @intCast(@offsetOf(
+            c.ghostty_runtime_config_s,
+            "software_frame_storage_support",
+        ))),
+        @as(u32, @intCast(@offsetOf(
+            App.Options,
+            "software_frame_storage_support",
+        ))),
+    );
+    try std.testing.expectEqual(
+        @as(u32, @intCast(@offsetOf(
+            c.ghostty_runtime_config_s,
+            "software_frame_cb",
+        ))),
+        @as(u32, @intCast(@offsetOf(
+            App.Options,
+            "software_frame_cb",
+        ))),
+    );
+    try std.testing.expectEqual(
+        @as(u32, @intCast(@offsetOf(
+            c.ghostty_runtime_config_s,
+            "close_surface_cb",
+        ))),
+        @as(u32, @intCast(@offsetOf(
+            App.Options,
+            "close_surface",
+        ))),
     );
 }
 
@@ -2880,6 +2951,11 @@ fn testRuntimeWriteClipboardNoop(
 
 fn testRuntimeCloseSurfaceNoop(_: ?*anyopaque, _: bool) callconv(.c) void {}
 
+fn runtimeConfigFieldEnd(comptime field: []const u8) u32 {
+    return @as(u32, @intCast(@offsetOf(App.Options, field))) +
+        @as(u32, @intCast(@sizeOf(@FieldType(App.Options, field))));
+}
+
 fn testValidRuntimeConfig() App.Options {
     var opts = CAPI.ghostty_runtime_config_new();
     opts.wakeup = &testRuntimeWakeupNoop;
@@ -2966,6 +3042,57 @@ test "runtimeOptionsResolve supports prefix-only callers by defaulting optional 
     const mapped = try CAPI.runtimeOptionsResolve(&opts);
     try std.testing.expectEqual(@as(u32, 0), mapped.software_frame_storage_support);
     try std.testing.expect(mapped.software_frame_cb == null);
+    try std.testing.expect(mapped.close_surface == null);
+}
+
+test "runtimeOptionsResolve ignores partial software frame storage support bytes" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = App.runtime_config_min_size + 1;
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+    opts.close_surface = &testRuntimeCloseSurfaceNoop;
+
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
+    try std.testing.expectEqual(@as(u32, 0), mapped.software_frame_storage_support);
+    try std.testing.expect(mapped.software_frame_cb == null);
+    try std.testing.expect(mapped.close_surface == null);
+}
+
+test "runtimeOptionsResolve ignores partial software frame callback bytes" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = runtimeConfigFieldEnd("software_frame_storage_support") + 1;
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+    opts.close_surface = &testRuntimeCloseSurfaceNoop;
+
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
+    try std.testing.expectEqual(
+        opts.software_frame_storage_support,
+        mapped.software_frame_storage_support,
+    );
+    try std.testing.expect(mapped.software_frame_cb == null);
+    try std.testing.expect(mapped.close_surface == null);
+}
+
+test "runtimeOptionsResolve ignores partial close surface callback bytes" {
+    var opts = testValidRuntimeConfig();
+    opts.struct_size = runtimeConfigFieldEnd("software_frame_cb") + 1;
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+    opts.close_surface = &testRuntimeCloseSurfaceNoop;
+
+    const mapped = try CAPI.runtimeOptionsResolve(&opts);
+    try std.testing.expectEqual(
+        opts.software_frame_storage_support,
+        mapped.software_frame_storage_support,
+    );
+    try std.testing.expect(mapped.software_frame_cb == opts.software_frame_cb);
     try std.testing.expect(mapped.close_surface == null);
 }
 

@@ -2241,9 +2241,9 @@ pub const Surface = extern struct {
         return texture.as(gdk.Texture);
     }
 
-    fn validateSoftwareFrame(
+    fn softwareFrameRequiredLen(
         frame: apprt.surface.Message.SoftwareFrameReady,
-    ) error{InvalidSoftwareFrame}!void {
+    ) error{InvalidSoftwareFrame}!usize {
         if (frame.width_px == 0 or frame.height_px == 0) {
             return error.InvalidSoftwareFrame;
         }
@@ -2260,16 +2260,30 @@ pub const Surface = extern struct {
         ) catch return error.InvalidSoftwareFrame;
         if (stride < min_stride) return error.InvalidSoftwareFrame;
 
-        const required_len = std.math.mul(
+        return std.math.mul(
             usize,
             stride,
             height,
         ) catch return error.InvalidSoftwareFrame;
+    }
+
+    fn softwareFrameSharedBytes(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+        required_len: usize,
+    ) error{InvalidSoftwareFrame}![]const u8 {
+        const data = frame.data orelse return error.InvalidSoftwareFrame;
+        if (frame.data_len < required_len) return error.InvalidSoftwareFrame;
+        return data[0..required_len];
+    }
+
+    fn validateSoftwareFrame(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        const required_len = try softwareFrameRequiredLen(frame);
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
-                if (frame.data == null) return error.InvalidSoftwareFrame;
-                if (frame.data_len < required_len) return error.InvalidSoftwareFrame;
+                _ = try softwareFrameSharedBytes(frame, required_len);
             },
             .native_texture_handle => {
                 if (frame.handle == null) return error.InvalidSoftwareFrame;
@@ -2499,9 +2513,10 @@ pub const Surface = extern struct {
                     return error.InvalidSoftwareFrame;
                 };
                 const stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
-                const data = frame.data orelse return error.InvalidSoftwareFrame;
+                const required_len = try softwareFrameRequiredLen(frame);
+                const shared_bytes = try softwareFrameSharedBytes(frame, required_len);
 
-                const bytes = glib.Bytes.new(data, frame.data_len);
+                const bytes = glib.Bytes.new(shared_bytes.ptr, shared_bytes.len);
                 defer bytes.unref();
 
                 const texture = gdk.MemoryTexture.new(
@@ -4600,6 +4615,45 @@ test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {
     };
 
     try Surface.validateSoftwareFrame(frame);
+}
+
+test "validateSoftwareFrame accepts oversized shared_cpu_bytes payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 64,
+    };
+
+    try Surface.validateSoftwareFrame(frame);
+}
+
+test "softwareFrameSharedBytes trims oversized shared_cpu_bytes payload to required_len" {
+    var payload: [64]u8 = [_]u8{0} ** 64;
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+    };
+
+    const required_len = try Surface.softwareFrameRequiredLen(frame);
+    try std.testing.expectEqual(@as(usize, 48), required_len);
+
+    const shared_bytes = try Surface.softwareFrameSharedBytes(frame, required_len);
+    try std.testing.expectEqual(required_len, shared_bytes.len);
+    try std.testing.expectEqual(
+        @intFromPtr(payload[0..].ptr),
+        @intFromPtr(shared_bytes.ptr),
+    );
 }
 
 test "validateSoftwareFrameDamageMetadata accepts in-bounds and edge-aligned damage rect payload" {
