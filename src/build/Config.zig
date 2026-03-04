@@ -593,6 +593,26 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         "software_renderer_cpu_damage_rect_cap",
         self.software_renderer_cpu_damage_rect_cap,
     );
+    step.addOption(
+        u32,
+        "software_renderer_cpu_min_macos_major",
+        software_renderer_cpu_min_macos.major,
+    );
+    step.addOption(
+        u32,
+        "software_renderer_cpu_min_macos_minor",
+        software_renderer_cpu_min_macos.minor,
+    );
+    step.addOption(
+        u32,
+        "software_renderer_cpu_min_linux_major",
+        software_renderer_cpu_min_linux.major,
+    );
+    step.addOption(
+        u32,
+        "software_renderer_cpu_min_linux_minor",
+        software_renderer_cpu_min_linux.minor,
+    );
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);

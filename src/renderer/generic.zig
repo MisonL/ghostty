@@ -1114,6 +1114,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (comptime build_config.renderer != .software) return;
             if (!comptime build_config.software_renderer_cpu_mvp) return;
 
+            const cpu_min_macos_major = comptime if (@hasDecl(build_config, "software_renderer_cpu_min_macos_major"))
+                build_config.software_renderer_cpu_min_macos_major
+            else
+                11;
+            const cpu_min_macos_minor = comptime if (@hasDecl(build_config, "software_renderer_cpu_min_macos_minor"))
+                build_config.software_renderer_cpu_min_macos_minor
+            else
+                0;
+            const cpu_min_linux_major = comptime if (@hasDecl(build_config, "software_renderer_cpu_min_linux_major"))
+                build_config.software_renderer_cpu_min_linux_major
+            else
+                5;
+            const cpu_min_linux_minor = comptime if (@hasDecl(build_config, "software_renderer_cpu_min_linux_minor"))
+                build_config.software_renderer_cpu_min_linux_minor
+            else
+                0;
+
             const cpu_effective = comptime if (@hasDecl(build_config, "software_renderer_cpu_effective"))
                 build_config.software_renderer_cpu_effective
             else
@@ -1141,11 +1158,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             log.warn(
-                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} allow_legacy_os={}; requires macOS >= 11 or Linux >= 5.0, falling back to platform route",
+                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} allow_legacy_os={}; requires macOS >= {}.{} or Linux >= {}.{}, falling back to platform route",
                 .{
                     @tagName(builtin.target.os.tag),
                     @tagName(build_config.software_renderer_route_backend),
                     build_config.software_renderer_cpu_allow_legacy_os,
+                    cpu_min_macos_major,
+                    cpu_min_macos_minor,
+                    cpu_min_linux_major,
+                    cpu_min_linux_minor,
                 },
             );
         }
