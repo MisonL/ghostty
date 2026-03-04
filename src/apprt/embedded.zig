@@ -223,20 +223,38 @@ fn shouldResetSoftwareSnapshotRuntimeFallback(
 }
 
 pub const App = struct {
+    pub const runtime_config_v2_version: u32 = 2;
+
+    const AppUD = ?*anyopaque;
+    const SurfaceUD = ?*anyopaque;
+    const SoftwareFrameStorageSupport = u32;
+    const SoftwareFrameCallback =
+        *const fn (SurfaceUD, *const CAPI.RuntimeSoftwareFrame) callconv(.c) bool;
+    const WakeupCallback = *const fn (AppUD) callconv(.c) void;
+    const ActionCallback = *const fn (*App, apprt.Target.C, apprt.Action.C) callconv(.c) bool;
+    const ReadClipboardCallback =
+        *const fn (SurfaceUD, c_int, *apprt.ClipboardRequest) callconv(.c) void;
+    const ConfirmReadClipboardCallback = *const fn (
+        SurfaceUD,
+        [*:0]const u8,
+        *apprt.ClipboardRequest,
+        apprt.ClipboardRequestType,
+    ) callconv(.c) void;
+    const WriteClipboardCallback = *const fn (
+        SurfaceUD,
+        c_int,
+        [*]const CAPI.ClipboardContent,
+        usize,
+        bool,
+    ) callconv(.c) void;
+    const CloseSurfaceCallback = *const fn (SurfaceUD, bool) callconv(.c) void;
+
     /// Because we only expect the embedding API to be used in embedded
     /// environments, the options are extern so that we can expose it
     /// directly to a C callconv and not pay for any translation costs.
     ///
     /// C type: ghostty_runtime_config_s
     pub const Options = extern struct {
-        /// These are just aliases to make the function signatures below
-        /// more obvious what values will be sent.
-        const AppUD = ?*anyopaque;
-        const SurfaceUD = ?*anyopaque;
-        const SoftwareFrameStorageSupport = u32;
-        const SoftwareFrameCallback =
-            *const fn (SurfaceUD, *const CAPI.RuntimeSoftwareFrame) callconv(.c) bool;
-
         /// Userdata that is passed to all the callbacks.
         userdata: AppUD = null,
 
@@ -245,42 +263,52 @@ pub const App = struct {
 
         /// Callback called to wakeup the event loop. This should trigger
         /// a full tick of the app loop.
-        wakeup: *const fn (AppUD) callconv(.c) void,
+        wakeup: WakeupCallback,
 
         /// Callback called to handle an action.
-        action: *const fn (*App, apprt.Target.C, apprt.Action.C) callconv(.c) bool,
+        action: ActionCallback,
 
         /// Read the clipboard value. The return value must be preserved
         /// by the host until the next call. If there is no valid clipboard
         /// value then this should return null.
-        read_clipboard: *const fn (SurfaceUD, c_int, *apprt.ClipboardRequest) callconv(.c) void,
+        read_clipboard: ReadClipboardCallback,
 
         /// This may be called after a read clipboard call to request
         /// confirmation that the clipboard value is safe to read. The embedder
         /// must call complete_clipboard_request with the given request.
-        confirm_read_clipboard: *const fn (
-            SurfaceUD,
-            [*:0]const u8,
-            *apprt.ClipboardRequest,
-            apprt.ClipboardRequestType,
-        ) callconv(.c) void,
+        confirm_read_clipboard: ConfirmReadClipboardCallback,
 
         /// Write the clipboard value.
-        write_clipboard: *const fn (
-            SurfaceUD,
-            c_int,
-            [*]const CAPI.ClipboardContent,
-            usize,
-            bool,
-        ) callconv(.c) void,
+        write_clipboard: WriteClipboardCallback,
 
         /// Software frame storage support bitmask and callback bridge.
         software_frame_storage_support: SoftwareFrameStorageSupport = 0,
         software_frame_cb: ?SoftwareFrameCallback = null,
 
         /// Close the current surface given by this function.
-        close_surface: ?*const fn (SurfaceUD, bool) callconv(.c) void = null,
+        close_surface: ?CloseSurfaceCallback = null,
     };
+
+    /// C type: ghostty_runtime_config_v2_s
+    pub const OptionsV2 = extern struct {
+        struct_size: u32 = @sizeOf(OptionsV2),
+        struct_version: u32 = runtime_config_v2_version,
+        userdata: AppUD = null,
+        supports_selection_clipboard: bool = false,
+        wakeup: ?WakeupCallback = null,
+        action: ?ActionCallback = null,
+        read_clipboard: ?ReadClipboardCallback = null,
+        confirm_read_clipboard: ?ConfirmReadClipboardCallback = null,
+        write_clipboard: ?WriteClipboardCallback = null,
+        software_frame_storage_support: SoftwareFrameStorageSupport = 0,
+        software_frame_cb: ?SoftwareFrameCallback = null,
+        close_surface: ?CloseSurfaceCallback = null,
+    };
+
+    pub const runtime_config_v2_min_size: u32 = @offsetOf(
+        OptionsV2,
+        "software_frame_storage_support",
+    );
 
     /// This is the key event sent for ghostty_surface_key and
     /// ghostty_app_key.
@@ -1818,19 +1846,85 @@ pub const CAPI = struct {
         }
     }
 
+    pub const RuntimeOptionsV2Error = error{InvalidRuntimeConfig};
+
+    fn runtimeOptionsV2Load(
+        opts: *const apprt.runtime.App.OptionsV2,
+    ) RuntimeOptionsV2Error!apprt.runtime.App.OptionsV2 {
+        if (opts.struct_version != apprt.runtime.App.runtime_config_v2_version) {
+            return error.InvalidRuntimeConfig;
+        }
+
+        const provided_size = @as(usize, opts.struct_size);
+        const min_size = @as(usize, apprt.runtime.App.runtime_config_v2_min_size);
+        if (provided_size < min_size) {
+            return error.InvalidRuntimeConfig;
+        }
+
+        var loaded = std.mem.zeroes(apprt.runtime.App.OptionsV2);
+        const copy_len = @min(provided_size, @sizeOf(apprt.runtime.App.OptionsV2));
+        @memcpy(
+            std.mem.asBytes(&loaded)[0..copy_len],
+            std.mem.asBytes(opts)[0..copy_len],
+        );
+        return loaded;
+    }
+
+    fn runtimeOptionsFromV2(
+        opts: *const apprt.runtime.App.OptionsV2,
+    ) RuntimeOptionsV2Error!apprt.runtime.App.Options {
+        const loaded = try runtimeOptionsV2Load(opts);
+        return .{
+            .userdata = loaded.userdata,
+            .supports_selection_clipboard = loaded.supports_selection_clipboard,
+            .wakeup = loaded.wakeup orelse return error.InvalidRuntimeConfig,
+            .action = loaded.action orelse return error.InvalidRuntimeConfig,
+            .read_clipboard = loaded.read_clipboard orelse return error.InvalidRuntimeConfig,
+            .confirm_read_clipboard = loaded.confirm_read_clipboard orelse return error.InvalidRuntimeConfig,
+            .write_clipboard = loaded.write_clipboard orelse return error.InvalidRuntimeConfig,
+            .software_frame_storage_support = loaded.software_frame_storage_support,
+            .software_frame_cb = loaded.software_frame_cb,
+            .close_surface = loaded.close_surface,
+        };
+    }
+
+    /// Returns a zeroed runtime config v2 with size/version initialized.
+    export fn ghostty_runtime_config_v2_new() apprt.runtime.App.OptionsV2 {
+        return .{};
+    }
+
     /// Create a new app.
     export fn ghostty_app_new(
-        opts: *const apprt.runtime.App.Options,
-        config: *const Config,
+        opts: ?*const apprt.runtime.App.Options,
+        config: ?*const Config,
     ) ?*App {
-        return app_new_(opts, config) catch |err| {
+        const opts_v1 = opts orelse return null;
+        const config_ptr = config orelse return null;
+        return app_new_(opts_v1.*, config_ptr) catch |err| {
+            log.err("error initializing app err={}", .{err});
+            return null;
+        };
+    }
+
+    /// Create a new app with runtime config ABI v2 negotiation.
+    export fn ghostty_app_new_v2(
+        opts: ?*const apprt.runtime.App.OptionsV2,
+        config: ?*const Config,
+    ) ?*App {
+        const opts_v2 = opts orelse return null;
+        const config_ptr = config orelse return null;
+        const mapped_opts = runtimeOptionsFromV2(opts_v2) catch |err| {
+            log.err("error validating runtime config v2 err={}", .{err});
+            return null;
+        };
+        return app_new_(mapped_opts, config_ptr) catch |err| {
             log.err("error initializing app err={}", .{err});
             return null;
         };
     }
 
     fn app_new_(
-        opts: *const apprt.runtime.App.Options,
+        opts: apprt.runtime.App.Options,
         config: *const Config,
     ) !*App {
         const core_app = try CoreApp.create(global.alloc);
@@ -1839,7 +1933,7 @@ pub const CAPI = struct {
         // Create our runtime app
         var app = try global.alloc.create(App);
         errdefer global.alloc.destroy(app);
-        try app.init(core_app, config, opts.*);
+        try app.init(core_app, config, opts);
         errdefer app.terminate();
 
         return app;
@@ -2693,6 +2787,31 @@ test "ghostty.h RuntimeSoftwareFrame size matches" {
     );
 }
 
+test "ghostty.h RuntimeConfigV2 size matches" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        @sizeOf(c.ghostty_runtime_config_v2_s),
+        @sizeOf(App.OptionsV2),
+    );
+}
+
+test "ghostty.h RuntimeConfigV2 min size matches offset" {
+    const c = @import("ghostty.h");
+    try std.testing.expectEqual(
+        @as(u32, @intCast(@offsetOf(
+            c.ghostty_runtime_config_v2_s,
+            "software_frame_storage_support",
+        ))),
+        c.GHOSTTY_RUNTIME_CONFIG_V2_MIN_SIZE,
+    );
+}
+
+test "ghostty_runtime_config_v2_new initializes size and version" {
+    const opts = CAPI.ghostty_runtime_config_v2_new();
+    try std.testing.expectEqual(@as(u32, @sizeOf(App.OptionsV2)), opts.struct_size);
+    try std.testing.expectEqual(App.runtime_config_v2_version, opts.struct_version);
+}
+
 test "runtimeSoftwareFrameFromMessage preserves payload and damage metadata" {
     const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
         .{ .x_px = 1, .y_px = 2, .width_px = 3, .height_px = 4 },
@@ -2743,6 +2862,102 @@ test "validateSoftwareFramePayload rejects damage metadata length without pointe
         error.InvalidSoftwareFrame,
         Surface.validateSoftwareFramePayload(frame),
     );
+}
+
+fn testRuntimeWakeupNoop(_: ?*anyopaque) callconv(.c) void {}
+
+fn testRuntimeActionNoop(
+    _: *App,
+    _: apprt.Target.C,
+    _: apprt.Action.C,
+) callconv(.c) bool {
+    return true;
+}
+
+fn testRuntimeReadClipboardNoop(
+    _: ?*anyopaque,
+    _: c_int,
+    _: *apprt.ClipboardRequest,
+) callconv(.c) void {}
+
+fn testRuntimeConfirmReadClipboardNoop(
+    _: ?*anyopaque,
+    _: [*:0]const u8,
+    _: *apprt.ClipboardRequest,
+    _: apprt.ClipboardRequestType,
+) callconv(.c) void {}
+
+fn testRuntimeWriteClipboardNoop(
+    _: ?*anyopaque,
+    _: c_int,
+    _: [*]const CAPI.ClipboardContent,
+    _: usize,
+    _: bool,
+) callconv(.c) void {}
+
+fn testRuntimeCloseSurfaceNoop(_: ?*anyopaque, _: bool) callconv(.c) void {}
+
+fn testValidRuntimeConfigV2() App.OptionsV2 {
+    var opts = CAPI.ghostty_runtime_config_v2_new();
+    opts.wakeup = &testRuntimeWakeupNoop;
+    opts.action = &testRuntimeActionNoop;
+    opts.read_clipboard = &testRuntimeReadClipboardNoop;
+    opts.confirm_read_clipboard = &testRuntimeConfirmReadClipboardNoop;
+    opts.write_clipboard = &testRuntimeWriteClipboardNoop;
+    return opts;
+}
+
+test "runtimeOptionsFromV2 rejects invalid version" {
+    var opts = testValidRuntimeConfigV2();
+    opts.struct_version = 0;
+
+    try std.testing.expectError(
+        error.InvalidRuntimeConfig,
+        CAPI.runtimeOptionsFromV2(&opts),
+    );
+}
+
+test "runtimeOptionsFromV2 rejects size smaller than required prefix" {
+    var opts = testValidRuntimeConfigV2();
+    opts.struct_size = App.runtime_config_v2_min_size - 1;
+
+    try std.testing.expectError(
+        error.InvalidRuntimeConfig,
+        CAPI.runtimeOptionsFromV2(&opts),
+    );
+}
+
+test "runtimeOptionsFromV2 maps optional fields when full struct is provided" {
+    var opts = testValidRuntimeConfigV2();
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+    opts.close_surface = &testRuntimeCloseSurfaceNoop;
+
+    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    try std.testing.expectEqual(opts.userdata, mapped.userdata);
+    try std.testing.expectEqual(
+        opts.software_frame_storage_support,
+        mapped.software_frame_storage_support,
+    );
+    try std.testing.expect(mapped.software_frame_cb == opts.software_frame_cb);
+    try std.testing.expect(mapped.close_surface == opts.close_surface);
+}
+
+test "runtimeOptionsFromV2 supports prefix-only callers by defaulting optional fields" {
+    var opts = testValidRuntimeConfigV2();
+    opts.struct_size = App.runtime_config_v2_min_size;
+    opts.software_frame_storage_support = @intFromEnum(
+        CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+    );
+    opts.software_frame_cb = &testSoftwareFrameCallbackSuccess;
+    opts.close_surface = &testRuntimeCloseSurfaceNoop;
+
+    const mapped = try CAPI.runtimeOptionsFromV2(&opts);
+    try std.testing.expectEqual(@as(u32, 0), mapped.software_frame_storage_support);
+    try std.testing.expect(mapped.software_frame_cb == null);
+    try std.testing.expect(mapped.close_surface == null);
 }
 
 fn testSoftwareFrameCallbackSuccess(

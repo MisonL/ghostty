@@ -1036,6 +1036,25 @@ typedef struct {
   ghostty_runtime_close_surface_cb close_surface_cb;
 } ghostty_runtime_config_s;
 
+#define GHOSTTY_RUNTIME_CONFIG_V2_VERSION 2u
+#define GHOSTTY_RUNTIME_CONFIG_V2_SIZE ((uint32_t)sizeof(ghostty_runtime_config_v2_s))
+#define GHOSTTY_RUNTIME_CONFIG_V2_MIN_SIZE ((uint32_t)offsetof(ghostty_runtime_config_v2_s, software_frame_storage_support))
+
+typedef struct {
+  uint32_t struct_size;
+  uint32_t struct_version;
+  void* userdata;
+  bool supports_selection_clipboard;
+  ghostty_runtime_wakeup_cb wakeup_cb;
+  ghostty_runtime_action_cb action_cb;
+  ghostty_runtime_read_clipboard_cb read_clipboard_cb;
+  ghostty_runtime_confirm_read_clipboard_cb confirm_read_clipboard_cb;
+  ghostty_runtime_write_clipboard_cb write_clipboard_cb;
+  ghostty_runtime_software_frame_storage_support_t software_frame_storage_support;
+  ghostty_runtime_software_frame_cb software_frame_cb;
+  ghostty_runtime_close_surface_cb close_surface_cb;
+} ghostty_runtime_config_v2_s;
+
 // apprt.ipc.Target.Key
 typedef enum {
   GHOSTTY_IPC_TARGET_CLASS,
@@ -1091,8 +1110,11 @@ uint32_t ghostty_config_diagnostics_count(ghostty_config_t);
 ghostty_diagnostic_s ghostty_config_get_diagnostic(ghostty_config_t, uint32_t);
 ghostty_string_s ghostty_config_open_path(void);
 
+ghostty_runtime_config_v2_s ghostty_runtime_config_v2_new(void);
 ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*,
                               ghostty_config_t);
+ghostty_app_t ghostty_app_new_v2(const ghostty_runtime_config_v2_s*,
+                                 ghostty_config_t);
 void ghostty_app_free(ghostty_app_t);
 void ghostty_app_tick(ghostty_app_t);
 void* ghostty_app_userdata(ghostty_app_t);
