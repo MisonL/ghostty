@@ -1212,6 +1212,10 @@ jobs:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
+      - name: Selftest software renderer CPU path gate (once)
+        if: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' }}
+        run: ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+
       - name: Test software renderer CPU path
         env:
           SR_CI_OS: linux

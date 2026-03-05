@@ -34,6 +34,12 @@ expect_cpu_shader_capability_hint_readable="${SR_CI_EXPECT_CPU_SHADER_CAPABILITY
 cpu_frame_damage_mode="${SR_CI_CPU_FRAME_DAMAGE_MODE:-}"
 cpu_damage_rect_cap="${SR_CI_CPU_DAMAGE_RECT_CAP:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
+dry_run="${SR_CI_DRY_RUN:-false}"
+
+if [[ "$dry_run" != "true" && "$dry_run" != "false" ]]; then
+  echo "invalid SR_CI_DRY_RUN: $dry_run (expected: true|false)" >&2
+  exit 2
+fi
 
 allow_legacy_os=false
 target_major=""
@@ -189,6 +195,15 @@ if [[ "$SR_CI_OS" == "linux" ]]; then
   compat_args+=(--app-runtime "$app_runtime")
 else
   compat_args+=(--system "$system_path")
+fi
+
+if [[ "$dry_run" == "true" ]]; then
+  printf "[software-renderer-ci] dry-run compat-check command: %q" "./.github/scripts/software-renderer-compat-check.sh"
+  for arg in "${compat_args[@]}"; do
+    printf " %q" "$arg"
+  done
+  printf "\n"
+  exit 0
 fi
 
 nix develop -c \
