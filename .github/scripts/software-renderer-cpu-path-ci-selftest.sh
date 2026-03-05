@@ -200,6 +200,35 @@ case_dry_run_cpu_shader_reprobe_interval_frames_passthrough() {
   pass "dry-run passes cpu shader reprobe interval"
 }
 
+case_dry_run_cpu_shader_reprobe_interval_zero_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES=0; then
+    fail "dry-run with cpu shader reprobe interval=0 should succeed"
+  fi
+
+  assert_contains "$output" "dry-run compat-check command" "dry-run command print"
+  assert_contains "$output" "--cpu-shader-reprobe-interval-frames 0" "dry-run cpu shader reprobe interval zero arg"
+  pass "dry-run passes cpu shader reprobe interval zero"
+}
+
+case_cpu_shader_reprobe_interval_invalid_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES=70000; then
+    fail "invalid cpu shader reprobe interval should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES" "invalid reprobe interval"
+  pass "invalid cpu shader reprobe interval fails fast"
+}
+
 test_cases=(
   case_target_gate_mismatch_fails
   case_macos_missing_system_path_fails
@@ -212,6 +241,8 @@ test_cases=(
   case_dry_run_cpu_publish_warning_knobs_passthrough
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
   case_dry_run_cpu_shader_reprobe_interval_frames_passthrough
+  case_dry_run_cpu_shader_reprobe_interval_zero_passthrough
+  case_cpu_shader_reprobe_interval_invalid_fails
 )
 
 for test_case in "${test_cases[@]}"; do

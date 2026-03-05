@@ -235,6 +235,18 @@ const SoftwareCpuRouteDecision = struct {
     custom_shader_unavailable_hint_readable: bool = false,
 };
 
+const CpuPublishRetryReason = enum {
+    invalid_surface,
+    pool_retired_pressure,
+    frame_pool_exhausted,
+    mailbox_backpressure,
+};
+
+const CpuPublishResult = union(enum) {
+    published: void,
+    retry: CpuPublishRetryReason,
+};
+
 const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
     custom_shader_bypass_count: u64,
@@ -244,6 +256,11 @@ const CpuRouteDiagnosticsSnapshot = struct {
     cpu_damage_rect_overflow_count: u64,
     cpu_publish_skipped_no_damage_count: u64,
     cpu_publish_latency_warning_count: u64,
+    cpu_publish_retry_invalid_surface_count: u64,
+    cpu_publish_retry_pool_pressure_count: u64,
+    cpu_publish_retry_pool_exhausted_count: u64,
+    cpu_publish_retry_mailbox_backpressure_count: u64,
+    last_cpu_publish_retry_reason: []const u8,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
     last_fallback_scope: []const u8,
@@ -271,6 +288,11 @@ const CpuRouteDiagnosticsState = struct {
     cpu_damage_rect_overflow_count: u64 = 0,
     cpu_publish_skipped_no_damage_count: u64 = 0,
     cpu_publish_latency_warning_count: u64 = 0,
+    cpu_publish_retry_invalid_surface_count: u64 = 0,
+    cpu_publish_retry_pool_pressure_count: u64 = 0,
+    cpu_publish_retry_pool_exhausted_count: u64 = 0,
+    cpu_publish_retry_mailbox_backpressure_count: u64 = 0,
+    last_cpu_publish_retry_reason: ?CpuPublishRetryReason = null,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
     last_shader_capability_observed: bool = false,
@@ -332,6 +354,20 @@ const CpuRouteDiagnosticsState = struct {
         self.publish_retry_count +%= 1;
     }
 
+    fn recordPublishRetryReason(
+        self: *CpuRouteDiagnosticsState,
+        reason: CpuPublishRetryReason,
+    ) void {
+        self.recordPublishRetry();
+        self.last_cpu_publish_retry_reason = reason;
+        switch (reason) {
+            .invalid_surface => self.cpu_publish_retry_invalid_surface_count +%= 1,
+            .pool_retired_pressure => self.cpu_publish_retry_pool_pressure_count +%= 1,
+            .frame_pool_exhausted => self.cpu_publish_retry_pool_exhausted_count +%= 1,
+            .mailbox_backpressure => self.cpu_publish_retry_mailbox_backpressure_count +%= 1,
+        }
+    }
+
     fn recordCpuFramePublished(self: *CpuRouteDiagnosticsState, duration_ns: u64) void {
         self.last_cpu_frame_ms = duration_ns / std.time.ns_per_ms;
     }
@@ -368,6 +404,14 @@ const CpuRouteDiagnosticsState = struct {
             .cpu_damage_rect_overflow_count = self.cpu_damage_rect_overflow_count,
             .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
             .cpu_publish_latency_warning_count = self.cpu_publish_latency_warning_count,
+            .cpu_publish_retry_invalid_surface_count = self.cpu_publish_retry_invalid_surface_count,
+            .cpu_publish_retry_pool_pressure_count = self.cpu_publish_retry_pool_pressure_count,
+            .cpu_publish_retry_pool_exhausted_count = self.cpu_publish_retry_pool_exhausted_count,
+            .cpu_publish_retry_mailbox_backpressure_count = self.cpu_publish_retry_mailbox_backpressure_count,
+            .last_cpu_publish_retry_reason = if (self.last_cpu_publish_retry_reason) |reason|
+                @tagName(reason)
+            else
+                "n/a",
             .last_cpu_frame_ms = self.last_cpu_frame_ms,
             .last_fallback_reason = self.last_fallback_reason,
             .last_fallback_scope = softwareCpuRouteFallbackScope(self.last_fallback_reason),
@@ -2804,12 +2848,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self: *Self,
             surface_size: anytype,
             force_full_damage: bool,
-        ) !bool {
+        ) !CpuPublishResult {
             self.collectRetiredCpuFramePools();
 
-            const width_px = std.math.cast(u32, surface_size.width) orelse return false;
-            const height_px = std.math.cast(u32, surface_size.height) orelse return false;
-            if (width_px == 0 or height_px == 0) return false;
+            const width_px = std.math.cast(u32, surface_size.width) orelse return .{
+                .retry = .invalid_surface,
+            };
+            const height_px = std.math.cast(u32, surface_size.height) orelse return .{
+                .retry = .invalid_surface,
+            };
+            if (width_px == 0 or height_px == 0) return .{
+                .retry = .invalid_surface,
+            };
 
             self.cpu_damage_tracker.resetRetainingCapacity();
             switch (comptime software_renderer_cpu_frame_damage_mode) {
@@ -2864,7 +2914,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             );
 
             var pool = self.ensureCpuFramePool(width_px, height_px) catch |err| switch (err) {
-                error.CpuFramePoolRetiredPressure => return false,
+                error.CpuFramePoolRetiredPressure => return .{
+                    .retry = .pool_retired_pressure,
+                },
                 else => return err,
             };
             var acquired = pool.acquire() orelse {
@@ -2875,7 +2927,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .{},
                     );
                 }
-                return false;
+                return .{ .retry = .frame_pool_exhausted };
             };
             self.cpu_frame_pool_exhausted_warned = false;
 
@@ -2989,10 +3041,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .software_frame_ready = frame,
             }, .instant) == 0) {
                 frame.release();
-                return false;
+                return .{ .retry = .mailbox_backpressure };
             }
 
-            return true;
+            return .{ .published = {} };
         }
 
         /// Set the new font grid.
@@ -3472,40 +3524,43 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 const publish_start = std.time.Instant.now() catch null;
-                const published = try self.publishCpuSoftwareFrame(
+                const publish_result = try self.publishCpuSoftwareFrame(
                     surface_size,
                     force_full_cpu_damage,
                 );
-                if (!published) {
-                    self.cpu_route_diagnostics.recordPublishRetry();
-                    self.cpu_publish_pending = true;
-                    self.cells_rebuilt = true;
-                } else {
-                    self.cpu_publish_pending = false;
-                    if (publish_start) |start| {
-                        const publish_end = std.time.Instant.now() catch null;
-                        if (publish_end) |end| {
-                            self.cpu_route_diagnostics.recordCpuFramePublished(end.since(start));
-                            const snapshot = self.cpu_route_diagnostics.snapshot();
-                            if (updateCpuFramePublishWarningState(
-                                &self.cpu_frame_publish_warning,
-                                snapshot,
-                            )) {
-                                self.cpu_route_diagnostics.recordCpuPublishLatencyWarning();
-                                log.warn(
-                                    "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
-                                    .{
-                                        snapshot.last_cpu_frame_ms.?,
-                                        cpu_frame_publish_warning_threshold_ms,
-                                        self.cpu_frame_publish_warning.consecutive_over_threshold,
-                                        snapshot.shader_capability_observed,
-                                        snapshot.shader_capability_available,
-                                        snapshot.shader_minimal_runtime_enabled,
-                                    },
-                                );
+                switch (publish_result) {
+                    .retry => |reason| {
+                        self.cpu_route_diagnostics.recordPublishRetryReason(reason);
+                        self.cpu_publish_pending = true;
+                        self.cells_rebuilt = true;
+                    },
+                    .published => {
+                        self.cpu_publish_pending = false;
+                        if (publish_start) |start| {
+                            const publish_end = std.time.Instant.now() catch null;
+                            if (publish_end) |end| {
+                                self.cpu_route_diagnostics.recordCpuFramePublished(end.since(start));
+                                const snapshot = self.cpu_route_diagnostics.snapshot();
+                                if (updateCpuFramePublishWarningState(
+                                    &self.cpu_frame_publish_warning,
+                                    snapshot,
+                                )) {
+                                    self.cpu_route_diagnostics.recordCpuPublishLatencyWarning();
+                                    log.warn(
+                                        "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
+                                        .{
+                                            snapshot.last_cpu_frame_ms.?,
+                                            cpu_frame_publish_warning_threshold_ms,
+                                            self.cpu_frame_publish_warning.consecutive_over_threshold,
+                                            snapshot.shader_capability_observed,
+                                            snapshot.shader_capability_available,
+                                            snapshot.shader_minimal_runtime_enabled,
+                                        },
+                                    );
+                                }
                             }
                         }
-                    }
+                    },
                 }
                 return;
             }
@@ -5508,6 +5563,11 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
         .cpu_damage_rect_overflow_count = 0,
         .cpu_publish_skipped_no_damage_count = 0,
         .cpu_publish_latency_warning_count = 0,
+        .cpu_publish_retry_invalid_surface_count = 0,
+        .cpu_publish_retry_pool_pressure_count = 0,
+        .cpu_publish_retry_pool_exhausted_count = 0,
+        .cpu_publish_retry_mailbox_backpressure_count = 0,
+        .last_cpu_publish_retry_reason = "n/a",
         .last_cpu_frame_ms = null,
         .last_fallback_reason = null,
         .last_fallback_scope = "none",
@@ -5967,6 +6027,11 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_publish_retry_reason);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -6054,6 +6119,11 @@ test "cpu route diagnostics increments custom shader bypass only for enabled cus
 test "cpu route diagnostics snapshot defaults include capability reprobe count" {
     const snapshot = cpuRouteDiagnosticsSnapshotDefaults();
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_shader_capability_reprobe_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_publish_retry_reason);
 }
 
 test "cpu route diagnostics tracks cpu shader capability reprobe count" {
@@ -6073,8 +6143,8 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     capability_input.custom_shader_execution_unavailable_reason = null;
     capability_input.custom_shader_probe_minimal_runtime_enabled = false;
     diagnostics.recordCapabilityObservation(capability_input);
-    diagnostics.recordPublishRetry();
-    diagnostics.recordPublishRetry();
+    diagnostics.recordPublishRetryReason(.pool_retired_pressure);
+    diagnostics.recordPublishRetryReason(.mailbox_backpressure);
     diagnostics.recordDamageStats(3, 1);
     diagnostics.recordPublishSkippedNoDamage();
     diagnostics.recordPublishSkippedNoDamage();
@@ -6089,6 +6159,11 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_pressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqualStrings("mailbox_backpressure", snapshot.last_cpu_publish_retry_reason);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -6103,6 +6178,22 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_source);
     try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_path);
     try std.testing.expect(!snapshot.shader_capability_hint_readable);
+}
+
+test "cpu route diagnostics tracks publish retry reason buckets" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordPublishRetryReason(.invalid_surface);
+    diagnostics.recordPublishRetryReason(.pool_retired_pressure);
+    diagnostics.recordPublishRetryReason(.frame_pool_exhausted);
+    diagnostics.recordPublishRetryReason(.mailbox_backpressure);
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 4), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_invalid_surface_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_pressure_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_exhausted_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqualStrings("mailbox_backpressure", snapshot.last_cpu_publish_retry_reason);
 }
 
 test "cpu route diagnostics capability snapshot clears when observation is unavailable" {

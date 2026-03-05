@@ -55,6 +55,18 @@ if [[ -n "$expect_software_route_backend" && "$expect_software_route_backend" !=
   echo "invalid SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: $expect_software_route_backend (expected: opengl|metal)" >&2
   exit 2
 fi
+if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
+  if ! [[ "$cpu_shader_reprobe_interval_frames" =~ ^[0-9]+$ ]]; then
+    echo "invalid SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES: $cpu_shader_reprobe_interval_frames (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_shader_reprobe_interval_frames} > 5 )) || {
+    (( ${#cpu_shader_reprobe_interval_frames} == 5 )) && (( cpu_shader_reprobe_interval_frames > 65535 ))
+  }; then
+    echo "invalid SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES: $cpu_shader_reprobe_interval_frames (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
 
 allow_legacy_os=false
 target_os=""

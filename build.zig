@@ -21,6 +21,33 @@ pub fn build(b: *std.Build) !void {
         "test-filter",
         "Filter for test. Only applies to Zig tests.",
     ) orelse &[0][]const u8{};
+    const skip_macos_ui_tests = skip_macos_ui_tests: {
+        if (b.option(
+            bool,
+            "skip-macos-ui-tests",
+            "Skip macOS xcodebuild UI test dependency from `zig build test`.",
+        )) |v| {
+            break :skip_macos_ui_tests v;
+        }
+
+        var process_env = try std.process.getEnvMap(b.allocator);
+        defer process_env.deinit();
+        const raw = process_env.get("GHOSTTY_CI_SKIP_UI_TESTS") orelse
+            break :skip_macos_ui_tests false;
+        if (std.ascii.eqlIgnoreCase(raw, "1") or
+            std.ascii.eqlIgnoreCase(raw, "true") or
+            std.ascii.eqlIgnoreCase(raw, "yes"))
+        {
+            break :skip_macos_ui_tests true;
+        }
+        if (std.ascii.eqlIgnoreCase(raw, "0") or
+            std.ascii.eqlIgnoreCase(raw, "false") or
+            std.ascii.eqlIgnoreCase(raw, "no"))
+        {
+            break :skip_macos_ui_tests false;
+        }
+        break :skip_macos_ui_tests false;
+    };
 
     // Ghostty dependencies used by many artifacts.
     const deps = try buildpkg.SharedDeps.init(b, &config);
@@ -223,7 +250,7 @@ pub fn build(b: *std.Build) !void {
             run_step.dependOn(&macos_app_native_only.open.step);
 
             // If we have no test filters, install the tests too
-            if (test_filters.len == 0) {
+            if (test_filters.len == 0 and !skip_macos_ui_tests) {
                 macos_app_native_only.addTestStepDependencies(test_step);
             }
         }

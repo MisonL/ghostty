@@ -121,20 +121,53 @@ pub fn init(
         env_map.* = .init(b.allocator);
         if (env.get("PATH")) |v| try env_map.put("PATH", v);
         try env_map.put("COPYFILE_DISABLE", "1");
+        const xctest_arch_arg = if (xc_arch) |arch| b.fmt("-arch {s}", .{arch}) else "";
 
         const step = RunStep.create(b, "xcodebuild test");
         step.has_side_effects = true;
         step.cwd = b.path("macos");
         step.env_map = env_map;
         step.addArgs(&.{
-            "xcodebuild",
-            "test",
-            "-scheme",
-            "Ghostty",
-            "-derivedDataPath",
-            derived_data_path,
+            "/bin/sh",
+            "-c",
+            b.fmt(
+                \\set -euo pipefail
+                \\retries="$(printenv GHOSTTY_XCODEBUILD_TEST_RETRIES || true)"
+                \\if [ -z "$retries" ]; then retries=2; fi
+                \\case "$retries" in
+                \\  ''|*[!0-9]*) retries=2 ;;
+                \\esac
+                \\if [ "$retries" -lt 1 ]; then retries=1; fi
+                \\attempt=1
+                \\while :; do
+                \\  log_file="build/xcodebuild-test-attempt-$attempt.log"
+                \\  set +e
+                \\  xcodebuild test -scheme Ghostty -derivedDataPath {s} {s} 2>&1 | tee "$log_file"
+                \\  status=$?
+                \\  set -e
+                \\  if [ "$status" -eq 0 ]; then
+                \\    exit 0
+                \\  fi
+                \\
+                \\  classification="functional_or_unknown"
+                \\  if grep -q "Timed out while enabling automation mode" "$log_file"; then
+                \\    classification="environment_automation_timeout"
+                \\  fi
+                \\  echo "[xcodebuild-test] classification=$classification attempt=$attempt/$retries status=$status"
+                \\
+                \\  if [ "$attempt" -ge "$retries" ] || [ "$classification" != "environment_automation_timeout" ]; then
+                \\    exit "$status"
+                \\  fi
+                \\  attempt=$((attempt + 1))
+                \\  sleep 2
+                \\done
+            ,
+                .{
+                    derived_data_path,
+                    xctest_arch_arg,
+                },
+            ),
         });
-        if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });
 
         // We need the xcframework
         deps.xcframework.addStepDependencies(&step.step);
