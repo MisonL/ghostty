@@ -1097,6 +1097,18 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Legacy target minimal-runtime enable spot-check.
+          - target:
+              target_label: linux-4.19-legacy-min-runtime-enabled
+              target: x86_64-linux.4.19.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_shader_enable_minimal_runtime: "true"
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # Legacy target backend-off compatibility spot-check.
           - target:
               target_label: linux-4.19-legacy-backend-off
@@ -1357,6 +1369,18 @@ jobs:
               expect_cpu_effective: "true"
               cpu_shader_mode: safe
               cpu_shader_timeout_ms: "16"
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # Legacy target minimal-runtime enable spot-check.
+          - target:
+              target_label: macos-10.15-legacy-min-runtime-enabled
+              target: x86_64-macos.10.15.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_shader_enable_minimal_runtime: "true"
             transport:
               transport_label: auto
               transport_mode: auto
