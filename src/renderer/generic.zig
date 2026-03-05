@@ -222,11 +222,12 @@ const CpuRouteDiagnosticsState = struct {
         self: *CpuRouteDiagnosticsState,
         input: SoftwareCpuRouteDecisionInput,
     ) void {
-        self.last_shader_capability_observed = input.custom_shader_execution_capability_observed;
-        self.last_shader_capability_available = input.custom_shader_execution_available;
+        const observed = input.custom_shader_execution_capability_observed;
+        self.last_shader_capability_observed = observed;
+        self.last_shader_capability_available = observed and input.custom_shader_execution_available;
         self.last_shader_minimal_runtime_enabled = input.custom_shader_probe_minimal_runtime_enabled;
 
-        if (!input.custom_shader_execution_capability_observed) {
+        if (!observed) {
             self.last_shader_capability_reason = null;
             self.last_shader_capability_hint_source = null;
             self.last_shader_capability_hint_path = null;
@@ -1397,6 +1398,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     else
                         "none";
                     const hint_path = probe.vulkan_driver_hint_path orelse "none";
+                    const capability_status: []const u8 = switch (probe.status) {
+                        .available => "available",
+                        .unavailable => "unavailable",
+                    };
+                    const capability_reason: []const u8 = switch (probe.status) {
+                        .available => "n/a",
+                        .unavailable => |reason| @tagName(reason),
+                    };
                     switch (probe.status) {
                         .available => log.info(
                             "software renderer cpu shader capability status=available mode={s} backend={s} timeout_ms={} hint_source={s} hint_path={s} hint_readable={}",
@@ -1422,6 +1431,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             },
                         ),
                     }
+                    log.info(
+                        "software renderer cpu shader capability kv status={s} reason={s} mode={s} backend={s} timeout_ms={} hint_source={s} hint_path={s} hint_readable={} minimal_runtime_enabled={} observed=true",
+                        .{
+                            capability_status,
+                            capability_reason,
+                            @tagName(build_config.software_renderer_cpu_shader_mode),
+                            @tagName(probe.backend),
+                            probe.timeout_ms,
+                            hint_source,
+                            hint_path,
+                            probe.vulkan_driver_hint_readable,
+                            probe.enable_minimal_runtime,
+                        },
+                    );
                 }
 
                 return;
@@ -1819,7 +1842,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         fn softwareCpuRouteDecisionInput(self: *Self) SoftwareCpuRouteDecisionInput {
             var custom_shader_capability_observed = false;
-            var custom_shader_available = true;
+            var custom_shader_available = false;
             var custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null;
             var custom_shader_hint_source: ?cpu_renderer.VulkanDriverHintSource = null;
             var custom_shader_hint_path: ?[]const u8 = null;
@@ -1833,6 +1856,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
                 const custom_shader_probe = self.cpu_custom_shader_probe.?;
                 custom_shader_capability_observed = true;
+                custom_shader_available = true;
                 custom_shader_hint_source = custom_shader_probe.vulkan_driver_hint_source;
                 custom_shader_hint_path = custom_shader_probe.vulkan_driver_hint_path;
                 custom_shader_hint_readable = custom_shader_probe.vulkan_driver_hint_readable;
@@ -5655,7 +5679,8 @@ test "cpu route diagnostics capability snapshot clears when observation is unava
 
     var unobserved_input = softwareCpuRouteDecisionInputDefaults();
     unobserved_input.custom_shader_execution_capability_observed = false;
-    unobserved_input.custom_shader_execution_available = false;
+    // Unobserved capability should never report available=true in diagnostics.
+    unobserved_input.custom_shader_execution_available = true;
     unobserved_input.custom_shader_probe_minimal_runtime_enabled = cpuShaderMinimalRuntimeEnabledDefault();
     diagnostics.recordCapabilityObservation(unobserved_input);
 

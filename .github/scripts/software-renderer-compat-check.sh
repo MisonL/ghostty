@@ -132,6 +132,21 @@ report_failure() {
   exit 1
 }
 
+extract_log_kv_field() {
+  local line="$1"
+  local key="$2"
+  local token
+
+  for token in $line; do
+    if [[ "$token" == "$key="* ]]; then
+      printf '%s' "${token#*=}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 mode="test"
 transport="auto"
 target=""
@@ -866,24 +881,26 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" ]]; then
-    capability_line="$(grep -E 'software renderer cpu shader capability .*status=' "$log_file" | tail -n 1 || true)"
+    capability_line="$(grep -E 'software renderer cpu shader capability kv ' "$log_file" | tail -n 1 || true)"
     if [[ -z "$capability_line" ]]; then
       report_failure \
         "assertion runtime-log-missing" \
-        "expected cpu shader capability log line was not found" \
+        "expected structured cpu shader capability kv log line was not found" \
         "expected-status=${expect_cpu_shader_capability_status:-<unset>} expected-reason=${expect_cpu_shader_capability_reason:-<unset>} expected-hint-source=${expect_cpu_shader_capability_hint_source:-<unset>} expected-hint-readable=${expect_cpu_shader_capability_hint_readable:-<unset>}"
     fi
 
-    observed_capability_status="$(sed -nE 's/.*status=([a-z_]+).*/\1/p' <<<"$capability_line" | head -n 1)"
-    observed_capability_reason="$(sed -nE 's/.*reason=([a-z_]+).*/\1/p' <<<"$capability_line" | head -n 1)"
-    observed_capability_hint_source="$(sed -nE 's/.*hint_source=([^ ]+).*/\1/p' <<<"$capability_line" | head -n 1)"
-    observed_capability_hint_readable="$(sed -nE 's/.*hint_readable=(true|false).*/\1/p' <<<"$capability_line" | head -n 1)"
+    observed_capability_status="$(extract_log_kv_field "$capability_line" "status" || true)"
+    observed_capability_reason="$(extract_log_kv_field "$capability_line" "reason" || true)"
+    observed_capability_hint_source="$(extract_log_kv_field "$capability_line" "hint_source" || true)"
+    observed_capability_hint_readable="$(extract_log_kv_field "$capability_line" "hint_readable" || true)"
+    observed_capability_min_runtime_enabled="$(extract_log_kv_field "$capability_line" "minimal_runtime_enabled" || true)"
     if [[ -z "$observed_capability_status" ]]; then observed_capability_status="unknown"; fi
     if [[ -z "$observed_capability_reason" ]]; then observed_capability_reason="n/a"; fi
     if [[ -z "$observed_capability_hint_source" ]]; then observed_capability_hint_source="unknown"; fi
     if [[ -z "$observed_capability_hint_readable" ]]; then observed_capability_hint_readable="unknown"; fi
+    if [[ -z "$observed_capability_min_runtime_enabled" ]]; then observed_capability_min_runtime_enabled="unknown"; fi
 
-    echo "[software-compat] capability-log-snapshot status=$observed_capability_status reason=$observed_capability_reason hint_source=$observed_capability_hint_source hint_readable=$observed_capability_hint_readable"
+    echo "[software-compat] capability-log-snapshot status=$observed_capability_status reason=$observed_capability_reason hint_source=$observed_capability_hint_source hint_readable=$observed_capability_hint_readable minimal_runtime_enabled=$observed_capability_min_runtime_enabled"
 
     if [[ -n "$expect_cpu_shader_capability_status" && "$observed_capability_status" != "$expect_cpu_shader_capability_status" ]]; then
       report_failure \
