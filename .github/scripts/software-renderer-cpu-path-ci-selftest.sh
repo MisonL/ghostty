@@ -185,6 +185,63 @@ case_dry_run_cpu_publish_warning_threshold_only_passthrough() {
   pass "dry-run passes cpu publish warning threshold-only knob"
 }
 
+case_dry_run_cpu_damage_rect_cap_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_DAMAGE_RECT_CAP=64; then
+    fail "dry-run with cpu damage rect cap should succeed"
+  fi
+
+  assert_contains "$output" "dry-run compat-check command" "dry-run command print"
+  assert_contains "$output" "--cpu-damage-rect-cap 64" "dry-run cpu damage rect cap arg"
+  pass "dry-run passes cpu damage rect cap"
+}
+
+case_cpu_damage_rect_cap_invalid_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_DAMAGE_RECT_CAP=70000; then
+    fail "invalid cpu damage rect cap should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_CPU_DAMAGE_RECT_CAP" "invalid cpu damage rect cap"
+  pass "invalid cpu damage rect cap fails fast"
+}
+
+case_cpu_publish_warning_threshold_invalid_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS=4294967296; then
+    fail "invalid cpu publish warning threshold should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS" "invalid cpu publish warning threshold"
+  pass "invalid cpu publish warning threshold fails fast"
+}
+
+case_cpu_publish_warning_consecutive_limit_invalid_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT=256; then
+    fail "invalid cpu publish warning consecutive limit should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT" "invalid cpu publish warning consecutive limit"
+  pass "invalid cpu publish warning consecutive limit fails fast"
+}
+
 case_dry_run_cpu_shader_reprobe_interval_frames_passthrough() {
   local output
   if ! run_with_env output \
@@ -240,6 +297,10 @@ test_cases=(
   case_macos_default_route_backend_is_metal
   case_dry_run_cpu_publish_warning_knobs_passthrough
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
+  case_dry_run_cpu_damage_rect_cap_passthrough
+  case_cpu_damage_rect_cap_invalid_fails
+  case_cpu_publish_warning_threshold_invalid_fails
+  case_cpu_publish_warning_consecutive_limit_invalid_fails
   case_dry_run_cpu_shader_reprobe_interval_frames_passthrough
   case_dry_run_cpu_shader_reprobe_interval_zero_passthrough
   case_cpu_shader_reprobe_interval_invalid_fails

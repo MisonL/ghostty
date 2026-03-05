@@ -197,7 +197,23 @@ macOS 额外必填：
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_SOURCE`
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE`
 
-### 7.3 优先级（从高到低）
+### 7.3 CI 入口脚本 fail-fast 参数校验边界
+
+入口脚本 `.github/scripts/software-renderer-cpu-path-ci.sh` 对以下 `SR_CI_*` 参数做 fail-fast 校验（仅在参数非空时触发）：
+
+| 环境变量 | 合法范围 | 非法输入示例 | 失败行为 |
+| --- | --- | --- | --- |
+| `SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES` | `u16`，即 `0..65535` | `-1`、`abc`、`70000` | 立即报错并退出 |
+| `SR_CI_CPU_DAMAGE_RECT_CAP` | `u16`，即 `0..65535` | `-1`、`x10`、`70000` | 立即报错并退出 |
+| `SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS` | `u32`，即 `0..4294967295` | `-1`、`1.5`、`5000000000` | 立即报错并退出 |
+| `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT` | `u8`，即 `0..255` | `-1`、`abc`、`256` | 立即报错并退出 |
+
+统一失败语义：
+
+- 仅接受十进制非负整数文本；出现非数字或越界值时，入口脚本输出 `invalid SR_CI_...` 错误并以 `exit 2` 结束。
+- 失败发生在调用 `./.github/scripts/software-renderer-compat-check.sh` 之前，属于“启动前失败”，不会进入 compat-check 执行阶段。
+
+### 7.4 优先级（从高到低）
 
 1. Workflow 注入的 `SR_CI_*` 显式值（最高优先级）。
 2. `software-renderer-cpu-path-ci.sh` 的推导/兜底：

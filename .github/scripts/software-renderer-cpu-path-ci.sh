@@ -67,6 +67,42 @@ if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
     exit 2
   fi
 fi
+if [[ -n "$cpu_damage_rect_cap" ]]; then
+  if ! [[ "$cpu_damage_rect_cap" =~ ^[0-9]+$ ]]; then
+    echo "invalid SR_CI_CPU_DAMAGE_RECT_CAP: $cpu_damage_rect_cap (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_damage_rect_cap} > 5 )) || {
+    (( ${#cpu_damage_rect_cap} == 5 )) && (( cpu_damage_rect_cap > 65535 ))
+  }; then
+    echo "invalid SR_CI_CPU_DAMAGE_RECT_CAP: $cpu_damage_rect_cap (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
+  if ! [[ "$cpu_publish_warning_threshold_ms" =~ ^[0-9]+$ ]]; then
+    echo "invalid SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS: $cpu_publish_warning_threshold_ms (expected: u32)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_publish_warning_threshold_ms} > 10 )) || {
+    (( ${#cpu_publish_warning_threshold_ms} == 10 )) && (( cpu_publish_warning_threshold_ms > 4294967295 ))
+  }; then
+    echo "invalid SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS: $cpu_publish_warning_threshold_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
+  if ! [[ "$cpu_publish_warning_consecutive_limit" =~ ^[0-9]+$ ]]; then
+    echo "invalid SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT: $cpu_publish_warning_consecutive_limit (expected: u8)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_publish_warning_consecutive_limit} > 3 )) || {
+    (( ${#cpu_publish_warning_consecutive_limit} == 3 )) && (( cpu_publish_warning_consecutive_limit > 255 ))
+  }; then
+    echo "invalid SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT: $cpu_publish_warning_consecutive_limit (expected: 0..255)" >&2
+    exit 2
+  fi
+fi
 
 allow_legacy_os=false
 target_os=""
