@@ -127,6 +127,14 @@ fn cpuDamageRectForRowSpan(
     };
 }
 
+fn needsFrameBgImageBuffer(bg_image: ?imagepkg.Image) bool {
+    const image = bg_image orelse return false;
+    return switch (image) {
+        .ready => true,
+        else => false,
+    };
+}
+
 const SoftwareCpuRouteDisableReason = enum {
     build_cpu_route_unavailable,
     build_renderer_not_software,
@@ -739,9 +747,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             /// Buffer with the vertex data for our background image.
             ///
-            /// TODO: Make this an optional and only create it
-            ///       if we actually have a background image.
-            bg_image_buffer: BgImageBuffer,
+            /// This is lazily allocated and only present when we need
+            /// to render the background image.
+            bg_image_buffer: ?BgImageBuffer = null,
             /// See property of same name on Renderer for explanation.
             bg_image_buffer_modified: usize = 0,
 
@@ -770,13 +778,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 errdefer cells.deinit();
                 var cells_bg = try CellBgBuffer.init(api.bgBufferOptions(), 1);
                 errdefer cells_bg.deinit();
-
-                // Create a GPU buffer for our background image info.
-                var bg_image_buffer = try BgImageBuffer.init(
-                    api.bgImageBufferOptions(),
-                    1,
-                );
-                errdefer bg_image_buffer.deinit();
 
                 // Initialize our textures for our font atlas.
                 //
@@ -810,7 +811,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .uniforms = uniforms,
                     .cells = cells,
                     .cells_bg = cells_bg,
-                    .bg_image_buffer = bg_image_buffer,
                     .grayscale = grayscale,
                     .color = color,
                     .target = target,
@@ -825,7 +825,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.cells_bg.deinit();
                 self.grayscale.deinit();
                 self.color.deinit();
-                self.bg_image_buffer.deinit();
+                if (self.bg_image_buffer) |*bg_image_buffer| bg_image_buffer.deinit();
                 if (self.custom_shader_state) |*state| state.deinit();
             }
 
@@ -3126,11 +3126,27 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try frame.cells_bg.sync(self.cells.bg_cells);
             const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows.lists);
 
-            // If our background image buffer has changed, sync it.
-            if (frame.bg_image_buffer_modified != self.bg_image_buffer_modified) {
-                try frame.bg_image_buffer.sync(&.{self.bg_image_buffer});
+            const frame_needs_bg_image_buffer = needsFrameBgImageBuffer(self.bg_image);
+            if (frame_needs_bg_image_buffer) {
+                var bg_image_buffer_created = false;
+                if (frame.bg_image_buffer == null) {
+                    frame.bg_image_buffer = try FrameState.BgImageBuffer.init(
+                        self.api.bgImageBufferOptions(),
+                        1,
+                    );
+                    bg_image_buffer_created = true;
+                }
 
-                frame.bg_image_buffer_modified = self.bg_image_buffer_modified;
+                // If our background image buffer has changed, sync it.
+                if (bg_image_buffer_created or
+                    frame.bg_image_buffer_modified != self.bg_image_buffer_modified)
+                {
+                    try frame.bg_image_buffer.?.sync(&.{self.bg_image_buffer});
+                    frame.bg_image_buffer_modified = self.bg_image_buffer_modified;
+                }
+            } else if (frame.bg_image_buffer) |*bg_image_buffer| {
+                bg_image_buffer.deinit();
+                frame.bg_image_buffer = null;
             }
 
             // If our font atlas changed, sync the texture data
@@ -3190,13 +3206,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 //       CPU-side. In the future when we have utilities for
                 //       that we should remove this step and use clear_color.
                 if (self.bg_image) |img| switch (img) {
-                    .ready => |texture| pass.step(.{
-                        .pipeline = self.shaders.pipelines.bg_image,
-                        .uniforms = frame.uniforms.buffer,
-                        .buffers = &.{frame.bg_image_buffer.buffer},
-                        .textures = &.{texture},
-                        .draw = .{ .type = .triangle, .vertex_count = 3 },
-                    }),
+                    .ready => |texture| {
+                        assert(frame.bg_image_buffer != null);
+                        const bg_image_buffer = frame.bg_image_buffer.?;
+                        pass.step(.{
+                            .pipeline = self.shaders.pipelines.bg_image,
+                            .uniforms = frame.uniforms.buffer,
+                            .buffers = &.{bg_image_buffer.buffer},
+                            .textures = &.{texture},
+                            .draw = .{ .type = .triangle, .vertex_count = 3 },
+                        });
+                    },
                     else => {},
                 } else {
                     pass.step(.{
@@ -5126,6 +5146,13 @@ test "cpu damage rect for row span includes bottom spill for last row" {
         .width = 200,
         .height = 50,
     }, rect);
+}
+
+test "needsFrameBgImageBuffer only enables for ready image" {
+    try std.testing.expect(!needsFrameBgImageBuffer(null));
+    try std.testing.expect(!needsFrameBgImageBuffer(.{ .pending = undefined }));
+    try std.testing.expect(!needsFrameBgImageBuffer(.{ .unload_ready = undefined }));
+    try std.testing.expect(needsFrameBgImageBuffer(.{ .ready = undefined }));
 }
 
 test "software cpu route decision enabled when all gates pass" {

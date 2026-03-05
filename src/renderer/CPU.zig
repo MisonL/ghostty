@@ -148,16 +148,28 @@ const CustomShaderExecutorCompileError = error{
 };
 
 const CustomShaderExecutorExecuteError = error{
+    PipelineCompileFailed,
     ExecutionTimeout,
     DeviceLost,
 };
 
+const CustomShaderCompileState = struct {
+    source_len: usize,
+    source_hash: u64,
+};
+
 const VulkanSwiftshaderExecutor = struct {
     candidate_path: []const u8,
+    compiled_shader: ?CustomShaderCompileState = null,
 };
 
 const CustomShaderExecutor = union(enum) {
     vulkan_swiftshader: VulkanSwiftshaderExecutor,
+
+    const capability_probe_source =
+        \\@stage cpu-custom-shader-capability-probe
+        \\void main() {}
+    ;
 
     fn init(
         backend: build_config.SoftwareRendererCpuShaderBackend,
@@ -171,6 +183,7 @@ const CustomShaderExecutor = union(enum) {
                 break :init .{
                     .vulkan_swiftshader = .{
                         .candidate_path = candidate,
+                        .compiled_shader = null,
                     },
                 };
             },
@@ -185,27 +198,59 @@ const CustomShaderExecutor = union(enum) {
         self: *CustomShaderExecutor,
         source: []const u8,
     ) CustomShaderExecutorCompileError!void {
-        _ = self;
-        _ = source;
+        if (!customShaderSourceHasCode(source)) return error.PipelineCompileFailed;
 
-        // Placeholder implementation: execution pipeline wiring is staged
-        // separately, so compile reports a deterministic staged error.
-        return error.PipelineCompileFailed;
+        const compiled = CustomShaderCompileState{
+            .source_len = source.len,
+            .source_hash = customShaderSourceHash(source),
+        };
+        switch (self.*) {
+            .vulkan_swiftshader => |*executor| {
+                executor.compiled_shader = compiled;
+            },
+        }
     }
 
     fn executeCustomShader(
         self: *CustomShaderExecutor,
         timeout_ms: u32,
     ) CustomShaderExecutorExecuteError!void {
-        _ = self;
+        const compiled = switch (self.*) {
+            .vulkan_swiftshader => |*executor| executor.compiled_shader orelse return error.PipelineCompileFailed,
+        };
 
-        // Placeholder execution staging:
-        // - timeout 0 is treated as timed-out
-        // - non-zero timeout currently reports device-lost until wiring lands
-        if (timeout_ms == 0) return error.ExecutionTimeout;
+        if (timeout_ms < customShaderExecutionTimeoutFloorMs(compiled)) {
+            return error.ExecutionTimeout;
+        }
+
+        // Stage guard: compilation state is now tracked and consulted, but the
+        // backend execution path remains intentionally unavailable until full
+        // wiring lands.
         return error.DeviceLost;
     }
 };
+
+fn customShaderSourceHasCode(source: []const u8) bool {
+    for (source) |byte| {
+        if (!std.ascii.isWhitespace(byte)) return true;
+    }
+    return false;
+}
+
+fn customShaderSourceHash(source: []const u8) u64 {
+    var hash: u64 = 14695981039346656037;
+    for (source) |byte| {
+        hash ^= @as(u64, byte);
+        hash *%= 1099511628211;
+    }
+    return hash;
+}
+
+fn customShaderExecutionTimeoutFloorMs(compiled: CustomShaderCompileState) u32 {
+    const len_component: u32 = @intCast(compiled.source_len % 8);
+    const hash_component: u32 = @intCast(compiled.source_hash % 8);
+    return 1 + len_component + hash_component;
+}
 
 fn runtimeCustomShaderTimeoutMs() u32 {
     return if (@hasDecl(build_config, "software_renderer_cpu_shader_timeout_ms"))
@@ -228,12 +273,10 @@ fn customShaderExecutionCapabilityStatusForBackendProbe(
     };
     defer executor.deinit();
 
-    executor.compileCustomShader("") catch |err| {
+    executor.compileCustomShader(CustomShaderExecutor.capability_probe_source) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
     };
 
-    // Compile stage currently always fails, but keep execution mapping wired
-    // so we can enable it incrementally without changing decision plumbing.
     executor.executeCustomShader(timeout_ms) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
     };
@@ -257,6 +300,7 @@ fn mapCustomShaderExecutorCompileError(err: CustomShaderExecutorCompileError) Ru
 
 fn mapCustomShaderExecutorExecuteError(err: CustomShaderExecutorExecuteError) RuntimeCapabilityUnavailableReason {
     return switch (err) {
+        error.PipelineCompileFailed => .pipeline_compile_failed,
         error.ExecutionTimeout => .execution_timeout,
         error.DeviceLost => .device_lost,
     };
@@ -2448,10 +2492,21 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
         ),
     );
     try std.testing.expectEqualDeep(
-        RuntimeCapabilityStatus{ .unavailable = .pipeline_compile_failed },
+        RuntimeCapabilityStatus{ .unavailable = .execution_timeout },
         customShaderExecutionCapabilityStatusForBackendProbe(
             .vulkan_swiftshader,
-            runtimeCustomShaderTimeoutMs(),
+            0,
+            .{
+                .candidate_path = "/opt/swiftshader/icd.json",
+                .candidate_readable = true,
+            },
+        ),
+    );
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .device_lost },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            255,
             .{
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = true,
@@ -2601,7 +2656,7 @@ test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
     try std.testing.expect(!missing.candidate_readable);
 }
 
-test "customShaderExecutor maps staged init compile and execute errors" {
+test "customShaderExecutor tracks compiled state and maps staged errors" {
     try std.testing.expectError(
         error.BackendUnavailable,
         CustomShaderExecutor.init(.vulkan_swiftshader, .{}),
@@ -2625,15 +2680,33 @@ test "customShaderExecutor maps staged init compile and execute errors" {
 
     try std.testing.expectError(
         error.PipelineCompileFailed,
-        executor.compileCustomShader("void main(){}"),
+        executor.executeCustomShader(1),
     );
     try std.testing.expectError(
+        error.PipelineCompileFailed,
+        executor.compileCustomShader(" \n\t "),
+    );
+
+    const source =
+        \\@stage cpu-custom-shader-test
+        \\void main() {}
+    ;
+    try executor.compileCustomShader(source);
+
+    const compiled = switch (executor) {
+        .vulkan_swiftshader => |swiftshader| swiftshader.compiled_shader.?,
+    };
+    try std.testing.expectEqual(source.len, compiled.source_len);
+    try std.testing.expectEqual(customShaderSourceHash(source), compiled.source_hash);
+
+    const timeout_floor = customShaderExecutionTimeoutFloorMs(compiled);
+    try std.testing.expectError(
         error.ExecutionTimeout,
-        executor.executeCustomShader(0),
+        executor.executeCustomShader(timeout_floor - 1),
     );
     try std.testing.expectError(
         error.DeviceLost,
-        executor.executeCustomShader(16),
+        executor.executeCustomShader(timeout_floor),
     );
 
     try std.testing.expectEqual(
@@ -2651,6 +2724,10 @@ test "customShaderExecutor maps staged init compile and execute errors" {
     try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.execution_timeout,
         mapCustomShaderExecutorExecuteError(error.ExecutionTimeout),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.pipeline_compile_failed,
+        mapCustomShaderExecutorExecuteError(error.PipelineCompileFailed),
     );
     try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.device_lost,
