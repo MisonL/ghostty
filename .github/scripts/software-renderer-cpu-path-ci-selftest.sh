@@ -125,11 +125,18 @@ case_macos_default_route_backend_is_metal() {
   pass "macOS default route backend is metal"
 }
 
-case_target_gate_mismatch_fails
-case_macos_missing_system_path_fails
-case_dry_run_route_backend_flag_present
-case_linux_legacy_auto_transport_uses_gtk_runtime
-case_linux_non_legacy_auto_transport_uses_none_runtime
-case_macos_default_route_backend_is_metal
+test_cases=(
+  case_target_gate_mismatch_fails
+  case_macos_missing_system_path_fails
+  case_dry_run_route_backend_flag_present
+  case_linux_legacy_auto_transport_uses_gtk_runtime
+  case_linux_non_legacy_auto_transport_uses_none_runtime
+  case_macos_default_route_backend_is_metal
+)
 
+for test_case in "${test_cases[@]}"; do
+  "$test_case"
+done
+
+echo "[selftest] summary: passed ${#test_cases[@]} cases"
 echo "[selftest] all checks passed"

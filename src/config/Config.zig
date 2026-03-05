@@ -2043,6 +2043,9 @@ keybind: Keybinds = .{},
 ///   backend disabled/unavailable, runtime init failure, compile failure,
 ///   timeout, or device loss), which triggers platform-route fallback while
 ///   shaders are active.
+///   `capability unobserved` means "not probed in the current state yet"
+///   (for example, no active `custom-shader` path observation); it does not
+///   mean permanently unsupported.
 /// * `-Dsoftware-renderer-cpu-shader-enable-minimal-runtime=true|false`:
 ///   strict rollout gate for the CPU custom-shader minimal-runtime path.
 ///   Default is `false`; the minimal-runtime path is only allowed when this is
@@ -3115,6 +3118,11 @@ keybind: Keybinds = .{},
 ///   available and timeout budget is > 0; otherwise fallback to platform route.
 /// * `full`: use CPU route only when custom-shader execution capability is
 ///   available; otherwise fallback to platform route while shaders are active.
+///
+/// Capability diagnostics note:
+///
+/// * `capability unobserved` means capability was not probed for the current
+///   state; this is not equivalent to permanent unsupported capability.
 ///
 /// Additional staged boundaries:
 ///

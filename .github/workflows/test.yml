@@ -1220,7 +1220,9 @@ jobs:
 
       - name: Selftest software renderer CPU path gate (once)
         if: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' }}
-        run: ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+        run: |
+          echo "software-renderer cpu-path selftest case total: $(grep -Ec '^case_[a-z0-9_]+\\(\\) \\{' ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh)"
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
 
       - name: Test software renderer CPU path
         env:
