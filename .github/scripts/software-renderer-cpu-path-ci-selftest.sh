@@ -65,18 +65,46 @@ case_macos_missing_system_path_fails() {
   pass "macOS missing system path fails"
 }
 
+case_target_os_mismatch_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_TARGET=x86_64-macos.14.0.0 \
+    SR_CI_DRY_RUN=true; then
+    fail "target OS mismatch should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_TARGET OS mismatch" "target OS mismatch"
+  pass "target OS mismatch fails fast"
+}
+
+case_route_backend_os_mismatch_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND=metal \
+    SR_CI_DRY_RUN=true; then
+    fail "linux route backend mismatch should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND mismatch" "route backend mismatch"
+  pass "route backend mismatch fails fast"
+}
+
 case_dry_run_route_backend_flag_present() {
   local output
   if ! run_with_env output \
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND=metal; then
+    SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND=opengl; then
     fail "dry-run with explicit route backend should succeed"
   fi
 
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
-  assert_contains "$output" "--expect-software-route-backend metal" "dry-run route backend arg"
+  assert_contains "$output" "--expect-software-route-backend opengl" "dry-run route backend arg"
   pass "dry-run keeps explicit route backend argument"
 }
 
@@ -128,6 +156,8 @@ case_macos_default_route_backend_is_metal() {
 test_cases=(
   case_target_gate_mismatch_fails
   case_macos_missing_system_path_fails
+  case_target_os_mismatch_fails
+  case_route_backend_os_mismatch_fails
   case_dry_run_route_backend_flag_present
   case_linux_legacy_auto_transport_uses_gtk_runtime
   case_linux_non_legacy_auto_transport_uses_none_runtime

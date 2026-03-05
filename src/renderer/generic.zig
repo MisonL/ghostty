@@ -155,8 +155,45 @@ const SoftwareCpuRouteDisableReason = enum {
     transport_native,
 };
 
+const BuildCpuRouteAvailabilitySource = enum {
+    effective,
+    mvp_not_requested,
+    target_platform_unsupported,
+    target_version_below_minimum,
+};
+
+fn buildCpuRouteTargetOsSupported(target_os: std.Target.Os.Tag) bool {
+    return switch (target_os) {
+        .macos, .linux => true,
+        else => false,
+    };
+}
+
+fn buildCpuRouteAvailabilitySource(
+    cpu_route_effective: bool,
+    cpu_route_mvp_requested: bool,
+    cpu_route_target_os_supported: bool,
+) BuildCpuRouteAvailabilitySource {
+    if (cpu_route_effective) return .effective;
+    if (!cpu_route_mvp_requested) return .mvp_not_requested;
+    if (!cpu_route_target_os_supported) return .target_platform_unsupported;
+    return .target_version_below_minimum;
+}
+
+fn buildCpuRouteAvailabilitySourceForCurrentBuild() BuildCpuRouteAvailabilitySource {
+    return buildCpuRouteAvailabilitySource(
+        software_renderer_cpu_effective,
+        build_config.software_renderer_cpu_mvp,
+        buildCpuRouteTargetOsSupported(builtin.target.os.tag),
+    );
+}
+
 const SoftwareCpuRouteDecisionInput = struct {
     cpu_route_build_effective: bool,
+    cpu_route_mvp_requested: bool,
+    cpu_route_build_source: BuildCpuRouteAvailabilitySource,
+    cpu_route_target_os_supported: bool,
+    cpu_route_allow_legacy_os: bool,
     renderer_is_software: bool,
     software_frame_publishing: bool,
     software_renderer_experimental: bool,
@@ -192,6 +229,12 @@ const CpuRouteDiagnosticsSnapshot = struct {
     cpu_publish_skipped_no_damage_count: u64,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
+    last_fallback_scope: []const u8,
+    build_cpu_route_effective: bool,
+    build_cpu_route_mvp_requested: bool,
+    build_cpu_route_source: []const u8,
+    build_cpu_route_target_os_supported: bool,
+    build_cpu_route_allow_legacy_os: bool,
     shader_capability_observed: bool,
     shader_capability_available: bool,
     shader_minimal_runtime_enabled: bool,
@@ -288,6 +331,7 @@ const CpuRouteDiagnosticsState = struct {
     }
 
     fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
+        const build_cpu_route_source = buildCpuRouteAvailabilitySourceForCurrentBuild();
         return .{
             .custom_shader_fallback_count = self.custom_shader_fallback_count,
             .custom_shader_bypass_count = self.custom_shader_bypass_count,
@@ -297,6 +341,12 @@ const CpuRouteDiagnosticsState = struct {
             .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
             .last_cpu_frame_ms = self.last_cpu_frame_ms,
             .last_fallback_reason = self.last_fallback_reason,
+            .last_fallback_scope = softwareCpuRouteFallbackScope(self.last_fallback_reason),
+            .build_cpu_route_effective = software_renderer_cpu_effective,
+            .build_cpu_route_mvp_requested = build_config.software_renderer_cpu_mvp,
+            .build_cpu_route_source = @tagName(build_cpu_route_source),
+            .build_cpu_route_target_os_supported = buildCpuRouteTargetOsSupported(builtin.target.os.tag),
+            .build_cpu_route_allow_legacy_os = build_config.software_renderer_cpu_allow_legacy_os,
             .shader_capability_observed = self.last_shader_capability_observed,
             .shader_capability_available = self.last_shader_capability_available,
             .shader_minimal_runtime_enabled = self.last_shader_minimal_runtime_enabled,
@@ -324,6 +374,26 @@ const CpuRouteDiagnosticsState = struct {
         };
     }
 };
+
+fn softwareCpuRouteDisableScope(reason: SoftwareCpuRouteDisableReason) []const u8 {
+    return switch (reason) {
+        .build_cpu_route_unavailable, .build_renderer_not_software => "build",
+        .runtime_publishing_disabled,
+        .config_experimental_disabled,
+        .config_presenter_legacy_gl,
+        .custom_shaders_mode_off,
+        .custom_shaders_capability_unobserved,
+        .custom_shaders_unsupported,
+        .custom_shaders_safe_timeout_invalid,
+        .transport_native,
+        => "runtime",
+    };
+}
+
+fn softwareCpuRouteFallbackScope(reason: ?SoftwareCpuRouteDisableReason) []const u8 {
+    const fallback_reason = reason orelse return "none";
+    return softwareCpuRouteDisableScope(fallback_reason);
+}
 
 fn shaderCapabilityReasonForObservation(
     observed: bool,
@@ -1390,6 +1460,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 build_config.software_renderer_cpu_effective
             else
                 build_config.software_renderer_cpu_mvp;
+            const cpu_target_os_supported = comptime buildCpuRouteTargetOsSupported(
+                builtin.target.os.tag,
+            );
+            const cpu_build_source = comptime buildCpuRouteAvailabilitySource(
+                cpu_effective,
+                build_config.software_renderer_cpu_mvp,
+                cpu_target_os_supported,
+            );
 
             if (comptime cpu_effective) {
                 if (comptime software_renderer_cpu_frame_damage_mode == .rects and
@@ -1402,12 +1480,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 log.info(
-                    "software renderer cpu-mvp route active target_os={s} route_backend={s} cpu_shader_backend={s} allow_legacy_os={}",
+                    "software renderer cpu-mvp route active target_os={s} route_backend={s} cpu_shader_backend={s} allow_legacy_os={} build_source={s} target_os_supported={} build_effective={}",
                     .{
                         @tagName(builtin.target.os.tag),
                         @tagName(build_config.software_renderer_route_backend),
                         @tagName(build_config.software_renderer_cpu_shader_backend),
                         build_config.software_renderer_cpu_allow_legacy_os,
+                        @tagName(cpu_build_source),
+                        cpu_target_os_supported,
+                        cpu_effective,
                     },
                 );
 
@@ -1471,12 +1552,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             log.warn(
-                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} cpu_shader_backend={s} allow_legacy_os={}; requires macOS >= {}.{} or Linux >= {}.{}, falling back to platform route",
+                "software renderer cpu-mvp requested but unavailable target_os={s} route_backend={s} cpu_shader_backend={s} allow_legacy_os={} build_source={s} target_os_supported={} build_effective={}; requires macOS >= {}.{} or Linux >= {}.{}, falling back to platform route",
                 .{
                     @tagName(builtin.target.os.tag),
                     @tagName(build_config.software_renderer_route_backend),
                     @tagName(build_config.software_renderer_cpu_shader_backend),
                     build_config.software_renderer_cpu_allow_legacy_os,
+                    @tagName(cpu_build_source),
+                    cpu_target_os_supported,
+                    cpu_effective,
                     cpu_min_macos_major,
                     cpu_min_macos_minor,
                     cpu_min_linux_major,
@@ -1863,6 +1947,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn softwareCpuRouteDecisionInput(self: *Self) SoftwareCpuRouteDecisionInput {
+            const cpu_route_target_os_supported = buildCpuRouteTargetOsSupported(builtin.target.os.tag);
+            const cpu_route_build_source = buildCpuRouteAvailabilitySource(
+                software_renderer_cpu_effective,
+                build_config.software_renderer_cpu_mvp,
+                cpu_route_target_os_supported,
+            );
             var custom_shader_capability_observed = false;
             var custom_shader_available = false;
             var custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null;
@@ -1896,6 +1986,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             return .{
                 .cpu_route_build_effective = software_renderer_cpu_effective,
+                .cpu_route_mvp_requested = build_config.software_renderer_cpu_mvp,
+                .cpu_route_build_source = cpu_route_build_source,
+                .cpu_route_target_os_supported = cpu_route_target_os_supported,
+                .cpu_route_allow_legacy_os = build_config.software_renderer_cpu_allow_legacy_os,
                 .renderer_is_software = build_config.renderer == .software,
                 .software_frame_publishing = self.software_frame_publishing,
                 .software_renderer_experimental = self.config.software_renderer_experimental,
@@ -1925,9 +2019,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             warned.* = true;
 
             log.warn(
-                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_backend={s} shader_timeout_ms={} transport={s} shader_capability_reason={s} shader_capability_hint_source={s} shader_capability_hint_path={s} shader_capability_hint_readable={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}; using platform route",
+                "software renderer cpu route is disabled reason={s} scope={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_backend={s} shader_timeout_ms={} transport={s} build_cpu_route_source={s} build_cpu_route_effective={} build_cpu_route_mvp_requested={} build_cpu_route_target_os_supported={} build_cpu_route_allow_legacy_os={} shader_capability_reason={s} shader_capability_hint_source={s} shader_capability_hint_path={s} shader_capability_hint_readable={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}; using platform route",
                 .{
                     @tagName(reason),
+                    softwareCpuRouteDisableScope(reason),
                     self.software_frame_publishing,
                     self.config.software_renderer_experimental,
                     @tagName(self.config.software_renderer_presenter),
@@ -1936,6 +2031,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     @tagName(build_config.software_renderer_cpu_shader_backend),
                     build_config.software_renderer_cpu_shader_timeout_ms,
                     @tagName(build_config.software_frame_transport_mode),
+                    @tagName(input.cpu_route_build_source),
+                    input.cpu_route_build_effective,
+                    input.cpu_route_mvp_requested,
+                    input.cpu_route_target_os_supported,
+                    input.cpu_route_allow_legacy_os,
                     shaderCapabilityReasonForDisableReason(
                         reason,
                         decision.custom_shader_unavailable_reason,
@@ -5237,6 +5337,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
     return .{
         .cpu_route_build_effective = true,
+        .cpu_route_mvp_requested = true,
+        .cpu_route_build_source = .effective,
+        .cpu_route_target_os_supported = true,
+        .cpu_route_allow_legacy_os = false,
         .renderer_is_software = true,
         .software_frame_publishing = true,
         .software_renderer_experimental = true,
@@ -5256,6 +5360,7 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
 }
 
 fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
+    const build_cpu_route_source = buildCpuRouteAvailabilitySourceForCurrentBuild();
     return .{
         .custom_shader_fallback_count = 0,
         .custom_shader_bypass_count = 0,
@@ -5265,6 +5370,12 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
         .cpu_publish_skipped_no_damage_count = 0,
         .last_cpu_frame_ms = null,
         .last_fallback_reason = null,
+        .last_fallback_scope = "none",
+        .build_cpu_route_effective = software_renderer_cpu_effective,
+        .build_cpu_route_mvp_requested = build_config.software_renderer_cpu_mvp,
+        .build_cpu_route_source = @tagName(build_cpu_route_source),
+        .build_cpu_route_target_os_supported = buildCpuRouteTargetOsSupported(builtin.target.os.tag),
+        .build_cpu_route_allow_legacy_os = build_config.software_renderer_cpu_allow_legacy_os,
         .shader_capability_observed = false,
         .shader_capability_available = false,
         .shader_minimal_runtime_enabled = false,
@@ -5384,6 +5495,40 @@ test "needsFrameBgImageBuffer only enables for ready image" {
     try std.testing.expect(!needsFrameBgImageBuffer(.{ .pending = undefined }));
     try std.testing.expect(!needsFrameBgImageBuffer(.{ .unload_ready = undefined }));
     try std.testing.expect(needsFrameBgImageBuffer(.{ .ready = undefined }));
+}
+
+test "build cpu route availability source classifies build-side causes" {
+    try std.testing.expectEqual(
+        BuildCpuRouteAvailabilitySource.effective,
+        buildCpuRouteAvailabilitySource(true, true, true),
+    );
+    try std.testing.expectEqual(
+        BuildCpuRouteAvailabilitySource.mvp_not_requested,
+        buildCpuRouteAvailabilitySource(false, false, true),
+    );
+    try std.testing.expectEqual(
+        BuildCpuRouteAvailabilitySource.target_platform_unsupported,
+        buildCpuRouteAvailabilitySource(false, true, false),
+    );
+    try std.testing.expectEqual(
+        BuildCpuRouteAvailabilitySource.target_version_below_minimum,
+        buildCpuRouteAvailabilitySource(false, true, true),
+    );
+}
+
+test "software cpu route disable scope separates build and runtime gates" {
+    try std.testing.expectEqualStrings(
+        "build",
+        softwareCpuRouteDisableScope(.build_cpu_route_unavailable),
+    );
+    try std.testing.expectEqualStrings(
+        "runtime",
+        softwareCpuRouteDisableScope(.runtime_publishing_disabled),
+    );
+    try std.testing.expectEqualStrings(
+        "none",
+        softwareCpuRouteFallbackScope(null),
+    );
 }
 
 test "software cpu route decision enabled when all gates pass" {
@@ -5683,6 +5828,24 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
+    try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
+    try std.testing.expectEqual(software_renderer_cpu_effective, snapshot.build_cpu_route_effective);
+    try std.testing.expectEqual(
+        build_config.software_renderer_cpu_mvp,
+        snapshot.build_cpu_route_mvp_requested,
+    );
+    try std.testing.expectEqualStrings(
+        @tagName(buildCpuRouteAvailabilitySourceForCurrentBuild()),
+        snapshot.build_cpu_route_source,
+    );
+    try std.testing.expectEqual(
+        buildCpuRouteTargetOsSupported(builtin.target.os.tag),
+        snapshot.build_cpu_route_target_os_supported,
+    );
+    try std.testing.expectEqual(
+        build_config.software_renderer_cpu_allow_legacy_os,
+        snapshot.build_cpu_route_allow_legacy_os,
+    );
     try std.testing.expect(snapshot.shader_capability_observed);
     try std.testing.expect(!snapshot.shader_capability_available);
     try std.testing.expect(snapshot.shader_minimal_runtime_enabled);
@@ -5712,6 +5875,7 @@ test "cpu route diagnostics counts capability-unobserved as custom shader fallba
         @as(?SoftwareCpuRouteDisableReason, .custom_shaders_capability_unobserved),
         snapshot.last_fallback_reason,
     );
+    try std.testing.expectEqualStrings("runtime", snapshot.last_fallback_scope);
 }
 
 test "cpu route diagnostics increments custom shader bypass only for enabled custom route" {
@@ -5743,6 +5907,7 @@ test "cpu route diagnostics increments custom shader bypass only for enabled cus
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
+    try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
 }
 
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
@@ -5769,6 +5934,7 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
+    try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
     try std.testing.expect(snapshot.shader_capability_observed);
     try std.testing.expect(snapshot.shader_capability_available);
     try std.testing.expect(!snapshot.shader_minimal_runtime_enabled);

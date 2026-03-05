@@ -781,7 +781,16 @@ fn softwareRendererCpuEffective(
     cpu_mvp: bool,
     allow_legacy_os: bool,
 ) bool {
-    return cpu_mvp and (allow_legacy_os or softwareRendererCpuSupported(target));
+    const legacy_override_effective =
+        allow_legacy_os and softwareRendererCpuLegacyOverrideSupported(target);
+    return cpu_mvp and (softwareRendererCpuSupported(target) or legacy_override_effective);
+}
+
+fn softwareRendererCpuLegacyOverrideSupported(target: std.Target) bool {
+    return switch (target.os.tag) {
+        .macos, .linux => true,
+        else => false,
+    };
 }
 
 fn softwareRendererRouteBackend(target: std.Target) RendererBackend {
@@ -849,7 +858,7 @@ test "softwareRendererCpuEffective keeps legacy override disabled by default" {
     try stdx.testing.expect(!softwareRendererCpuEffective(macos_10_15, true, false));
 }
 
-test "softwareRendererCpuEffective allows unsupported target when legacy override enabled" {
+test "softwareRendererCpuEffective allows unsupported Linux/macOS targets when legacy override enabled" {
     const stdx = std;
     const linux_4_19 = try stdx.zig.system.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
@@ -864,6 +873,21 @@ test "softwareRendererCpuEffective allows unsupported target when legacy overrid
 
     try stdx.testing.expect(softwareRendererCpuEffective(linux_4_19, true, true));
     try stdx.testing.expect(softwareRendererCpuEffective(macos_10_15, true, true));
+}
+
+test "softwareRendererCpuEffective ignores legacy override on unsupported OS targets" {
+    const stdx = std;
+    const windows = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+    });
+    const freebsd = try stdx.zig.system.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freebsd,
+    });
+
+    try stdx.testing.expect(!softwareRendererCpuEffective(windows, true, true));
+    try stdx.testing.expect(!softwareRendererCpuEffective(freebsd, true, true));
 }
 
 test "softwareRendererRouteBackend maps by target OS tag" {
