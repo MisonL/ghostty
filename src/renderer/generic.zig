@@ -86,6 +86,11 @@ const cpu_frame_publish_warning_consecutive_limit: u8 = @max(
     else
         3,
 );
+const cpu_custom_shader_capability_reprobe_interval_frames: u32 =
+    if (@hasDecl(build_config, "software_renderer_cpu_shader_reprobe_interval_frames"))
+        @as(u32, @intCast(build_config.software_renderer_cpu_shader_reprobe_interval_frames))
+    else
+        120;
 
 const CpuFramePublishWarningState = struct {
     consecutive_over_threshold: u8 = 0,
@@ -233,6 +238,7 @@ const SoftwareCpuRouteDecision = struct {
 const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
     custom_shader_bypass_count: u64,
+    cpu_shader_capability_reprobe_count: u64,
     publish_retry_count: u64,
     cpu_damage_rect_count: u64,
     cpu_damage_rect_overflow_count: u64,
@@ -259,6 +265,7 @@ const CpuRouteDiagnosticsSnapshot = struct {
 const CpuRouteDiagnosticsState = struct {
     custom_shader_fallback_count: u64 = 0,
     custom_shader_bypass_count: u64 = 0,
+    cpu_shader_capability_reprobe_count: u64 = 0,
     publish_retry_count: u64 = 0,
     cpu_damage_rect_count: u64 = 0,
     cpu_damage_rect_overflow_count: u64 = 0,
@@ -346,11 +353,16 @@ const CpuRouteDiagnosticsState = struct {
         self.cpu_publish_latency_warning_count +%= 1;
     }
 
+    fn recordCpuShaderCapabilityReprobe(self: *CpuRouteDiagnosticsState) void {
+        self.cpu_shader_capability_reprobe_count +%= 1;
+    }
+
     fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
         const build_cpu_route_source = buildCpuRouteAvailabilitySourceForCurrentBuild();
         return .{
             .custom_shader_fallback_count = self.custom_shader_fallback_count,
             .custom_shader_bypass_count = self.custom_shader_bypass_count,
+            .cpu_shader_capability_reprobe_count = self.cpu_shader_capability_reprobe_count,
             .publish_retry_count = self.publish_retry_count,
             .cpu_damage_rect_count = self.cpu_damage_rect_count,
             .cpu_damage_rect_overflow_count = self.cpu_damage_rect_overflow_count,
@@ -518,6 +530,69 @@ fn customShaderProbeMinimalRuntimeEnabled(probe: cpu_renderer.CustomShaderExecut
         @field(probe, "enable_minimal_runtime")
     else
         cpuShaderMinimalRuntimeEnabledDefault();
+}
+
+fn cpuCustomShaderCapabilityReasonCanReprobe(
+    reason: cpu_renderer.RuntimeCapabilityUnavailableReason,
+) bool {
+    if (@hasDecl(cpu_renderer, "runtimeCapabilityUnavailableReasonAllowsReprobe")) {
+        return cpu_renderer.runtimeCapabilityUnavailableReasonAllowsReprobe(reason);
+    }
+
+    return switch (reason) {
+        .backend_disabled,
+        .backend_unavailable,
+        .minimal_runtime_disabled,
+        => false,
+        .runtime_init_failed,
+        .pipeline_compile_failed,
+        .execution_timeout,
+        .device_lost,
+        => true,
+    };
+}
+
+fn invalidateCpuCustomShaderProbeCache() void {
+    if (@hasDecl(cpu_renderer, "invalidateCustomShaderExecutionProbeStatusCache")) {
+        @field(cpu_renderer, "invalidateCustomShaderExecutionProbeStatusCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "invalidateCustomShaderExecutionProbeCache")) {
+        @field(cpu_renderer, "invalidateCustomShaderExecutionProbeCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "invalidateCustomShaderExecutionProbeCaches")) {
+        @field(cpu_renderer, "invalidateCustomShaderExecutionProbeCaches")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "clearCustomShaderExecutionProbeCache")) {
+        @field(cpu_renderer, "clearCustomShaderExecutionProbeCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "clearCustomShaderExecutionProbeCaches")) {
+        @field(cpu_renderer, "clearCustomShaderExecutionProbeCaches")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "invalidateCustomShaderProbeCache")) {
+        @field(cpu_renderer, "invalidateCustomShaderProbeCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "invalidateCapabilityProbeCache")) {
+        @field(cpu_renderer, "invalidateCapabilityProbeCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "invalidateCapabilityProbeCaches")) {
+        @field(cpu_renderer, "invalidateCapabilityProbeCaches")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "clearCapabilityProbeCompileCache")) {
+        @field(cpu_renderer, "clearCapabilityProbeCompileCache")();
+        return;
+    }
+    if (@hasDecl(cpu_renderer, "resetCustomShaderExecutionProbeCache")) {
+        @field(cpu_renderer, "resetCustomShaderExecutionProbeCache")();
+        return;
+    }
 }
 
 fn updateCpuFramePublishWarningState(
@@ -756,6 +831,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Cached CPU custom-shader probe result to avoid repeated per-frame
         /// environment/path probing while shader set is unchanged.
         cpu_custom_shader_probe: ?cpu_renderer.CustomShaderExecutionProbe = null,
+        cpu_custom_shader_reprobe_unavailable_frame_count: u32 = 0,
 
         /// CPU-route frame damage tracker.
         cpu_damage_tracker: cpu_renderer.DamageTracker =
@@ -1707,6 +1783,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.shaders = shaders;
             self.has_custom_shaders = has_custom_shaders;
             self.cpu_custom_shader_probe = null;
+            self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
         }
 
         /// This is called early right after surface creation.
@@ -1963,6 +2040,45 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
+        fn maybeReprobeCpuCustomShaderCapability(
+            self: *Self,
+            probe: cpu_renderer.CustomShaderExecutionProbe,
+        ) cpu_renderer.CustomShaderExecutionProbe {
+            if (cpu_custom_shader_capability_reprobe_interval_frames == 0) {
+                self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
+                return probe;
+            }
+
+            const reason = switch (probe.status) {
+                .available => {
+                    self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
+                    return probe;
+                },
+                .unavailable => |reason| reason,
+            };
+            if (!cpuCustomShaderCapabilityReasonCanReprobe(reason)) {
+                self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
+                return probe;
+            }
+
+            const frame_count = std.math.add(
+                u32,
+                self.cpu_custom_shader_reprobe_unavailable_frame_count,
+                1,
+            ) catch std.math.maxInt(u32);
+            self.cpu_custom_shader_reprobe_unavailable_frame_count = frame_count;
+            if (frame_count < cpu_custom_shader_capability_reprobe_interval_frames) {
+                return probe;
+            }
+
+            self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
+            invalidateCpuCustomShaderProbeCache();
+            const reprobed = cpu_renderer.customShaderExecutionProbe();
+            self.cpu_custom_shader_probe = reprobed;
+            self.cpu_route_diagnostics.recordCpuShaderCapabilityReprobe();
+            return reprobed;
+        }
+
         fn softwareCpuRouteDecisionInput(self: *Self) SoftwareCpuRouteDecisionInput {
             const cpu_route_target_os_supported = buildCpuRouteTargetOsSupported(builtin.target.os.tag);
             const cpu_route_build_source = buildCpuRouteAvailabilitySource(
@@ -1983,7 +2099,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (self.cpu_custom_shader_probe == null) {
                     self.cpu_custom_shader_probe = cpu_renderer.customShaderExecutionProbe();
                 }
-                const custom_shader_probe = self.cpu_custom_shader_probe.?;
+                const custom_shader_probe = self.maybeReprobeCpuCustomShaderCapability(
+                    self.cpu_custom_shader_probe.?,
+                );
                 custom_shader_capability_observed = true;
                 custom_shader_available = true;
                 custom_shader_hint_source = custom_shader_probe.vulkan_driver_hint_source;
@@ -1999,6 +2117,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
             } else {
                 self.cpu_custom_shader_probe = null;
+                self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
             }
 
             return .{
@@ -3888,6 +4007,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (custom_shaders_changed) {
                 self.reinitialize_shaders = true;
                 self.cpu_custom_shader_probe = null;
+                self.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
             }
         }
 
@@ -5382,6 +5502,7 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
     return .{
         .custom_shader_fallback_count = 0,
         .custom_shader_bypass_count = 0,
+        .cpu_shader_capability_reprobe_count = 0,
         .publish_retry_count = 0,
         .cpu_damage_rect_count = 0,
         .cpu_damage_rect_overflow_count = 0,
@@ -5930,6 +6051,20 @@ test "cpu route diagnostics increments custom shader bypass only for enabled cus
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
 }
 
+test "cpu route diagnostics snapshot defaults include capability reprobe count" {
+    const snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_shader_capability_reprobe_count);
+}
+
+test "cpu route diagnostics tracks cpu shader capability reprobe count" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordCpuShaderCapabilityReprobe();
+    diagnostics.recordCpuShaderCapabilityReprobe();
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_shader_capability_reprobe_count);
+}
+
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
     var diagnostics: CpuRouteDiagnosticsState = .{};
     var capability_input = softwareCpuRouteDecisionInputDefaults();
@@ -6000,6 +6135,16 @@ test "cpu route diagnostics capability snapshot clears when observation is unava
     try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_source);
     try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_path);
     try std.testing.expect(!snapshot.shader_capability_hint_readable);
+}
+
+test "cpu custom shader capability reprobe reason policy" {
+    try std.testing.expect(!cpuCustomShaderCapabilityReasonCanReprobe(.backend_disabled));
+    try std.testing.expect(!cpuCustomShaderCapabilityReasonCanReprobe(.backend_unavailable));
+    try std.testing.expect(cpuCustomShaderCapabilityReasonCanReprobe(.runtime_init_failed));
+    try std.testing.expect(cpuCustomShaderCapabilityReasonCanReprobe(.pipeline_compile_failed));
+    try std.testing.expect(cpuCustomShaderCapabilityReasonCanReprobe(.execution_timeout));
+    try std.testing.expect(!cpuCustomShaderCapabilityReasonCanReprobe(.minimal_runtime_disabled));
+    try std.testing.expect(cpuCustomShaderCapabilityReasonCanReprobe(.device_lost));
 }
 
 test "shader capability reason derives from cpu runtime capability reason" {

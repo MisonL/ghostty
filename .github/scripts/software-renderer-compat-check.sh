@@ -12,6 +12,7 @@ Usage:
     [--cpu-shader-mode <off|safe|full>] \
     [--cpu-shader-backend <off|vulkan_swiftshader>] \
     [--cpu-shader-timeout-ms <u32>] \
+    [--cpu-shader-reprobe-interval-frames <u16>] \
     [--cpu-shader-enable-minimal-runtime <true|false>] \
     [--inject-fake-swiftshader-hint <true|false>] \
     [--cpu-frame-damage-mode <off|rects>] \
@@ -156,6 +157,7 @@ allow_legacy_os="false"
 cpu_shader_mode=""
 cpu_shader_backend=""
 cpu_shader_timeout_ms=""
+cpu_shader_reprobe_interval_frames=""
 cpu_shader_enable_minimal_runtime=""
 inject_fake_swiftshader_hint="false"
 cpu_frame_damage_mode=""
@@ -235,6 +237,14 @@ while (($# > 0)); do
       ;;
     --cpu-shader-timeout-ms)
       cpu_shader_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --cpu-shader-reprobe-interval-frames=*)
+      cpu_shader_reprobe_interval_frames="${1#*=}"
+      shift
+      ;;
+    --cpu-shader-reprobe-interval-frames)
+      cpu_shader_reprobe_interval_frames="${2:-}"
       shift 2
       ;;
     --cpu-shader-enable-minimal-runtime=*)
@@ -453,6 +463,19 @@ if [[ -n "$cpu_shader_timeout_ms" ]]; then
     (( ${#cpu_shader_timeout_ms} == 10 )) && (( cpu_shader_timeout_ms > 4294967295 ))
   }; then
     echo "invalid --cpu-shader-timeout-ms: $cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
+  if ! [[ "$cpu_shader_reprobe_interval_frames" =~ ^[0-9]+$ ]]; then
+    echo "invalid --cpu-shader-reprobe-interval-frames: $cpu_shader_reprobe_interval_frames (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_shader_reprobe_interval_frames} > 5 )) || {
+    (( ${#cpu_shader_reprobe_interval_frames} == 5 )) && (( cpu_shader_reprobe_interval_frames > 65535 ))
+  }; then
+    echo "invalid --cpu-shader-reprobe-interval-frames: $cpu_shader_reprobe_interval_frames (expected: 0..65535)" >&2
     exit 2
   fi
 fi
@@ -715,6 +738,9 @@ fi
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-timeout-ms=$cpu_shader_timeout_ms")
 fi
+if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-shader-reprobe-interval-frames=$cpu_shader_reprobe_interval_frames")
+fi
 if [[ -n "$cpu_shader_enable_minimal_runtime" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-enable-minimal-runtime=$cpu_shader_enable_minimal_runtime")
 fi
@@ -776,12 +802,13 @@ JSON
   echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path library=$fake_swiftshader_library_path"
 fi
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-reprobe-interval-frames=${cpu_shader_reprobe_interval_frames:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
 resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
 resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
 resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"
+resolved_cpu_shader_reprobe_interval_frames="${cpu_shader_reprobe_interval_frames:-120}"
 resolved_cpu_shader_enable_minimal_runtime="${cpu_shader_enable_minimal_runtime:-false}"
-echo "[software-compat] resolved-cpu-shader-config mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime"
+echo "[software-compat] resolved-cpu-shader-config mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms reprobe-interval-frames=$resolved_cpu_shader_reprobe_interval_frames enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime"
 if [[ "$resolved_cpu_shader_mode" == "off" ]]; then
   echo "[software-compat] note: cpu-shader-mode=off always falls back to platform route while custom shaders are active."
 elif [[ "$resolved_cpu_shader_mode" == "safe" && "$resolved_cpu_shader_timeout_ms" == "0" ]]; then

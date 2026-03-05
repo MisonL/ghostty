@@ -852,6 +852,30 @@ pub fn runtimeCapabilityUnavailableReason(
     };
 }
 
+/// Runtime capability reason helper for deciding whether to retry probing.
+pub fn runtimeCapabilityUnavailableReasonAllowsReprobe(
+    reason: RuntimeCapabilityUnavailableReason,
+) bool {
+    return switch (reason) {
+        .runtime_init_failed,
+        .pipeline_compile_failed,
+        .execution_timeout,
+        .device_lost,
+        => true,
+        .backend_disabled,
+        .backend_unavailable,
+        .minimal_runtime_disabled,
+        => false,
+    };
+}
+
+/// Invalidates only the custom shader runtime capability status cache.
+///
+/// Compile cache is intentionally preserved to avoid redundant probe compilation.
+pub fn invalidateCustomShaderExecutionProbeStatusCache() void {
+    clearCapabilityProbeStatusCache();
+}
+
 /// Runtime feature-compatibility helper for CPU-route presentation.
 ///
 /// Custom shaders still force fallback to the platform route. Background
@@ -2886,6 +2910,17 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
     }
 }
 
+test "runtimeCapabilityUnavailableReasonAllowsReprobe marks transient reasons" {
+    try std.testing.expect(runtimeCapabilityUnavailableReasonAllowsReprobe(.runtime_init_failed));
+    try std.testing.expect(runtimeCapabilityUnavailableReasonAllowsReprobe(.pipeline_compile_failed));
+    try std.testing.expect(runtimeCapabilityUnavailableReasonAllowsReprobe(.execution_timeout));
+    try std.testing.expect(runtimeCapabilityUnavailableReasonAllowsReprobe(.device_lost));
+
+    try std.testing.expect(!runtimeCapabilityUnavailableReasonAllowsReprobe(.backend_disabled));
+    try std.testing.expect(!runtimeCapabilityUnavailableReasonAllowsReprobe(.backend_unavailable));
+    try std.testing.expect(!runtimeCapabilityUnavailableReasonAllowsReprobe(.minimal_runtime_disabled));
+}
+
 test "customShaderExecutionProbe exposes minimal runtime rollout switch" {
     const probe = customShaderExecutionProbe();
     try std.testing.expectEqual(
@@ -3153,6 +3188,44 @@ test "capability status cache keys and invalidates with compile cache updates" {
         .source_hash = 7,
     });
     try std.testing.expect(loadCapabilityProbeStatusCache(key) == null);
+}
+
+test "invalidateCustomShaderExecutionProbeStatusCache clears status cache only" {
+    defer clearCapabilityProbeCompileCache();
+    clearCapabilityProbeCompileCache();
+
+    const compiled = CustomShaderCompileState{
+        .source_len = 7,
+        .source_hash = 7,
+    };
+    storeCapabilityProbeCompiledShader(.vulkan_swiftshader, compiled);
+
+    const key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        .{
+            .hint_source = .vk_driver_files,
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = true,
+        },
+        true,
+    );
+    const status = RuntimeCapabilityStatus{ .unavailable = .execution_timeout };
+    storeCapabilityProbeStatusCache(key, status);
+
+    try std.testing.expectEqualDeep(status, loadCapabilityProbeStatusCache(key).?);
+    try std.testing.expectEqualDeep(
+        compiled,
+        loadCapabilityProbeCompiledShader(.vulkan_swiftshader).?,
+    );
+
+    invalidateCustomShaderExecutionProbeStatusCache();
+
+    try std.testing.expect(loadCapabilityProbeStatusCache(key) == null);
+    try std.testing.expectEqualDeep(
+        compiled,
+        loadCapabilityProbeCompiledShader(.vulkan_swiftshader).?,
+    );
 }
 
 test "containsAsciiIgnoreCase matches swiftshader tokens" {
