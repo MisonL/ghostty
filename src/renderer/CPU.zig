@@ -77,41 +77,10 @@ fn customShaderExecutionCapabilityStatus() RuntimeCapabilityStatus {
         return .{ .unavailable = .backend_unavailable };
     }
 
-    return .{
-        .unavailable = customShaderExecutionUnavailableReasonForBackend(
-            build_config.software_renderer_cpu_shader_backend,
-            vulkanSwiftshaderHintConfigured(),
-        ),
-    };
-}
-
-fn customShaderExecutionUnavailableReasonForBackend(
-    backend: build_config.SoftwareRendererCpuShaderBackend,
-    vulkan_swiftshader_hint_configured: bool,
-) RuntimeCapabilityUnavailableReason {
-    return switch (backend) {
-        .off => .backend_disabled,
-
-        // SwiftShader Vulkan backend integration is staged separately.
-        // If SwiftShader ICD is explicitly hinted, classify as staged
-        // runtime initialization failure so logs can differentiate from
-        // plain "backend not configured" cases.
-        .vulkan_swiftshader => if (vulkan_swiftshader_hint_configured)
-            .runtime_init_failed
-        else
-            .backend_unavailable,
-    };
-}
-
-fn vulkanSwiftshaderHintConfigured() bool {
-    return switch (builtin.os.tag) {
-        .windows => false,
-        else => vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-            .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),
-            .vk_icd_filenames = std.posix.getenv("VK_ICD_FILENAMES"),
-            .vk_add_driver_files = std.posix.getenv("VK_ADD_DRIVER_FILES"),
-        }),
-    };
+    return customShaderExecutionCapabilityStatusForBackendProbe(
+        build_config.software_renderer_cpu_shader_backend,
+        vulkanSwiftshaderProbe(),
+    );
 }
 
 const VulkanDriverEnvHints = struct {
@@ -120,19 +89,204 @@ const VulkanDriverEnvHints = struct {
     vk_add_driver_files: ?[]const u8 = null,
 };
 
-fn vulkanSwiftshaderHintConfiguredFromEnvHints(hints: VulkanDriverEnvHints) bool {
+const VulkanSwiftshaderProbe = struct {
+    candidate_path: ?[]const u8 = null,
+    candidate_readable: bool = false,
+};
+
+const CustomShaderExecutorInitError = error{
+    BackendUnavailable,
+    RuntimeInitFailed,
+    DeviceLost,
+};
+
+const CustomShaderExecutorCompileError = error{
+    PipelineCompileFailed,
+};
+
+const CustomShaderExecutorExecuteError = error{
+    ExecutionTimeout,
+    DeviceLost,
+};
+
+const VulkanSwiftshaderExecutor = struct {
+    candidate_path: []const u8,
+};
+
+const CustomShaderExecutor = union(enum) {
+    vulkan_swiftshader: VulkanSwiftshaderExecutor,
+
+    fn init(
+        backend: build_config.SoftwareRendererCpuShaderBackend,
+        probe: VulkanSwiftshaderProbe,
+    ) CustomShaderExecutorInitError!CustomShaderExecutor {
+        return switch (backend) {
+            .off => error.BackendUnavailable,
+            .vulkan_swiftshader => init: {
+                const candidate = probe.candidate_path orelse break :init error.BackendUnavailable;
+                if (!probe.candidate_readable) break :init error.RuntimeInitFailed;
+                break :init .{
+                    .vulkan_swiftshader = .{
+                        .candidate_path = candidate,
+                    },
+                };
+            },
+        };
+    }
+
+    fn deinit(self: *CustomShaderExecutor) void {
+        _ = self;
+    }
+
+    fn compileCustomShader(
+        self: *CustomShaderExecutor,
+        source: []const u8,
+    ) CustomShaderExecutorCompileError!void {
+        _ = self;
+        _ = source;
+
+        // Placeholder implementation: execution pipeline wiring is staged
+        // separately, so compile reports a deterministic staged error.
+        return error.PipelineCompileFailed;
+    }
+
+    fn executeCustomShader(
+        self: *CustomShaderExecutor,
+        timeout_ms: u32,
+    ) CustomShaderExecutorExecuteError!void {
+        _ = self;
+
+        // Placeholder execution staging:
+        // - timeout 0 is treated as timed-out
+        // - non-zero timeout currently reports device-lost until wiring lands
+        if (timeout_ms == 0) return error.ExecutionTimeout;
+        return error.DeviceLost;
+    }
+};
+
+fn customShaderExecutionCapabilityStatusForBackendProbe(
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    probe: VulkanSwiftshaderProbe,
+) RuntimeCapabilityStatus {
+    if (backend == .off) {
+        return .{ .unavailable = .backend_disabled };
+    }
+
+    var executor = CustomShaderExecutor.init(backend, probe) catch |err| {
+        return .{ .unavailable = mapCustomShaderExecutorInitError(err) };
+    };
+    defer executor.deinit();
+
+    executor.compileCustomShader("") catch |err| {
+        return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
+    };
+
+    // Compile stage currently always fails, but keep execution mapping wired
+    // so we can enable it incrementally without changing decision plumbing.
+    const timeout_ms: u32 = if (@hasDecl(build_config, "software_renderer_cpu_shader_timeout_ms"))
+        build_config.software_renderer_cpu_shader_timeout_ms
+    else
+        16;
+    executor.executeCustomShader(timeout_ms) catch |err| {
+        return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
+    };
+
+    return .{ .available = {} };
+}
+
+fn mapCustomShaderExecutorInitError(err: CustomShaderExecutorInitError) RuntimeCapabilityUnavailableReason {
+    return switch (err) {
+        error.BackendUnavailable => .backend_unavailable,
+        error.RuntimeInitFailed => .runtime_init_failed,
+        error.DeviceLost => .device_lost,
+    };
+}
+
+fn mapCustomShaderExecutorCompileError(err: CustomShaderExecutorCompileError) RuntimeCapabilityUnavailableReason {
+    return switch (err) {
+        error.PipelineCompileFailed => .pipeline_compile_failed,
+    };
+}
+
+fn mapCustomShaderExecutorExecuteError(err: CustomShaderExecutorExecuteError) RuntimeCapabilityUnavailableReason {
+    return switch (err) {
+        error.ExecutionTimeout => .execution_timeout,
+        error.DeviceLost => .device_lost,
+    };
+}
+
+fn vulkanSwiftshaderProbe() VulkanSwiftshaderProbe {
+    return switch (builtin.os.tag) {
+        .windows => .{},
+        else => vulkanSwiftshaderProbeFromEnvHints(
+            .{
+                .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),
+                .vk_icd_filenames = std.posix.getenv("VK_ICD_FILENAMES"),
+                .vk_add_driver_files = std.posix.getenv("VK_ADD_DRIVER_FILES"),
+            },
+            pathLooksReadable,
+        ),
+    };
+}
+
+fn vulkanSwiftshaderProbeFromEnvHints(
+    hints: VulkanDriverEnvHints,
+    comptime path_readable_fn: fn ([]const u8) bool,
+) VulkanSwiftshaderProbe {
+    const candidate = vulkanSwiftshaderDriverPathFromEnvHints(hints);
+    return .{
+        .candidate_path = candidate,
+        .candidate_readable = if (candidate) |path| path_readable_fn(path) else false,
+    };
+}
+
+fn vulkanSwiftshaderDriverPathFromEnvHints(hints: VulkanDriverEnvHints) ?[]const u8 {
     // Match Vulkan loader override precedence: VK_DRIVER_FILES >
     // VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES.
     if (hints.vk_driver_files) |value| {
-        return containsAsciiIgnoreCase(value, "swiftshader");
+        if (extractSwiftshaderPath(value)) |path| return path;
     }
     if (hints.vk_icd_filenames) |value| {
-        return containsAsciiIgnoreCase(value, "swiftshader");
+        if (extractSwiftshaderPath(value)) |path| return path;
     }
     if (hints.vk_add_driver_files) |value| {
-        return containsAsciiIgnoreCase(value, "swiftshader");
+        if (extractSwiftshaderPath(value)) |path| return path;
     }
-    return false;
+    return null;
+}
+
+fn extractSwiftshaderPath(value: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(
+        u8,
+        value,
+        if (builtin.os.tag == .windows) ';' else ':',
+    );
+    while (it.next()) |entry| {
+        const trimmed = trimEnvPathEntry(entry);
+        if (trimmed.len == 0) continue;
+        if (containsAsciiIgnoreCase(trimmed, "swiftshader")) return trimmed;
+    }
+
+    return null;
+}
+
+fn trimEnvPathEntry(value: []const u8) []const u8 {
+    var trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len < 2) return trimmed;
+
+    if ((trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') or
+        (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\''))
+    {
+        trimmed = trimmed[1 .. trimmed.len - 1];
+    }
+
+    return trimmed;
+}
+
+fn pathLooksReadable(path: []const u8) bool {
+    if (path.len == 0) return false;
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
 }
 
 fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -2172,36 +2326,65 @@ test "supportsRuntimeCapability reflects custom shader execution capability stat
 
 test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
     const status = runtimeCapabilityStatus(.custom_shader_execution);
-    try std.testing.expect(status == .unavailable);
-    const expected: RuntimeCapabilityUnavailableReason = if (@hasDecl(
+    const expected = if (@hasDecl(
         build_config,
         "software_renderer_cpu_shader_backend",
     ))
-        customShaderExecutionUnavailableReasonForBackend(
+        customShaderExecutionCapabilityStatusForBackendProbe(
             build_config.software_renderer_cpu_shader_backend,
-            vulkanSwiftshaderHintConfigured(),
+            vulkanSwiftshaderProbe(),
         )
     else
-        .backend_unavailable;
-    try std.testing.expectEqual(
-        expected,
-        status.unavailable,
-    );
-    try std.testing.expectEqual(status.unavailable, runtimeCapabilityUnavailableReason(.custom_shader_execution).?);
+        RuntimeCapabilityStatus{
+            .unavailable = .backend_unavailable,
+        };
+
+    try std.testing.expectEqualDeep(expected, status);
+    switch (status) {
+        .available => try std.testing.expect(
+            runtimeCapabilityUnavailableReason(.custom_shader_execution) == null,
+        ),
+        .unavailable => |reason| try std.testing.expectEqual(
+            reason,
+            runtimeCapabilityUnavailableReason(.custom_shader_execution).?,
+        ),
+    }
 }
 
-test "customShaderExecutionUnavailableReasonForBackend maps staged reasons" {
-    try std.testing.expectEqual(
-        RuntimeCapabilityUnavailableReason.backend_disabled,
-        customShaderExecutionUnavailableReasonForBackend(.off, false),
+test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" {
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .backend_disabled },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .off,
+            .{},
+        ),
     );
-    try std.testing.expectEqual(
-        RuntimeCapabilityUnavailableReason.backend_unavailable,
-        customShaderExecutionUnavailableReasonForBackend(.vulkan_swiftshader, false),
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .backend_unavailable },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            .{},
+        ),
     );
-    try std.testing.expectEqual(
-        RuntimeCapabilityUnavailableReason.runtime_init_failed,
-        customShaderExecutionUnavailableReasonForBackend(.vulkan_swiftshader, true),
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .runtime_init_failed },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            .{
+                .candidate_path = "/opt/swiftshader/icd.json",
+                .candidate_readable = false,
+            },
+        ),
+    );
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .pipeline_compile_failed },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            .{
+                .candidate_path = "/opt/swiftshader/icd.json",
+                .candidate_readable = true,
+            },
+        ),
     );
 }
 
@@ -2220,38 +2403,141 @@ test "containsAsciiIgnoreCase matches swiftshader tokens" {
     ));
 }
 
-test "vulkanSwiftshaderHintConfiguredFromEnvHints follows loader precedence" {
-    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-        .vk_driver_files = "/opt/swiftshader/icd.json",
-        .vk_icd_filenames = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
-        .vk_add_driver_files = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
-    }));
+test "vulkanSwiftshaderDriverPathFromEnvHints follows loader precedence" {
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/driver.json",
+        vulkanSwiftshaderDriverPathFromEnvHints(.{
+            .vk_driver_files = "/opt/swiftshader/driver.json",
+            .vk_icd_filenames = "/opt/other/icd.json",
+            .vk_add_driver_files = "/opt/other/add.json",
+        }).?,
+    );
 
-    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-        .vk_driver_files = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
-        .vk_icd_filenames = "/opt/swiftshader/icd.json",
-        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
-    }));
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/icd.json",
+        vulkanSwiftshaderDriverPathFromEnvHints(.{
+            .vk_driver_files = "/opt/other/driver.json",
+            .vk_icd_filenames = "/opt/swiftshader/icd.json",
+            .vk_add_driver_files = "/opt/other/add.json",
+        }).?,
+    );
 
-    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-        .vk_driver_files = null,
-        .vk_icd_filenames = "/opt/SwiftShader/icd.json",
-        .vk_add_driver_files = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
-    }));
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/add.json",
+        vulkanSwiftshaderDriverPathFromEnvHints(.{
+            .vk_driver_files = "/opt/other/driver.json",
+            .vk_icd_filenames = "/opt/other/icd.json",
+            .vk_add_driver_files = "/opt/swiftshader/add.json",
+        }).?,
+    );
 
-    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-        .vk_driver_files = null,
-        .vk_icd_filenames = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
-        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
-    }));
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/quoted.json",
+        vulkanSwiftshaderDriverPathFromEnvHints(.{
+            .vk_driver_files = " /opt/other/driver.json : '/opt/swiftshader/quoted.json' ",
+        }).?,
+    );
 
-    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
-        .vk_driver_files = null,
-        .vk_icd_filenames = null,
-        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
-    }));
+    try std.testing.expect(
+        vulkanSwiftshaderDriverPathFromEnvHints(.{
+            .vk_driver_files = "/opt/other/driver.json",
+            .vk_icd_filenames = "/opt/other/icd.json",
+            .vk_add_driver_files = "/opt/other/add.json",
+        }) == null,
+    );
+}
 
-    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{}));
+test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
+    const ReadableAlways = struct {
+        fn fn_(path: []const u8) bool {
+            _ = path;
+            return true;
+        }
+    };
+    const ReadableNever = struct {
+        fn fn_(path: []const u8) bool {
+            _ = path;
+            return false;
+        }
+    };
+
+    const readable = vulkanSwiftshaderProbeFromEnvHints(
+        .{ .vk_icd_filenames = "/opt/swiftshader/icd.json" },
+        ReadableAlways.fn_,
+    );
+    try std.testing.expectEqualStrings("/opt/swiftshader/icd.json", readable.candidate_path.?);
+    try std.testing.expect(readable.candidate_readable);
+
+    const unreadable = vulkanSwiftshaderProbeFromEnvHints(
+        .{ .vk_icd_filenames = "/opt/swiftshader/icd.json" },
+        ReadableNever.fn_,
+    );
+    try std.testing.expectEqualStrings("/opt/swiftshader/icd.json", unreadable.candidate_path.?);
+    try std.testing.expect(!unreadable.candidate_readable);
+
+    const missing = vulkanSwiftshaderProbeFromEnvHints(
+        .{ .vk_icd_filenames = "/opt/vendor/intel_icd.json" },
+        ReadableAlways.fn_,
+    );
+    try std.testing.expect(missing.candidate_path == null);
+    try std.testing.expect(!missing.candidate_readable);
+}
+
+test "customShaderExecutor maps staged init compile and execute errors" {
+    try std.testing.expectError(
+        error.BackendUnavailable,
+        CustomShaderExecutor.init(.vulkan_swiftshader, .{}),
+    );
+    try std.testing.expectError(
+        error.RuntimeInitFailed,
+        CustomShaderExecutor.init(.vulkan_swiftshader, .{
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = false,
+        }),
+    );
+
+    var executor = try CustomShaderExecutor.init(
+        .vulkan_swiftshader,
+        .{
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = true,
+        },
+    );
+    defer executor.deinit();
+
+    try std.testing.expectError(
+        error.PipelineCompileFailed,
+        executor.compileCustomShader("void main(){}"),
+    );
+    try std.testing.expectError(
+        error.ExecutionTimeout,
+        executor.executeCustomShader(0),
+    );
+    try std.testing.expectError(
+        error.DeviceLost,
+        executor.executeCustomShader(16),
+    );
+
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.backend_unavailable,
+        mapCustomShaderExecutorInitError(error.BackendUnavailable),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.runtime_init_failed,
+        mapCustomShaderExecutorInitError(error.RuntimeInitFailed),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.pipeline_compile_failed,
+        mapCustomShaderExecutorCompileError(error.PipelineCompileFailed),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.execution_timeout,
+        mapCustomShaderExecutorExecuteError(error.ExecutionTimeout),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.device_lost,
+        mapCustomShaderExecutorExecuteError(error.DeviceLost),
+    );
 }
 
 test "isRuntimeCompatibleWithCpuRoute gates custom shader execution by runtime capability" {
