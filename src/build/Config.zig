@@ -34,6 +34,8 @@ const software_renderer_cpu_shader_backend_help =
     "CPU software renderer custom-shader execution backend: off|vulkan_swiftshader. off=disable CPU custom-shader execution and force platform-route fallback while shaders are active; vulkan_swiftshader=enable SwiftShader Vulkan execution when available (loader env precedence: VK_DRIVER_FILES > VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES), otherwise fallback to platform route.";
 const software_renderer_cpu_shader_timeout_help =
     "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness. Default: 16.";
+const software_renderer_cpu_shader_enable_minimal_runtime_help =
+    "Enable staged minimal CPU custom-shader runtime success path. Default: false (strict gray rollout). When false, custom-shader execution capability remains unavailable even if backend probe/compile passes. When true, capability may become available in controlled conditions.";
 const software_renderer_cpu_frame_damage_mode_help =
     "CPU software renderer frame-damage publishing mode: off|rects. off publishes full frames for each CPU-route update; rects tracks and reports damage rectangles (current stage still uses conservative full-frame composition).";
 const software_renderer_cpu_damage_rect_cap_help =
@@ -65,6 +67,7 @@ software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode = .full,
 software_renderer_cpu_shader_backend: SoftwareRendererCpuShaderBackend = .vulkan_swiftshader,
 software_renderer_cpu_shader_timeout_ms: u32 = 16,
+software_renderer_cpu_shader_enable_minimal_runtime: bool = false,
 software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode = .rects,
 software_renderer_cpu_damage_rect_cap: u16 = 64,
 
@@ -214,6 +217,11 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-shader-timeout-ms",
         software_renderer_cpu_shader_timeout_help,
     ) orelse 16;
+    config.software_renderer_cpu_shader_enable_minimal_runtime = b.option(
+        bool,
+        "software-renderer-cpu-shader-enable-minimal-runtime",
+        software_renderer_cpu_shader_enable_minimal_runtime_help,
+    ) orelse false;
     config.software_renderer_cpu_frame_damage_mode = b.option(
         SoftwareRendererCpuFrameDamageMode,
         "software-renderer-cpu-frame-damage-mode",
@@ -597,6 +605,11 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         self.software_renderer_cpu_shader_timeout_ms,
     );
     step.addOption(
+        bool,
+        "software_renderer_cpu_shader_enable_minimal_runtime",
+        self.software_renderer_cpu_shader_enable_minimal_runtime,
+    );
+    step.addOption(
         SoftwareRendererCpuFrameDamageMode,
         "software_renderer_cpu_frame_damage_mode",
         self.software_renderer_cpu_frame_damage_mode,
@@ -734,6 +747,7 @@ pub fn fromOptions() Config {
             @tagName(options.software_renderer_cpu_shader_backend),
         ).?,
         .software_renderer_cpu_shader_timeout_ms = options.software_renderer_cpu_shader_timeout_ms,
+        .software_renderer_cpu_shader_enable_minimal_runtime = options.software_renderer_cpu_shader_enable_minimal_runtime,
         .software_renderer_cpu_frame_damage_mode = std.meta.stringToEnum(
             SoftwareRendererCpuFrameDamageMode,
             @tagName(options.software_renderer_cpu_frame_damage_mode),
@@ -924,6 +938,7 @@ test "softwareRendererCpuShader default values stay stable" {
         config.software_renderer_cpu_shader_backend,
     );
     try std.testing.expectEqual(@as(u32, 16), config.software_renderer_cpu_shader_timeout_ms);
+    try std.testing.expect(!config.software_renderer_cpu_shader_enable_minimal_runtime);
     try std.testing.expectEqual(
         SoftwareRendererCpuFrameDamageMode.rects,
         config.software_renderer_cpu_frame_damage_mode,
@@ -972,6 +987,13 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
             u8,
             software_renderer_cpu_shader_timeout_help,
             "In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_shader_enable_minimal_runtime_help,
+            "Default: false",
         ) != null,
     );
     try std.testing.expect(

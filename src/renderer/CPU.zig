@@ -74,11 +74,13 @@ pub fn runtimeCapabilityStatus(capability: RuntimeCapability) RuntimeCapabilityS
 
 pub fn customShaderExecutionProbe() CustomShaderExecutionProbe {
     const timeout_ms = runtimeCustomShaderTimeoutMs();
+    const enable_minimal_runtime = runtimeCustomShaderEnableMinimalRuntime();
     if (!@hasDecl(build_config, "software_renderer_cpu_shader_backend")) {
         return .{
             .status = .{ .unavailable = .backend_unavailable },
             .backend = .off,
             .timeout_ms = timeout_ms,
+            .enable_minimal_runtime = enable_minimal_runtime,
         };
     }
 
@@ -92,9 +94,11 @@ pub fn customShaderExecutionProbe() CustomShaderExecutionProbe {
             backend,
             timeout_ms,
             probe,
+            enable_minimal_runtime,
         ),
         .backend = backend,
         .timeout_ms = timeout_ms,
+        .enable_minimal_runtime = enable_minimal_runtime,
         .vulkan_driver_hint_source = probe.hint_source,
         .vulkan_driver_hint_path = probe.candidate_path,
         .vulkan_driver_hint_readable = probe.candidate_readable,
@@ -121,6 +125,7 @@ pub const CustomShaderExecutionProbe = struct {
     status: RuntimeCapabilityStatus,
     backend: build_config.SoftwareRendererCpuShaderBackend,
     timeout_ms: u32,
+    enable_minimal_runtime: bool,
     vulkan_driver_hint_source: ?VulkanDriverHintSource = null,
     vulkan_driver_hint_path: ?[]const u8 = null,
     vulkan_driver_hint_readable: bool = false,
@@ -214,6 +219,7 @@ const CustomShaderExecutor = union(enum) {
     fn executeCustomShader(
         self: *CustomShaderExecutor,
         timeout_ms: u32,
+        enable_minimal_runtime: bool,
     ) CustomShaderExecutorExecuteError!void {
         const compiled = switch (self.*) {
             .vulkan_swiftshader => |*executor| executor.compiled_shader orelse return error.PipelineCompileFailed,
@@ -223,10 +229,10 @@ const CustomShaderExecutor = union(enum) {
             return error.ExecutionTimeout;
         }
 
-        // Stage guard: compilation state is now tracked and consulted, but the
-        // backend execution path remains intentionally unavailable until full
-        // wiring lands.
-        return error.DeviceLost;
+        // Stage guard: keep conservative unavailability semantics unless
+        // minimal runtime rollout is explicitly enabled.
+        if (!enable_minimal_runtime) return error.DeviceLost;
+        return;
     }
 };
 
@@ -259,10 +265,18 @@ fn runtimeCustomShaderTimeoutMs() u32 {
         16;
 }
 
+fn runtimeCustomShaderEnableMinimalRuntime() bool {
+    return if (@hasDecl(build_config, "software_renderer_cpu_shader_enable_minimal_runtime"))
+        build_config.software_renderer_cpu_shader_enable_minimal_runtime
+    else
+        false;
+}
+
 fn customShaderExecutionCapabilityStatusForBackendProbe(
     backend: build_config.SoftwareRendererCpuShaderBackend,
     timeout_ms: u32,
     probe: VulkanSwiftshaderProbe,
+    enable_minimal_runtime: bool,
 ) RuntimeCapabilityStatus {
     if (backend == .off) {
         return .{ .unavailable = .backend_disabled };
@@ -277,7 +291,7 @@ fn customShaderExecutionCapabilityStatusForBackendProbe(
         return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
     };
 
-    executor.executeCustomShader(timeout_ms) catch |err| {
+    executor.executeCustomShader(timeout_ms, enable_minimal_runtime) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
     };
 
@@ -2445,6 +2459,7 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
             build_config.software_renderer_cpu_shader_backend,
             runtimeCustomShaderTimeoutMs(),
             vulkanSwiftshaderProbe(),
+            runtimeCustomShaderEnableMinimalRuntime(),
         )
     else
         RuntimeCapabilityStatus{
@@ -2463,6 +2478,14 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
     }
 }
 
+test "customShaderExecutionProbe exposes minimal runtime rollout switch" {
+    const probe = customShaderExecutionProbe();
+    try std.testing.expectEqual(
+        runtimeCustomShaderEnableMinimalRuntime(),
+        probe.enable_minimal_runtime,
+    );
+}
+
 test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" {
     try std.testing.expectEqualDeep(
         RuntimeCapabilityStatus{ .unavailable = .backend_disabled },
@@ -2470,6 +2493,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
             .off,
             runtimeCustomShaderTimeoutMs(),
             .{},
+            false,
         ),
     );
     try std.testing.expectEqualDeep(
@@ -2478,6 +2502,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
             .vulkan_swiftshader,
             runtimeCustomShaderTimeoutMs(),
             .{},
+            false,
         ),
     );
     try std.testing.expectEqualDeep(
@@ -2489,6 +2514,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = false,
             },
+            false,
         ),
     );
     try std.testing.expectEqualDeep(
@@ -2500,6 +2526,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = true,
             },
+            false,
         ),
     );
     try std.testing.expectEqualDeep(
@@ -2511,6 +2538,34 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = true,
             },
+            false,
+        ),
+    );
+}
+
+test "customShaderExecutionCapabilityStatusForBackendProbe allows controlled availability when enabled" {
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .available = {} },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            255,
+            .{
+                .candidate_path = "/opt/swiftshader/icd.json",
+                .candidate_readable = true,
+            },
+            true,
+        ),
+    );
+    try std.testing.expectEqualDeep(
+        RuntimeCapabilityStatus{ .unavailable = .execution_timeout },
+        customShaderExecutionCapabilityStatusForBackendProbe(
+            .vulkan_swiftshader,
+            0,
+            .{
+                .candidate_path = "/opt/swiftshader/icd.json",
+                .candidate_readable = true,
+            },
+            true,
         ),
     );
 }
@@ -2680,7 +2735,7 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
 
     try std.testing.expectError(
         error.PipelineCompileFailed,
-        executor.executeCustomShader(1),
+        executor.executeCustomShader(1, false),
     );
     try std.testing.expectError(
         error.PipelineCompileFailed,
@@ -2702,12 +2757,13 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
     const timeout_floor = customShaderExecutionTimeoutFloorMs(compiled);
     try std.testing.expectError(
         error.ExecutionTimeout,
-        executor.executeCustomShader(timeout_floor - 1),
+        executor.executeCustomShader(timeout_floor - 1, false),
     );
     try std.testing.expectError(
         error.DeviceLost,
-        executor.executeCustomShader(timeout_floor),
+        executor.executeCustomShader(timeout_floor, false),
     );
+    try executor.executeCustomShader(timeout_floor, true);
 
     try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.backend_unavailable,

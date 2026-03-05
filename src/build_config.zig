@@ -55,6 +55,8 @@ pub const software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode =
 pub const software_renderer_cpu_shader_backend: SoftwareRendererCpuShaderBackend =
     config.software_renderer_cpu_shader_backend;
 pub const software_renderer_cpu_shader_timeout_ms: u32 = config.software_renderer_cpu_shader_timeout_ms;
+pub const software_renderer_cpu_shader_enable_minimal_runtime: bool =
+    config.software_renderer_cpu_shader_enable_minimal_runtime;
 pub const software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode =
     config.software_renderer_cpu_frame_damage_mode;
 pub const software_renderer_cpu_damage_rect_cap: u16 = config.software_renderer_cpu_damage_rect_cap;
