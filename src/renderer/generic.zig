@@ -148,6 +148,9 @@ const SoftwareCpuRouteDecisionInput = struct {
     custom_shaders_active: bool,
     custom_shader_execution_available: bool,
     custom_shader_execution_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason,
+    custom_shader_execution_hint_source: ?cpu_renderer.VulkanDriverHintSource,
+    custom_shader_execution_hint_path: ?[]const u8,
+    custom_shader_execution_hint_readable: bool,
     cpu_shader_mode: build_config.SoftwareRendererCpuShaderMode,
     cpu_shader_timeout_ms: u32,
     transport_mode_native: bool,
@@ -157,6 +160,9 @@ const SoftwareCpuRouteDecision = struct {
     enabled: bool,
     reason: ?SoftwareCpuRouteDisableReason = null,
     custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null,
+    custom_shader_unavailable_hint_source: ?cpu_renderer.VulkanDriverHintSource = null,
+    custom_shader_unavailable_hint_path: ?[]const u8 = null,
+    custom_shader_unavailable_hint_readable: bool = false,
 };
 
 const CpuRouteDiagnosticsSnapshot = struct {
@@ -170,6 +176,9 @@ const CpuRouteDiagnosticsSnapshot = struct {
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
     cpu_shader_backend: build_config.SoftwareRendererCpuShaderBackend,
     shader_capability_reason: []const u8,
+    shader_capability_hint_source: []const u8,
+    shader_capability_hint_path: []const u8,
+    shader_capability_hint_readable: bool,
 };
 
 const CpuRouteDiagnosticsState = struct {
@@ -182,6 +191,9 @@ const CpuRouteDiagnosticsState = struct {
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
     last_shader_capability_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null,
+    last_shader_capability_hint_source: ?cpu_renderer.VulkanDriverHintSource = null,
+    last_shader_capability_hint_path: ?[]const u8 = null,
+    last_shader_capability_hint_readable: bool = false,
 
     fn recordRouteDecision(self: *CpuRouteDiagnosticsState, decision: SoftwareCpuRouteDecision) void {
         if (decision.enabled) return;
@@ -189,6 +201,9 @@ const CpuRouteDiagnosticsState = struct {
 
         self.last_fallback_reason = reason;
         self.last_shader_capability_reason = decision.custom_shader_unavailable_reason;
+        self.last_shader_capability_hint_source = decision.custom_shader_unavailable_hint_source;
+        self.last_shader_capability_hint_path = decision.custom_shader_unavailable_hint_path;
+        self.last_shader_capability_hint_readable = decision.custom_shader_unavailable_hint_readable;
         if (reason == .custom_shaders_mode_off or
             reason == .custom_shaders_unsupported or
             reason == .custom_shaders_safe_timeout_invalid)
@@ -240,6 +255,27 @@ const CpuRouteDiagnosticsState = struct {
                 )
             else
                 "n/a",
+            .shader_capability_hint_source = if (self.last_fallback_reason) |reason|
+                shaderCapabilityHintSourceForDisableReason(
+                    reason,
+                    self.last_shader_capability_hint_source,
+                )
+            else
+                "n/a",
+            .shader_capability_hint_path = if (self.last_fallback_reason) |reason|
+                shaderCapabilityHintPathForDisableReason(
+                    reason,
+                    self.last_shader_capability_hint_path,
+                )
+            else
+                "n/a",
+            .shader_capability_hint_readable = if (self.last_fallback_reason) |reason|
+                shaderCapabilityHintReadableForDisableReason(
+                    reason,
+                    self.last_shader_capability_hint_readable,
+                )
+            else
+                false,
         };
     }
 };
@@ -255,6 +291,39 @@ fn shaderCapabilityReasonForDisableReason(
         else
             "unknown",
         else => "n/a",
+    };
+}
+
+fn shaderCapabilityHintSourceForDisableReason(
+    reason: SoftwareCpuRouteDisableReason,
+    custom_shader_hint_source: ?cpu_renderer.VulkanDriverHintSource,
+) []const u8 {
+    return switch (reason) {
+        .custom_shaders_unsupported => if (custom_shader_hint_source) |source|
+            @tagName(source)
+        else
+            "none",
+        else => "n/a",
+    };
+}
+
+fn shaderCapabilityHintPathForDisableReason(
+    reason: SoftwareCpuRouteDisableReason,
+    custom_shader_hint_path: ?[]const u8,
+) []const u8 {
+    return switch (reason) {
+        .custom_shaders_unsupported => custom_shader_hint_path orelse "none",
+        else => "n/a",
+    };
+}
+
+fn shaderCapabilityHintReadableForDisableReason(
+    reason: SoftwareCpuRouteDisableReason,
+    custom_shader_hint_readable: bool,
+) bool {
+    return switch (reason) {
+        .custom_shaders_unsupported => custom_shader_hint_readable,
+        else => false,
     };
 }
 
@@ -289,6 +358,9 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
                 .enabled = false,
                 .reason = .custom_shaders_unsupported,
                 .custom_shader_unavailable_reason = input.custom_shader_execution_unavailable_reason,
+                .custom_shader_unavailable_hint_source = input.custom_shader_execution_hint_source,
+                .custom_shader_unavailable_hint_path = input.custom_shader_execution_hint_path,
+                .custom_shader_unavailable_hint_readable = input.custom_shader_execution_hint_readable,
             };
             if (input.cpu_shader_timeout_ms == 0) return .{
                 .enabled = false,
@@ -299,6 +371,9 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
             .enabled = false,
             .reason = .custom_shaders_unsupported,
             .custom_shader_unavailable_reason = input.custom_shader_execution_unavailable_reason,
+            .custom_shader_unavailable_hint_source = input.custom_shader_execution_hint_source,
+            .custom_shader_unavailable_hint_path = input.custom_shader_execution_hint_path,
+            .custom_shader_unavailable_hint_readable = input.custom_shader_execution_hint_readable,
         },
     };
     if (input.transport_mode_native) return .{
@@ -1578,17 +1653,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn softwareCpuRouteDecisionInput(self: *const Self) SoftwareCpuRouteDecisionInput {
-            const custom_shader_capability = cpu_renderer.runtimeCapabilityStatus(
-                .custom_shader_execution,
-            );
-            const custom_shader_available = switch (custom_shader_capability) {
-                .available => true,
-                .unavailable => false,
-            };
-            const custom_shader_unavailable_reason = switch (custom_shader_capability) {
-                .available => null,
-                .unavailable => |reason| reason,
-            };
+            var custom_shader_available = true;
+            var custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null;
+            var custom_shader_hint_source: ?cpu_renderer.VulkanDriverHintSource = null;
+            var custom_shader_hint_path: ?[]const u8 = null;
+            var custom_shader_hint_readable = false;
+            if (self.has_custom_shaders and
+                build_config.software_renderer_cpu_shader_mode != .off)
+            {
+                const custom_shader_probe = cpu_renderer.customShaderExecutionProbe();
+                custom_shader_hint_source = custom_shader_probe.vulkan_driver_hint_source;
+                custom_shader_hint_path = custom_shader_probe.vulkan_driver_hint_path;
+                custom_shader_hint_readable = custom_shader_probe.vulkan_driver_hint_readable;
+                switch (custom_shader_probe.status) {
+                    .available => {},
+                    .unavailable => |reason| {
+                        custom_shader_available = false;
+                        custom_shader_unavailable_reason = reason;
+                    },
+                }
+            }
 
             return .{
                 .cpu_route_build_effective = software_renderer_cpu_effective,
@@ -1599,6 +1683,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .custom_shaders_active = self.has_custom_shaders,
                 .custom_shader_execution_available = custom_shader_available,
                 .custom_shader_execution_unavailable_reason = custom_shader_unavailable_reason,
+                .custom_shader_execution_hint_source = custom_shader_hint_source,
+                .custom_shader_execution_hint_path = custom_shader_hint_path,
+                .custom_shader_execution_hint_readable = custom_shader_hint_readable,
                 .cpu_shader_mode = build_config.software_renderer_cpu_shader_mode,
                 .cpu_shader_timeout_ms = build_config.software_renderer_cpu_shader_timeout_ms,
                 .transport_mode_native = build_config.software_frame_transport_mode == .native,
@@ -1615,7 +1702,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             warned.* = true;
 
             log.warn(
-                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_backend={s} shader_timeout_ms={} transport={s} shader_capability_reason={s}; using platform route",
+                "software renderer cpu route is disabled reason={s} publishing={} experimental={} presenter={s} custom_shaders={} shader_mode={s} shader_backend={s} shader_timeout_ms={} transport={s} shader_capability_reason={s} shader_capability_hint_source={s} shader_capability_hint_path={s} shader_capability_hint_readable={}; using platform route",
                 .{
                     @tagName(reason),
                     self.software_frame_publishing,
@@ -1629,6 +1716,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     shaderCapabilityReasonForDisableReason(
                         reason,
                         decision.custom_shader_unavailable_reason,
+                    ),
+                    shaderCapabilityHintSourceForDisableReason(
+                        reason,
+                        decision.custom_shader_unavailable_hint_source,
+                    ),
+                    shaderCapabilityHintPathForDisableReason(
+                        reason,
+                        decision.custom_shader_unavailable_hint_path,
+                    ),
+                    shaderCapabilityHintReadableForDisableReason(
+                        reason,
+                        decision.custom_shader_unavailable_hint_readable,
                     ),
                 },
             );
@@ -4871,6 +4970,9 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .custom_shaders_active = false,
         .custom_shader_execution_available = false,
         .custom_shader_execution_unavailable_reason = .backend_unavailable,
+        .custom_shader_execution_hint_source = null,
+        .custom_shader_execution_hint_path = null,
+        .custom_shader_execution_hint_readable = false,
         .cpu_shader_mode = .off,
         .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
@@ -5038,6 +5140,9 @@ test "software cpu route decision disables when custom shaders are active and mo
     input.cpu_shader_mode = .safe;
     input.cpu_shader_timeout_ms = 8;
     input.custom_shader_execution_unavailable_reason = .pipeline_compile_failed;
+    input.custom_shader_execution_hint_source = .vk_icd_filenames;
+    input.custom_shader_execution_hint_path = "/opt/swiftshader/icd.json";
+    input.custom_shader_execution_hint_readable = false;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
@@ -5046,6 +5151,15 @@ test "software cpu route decision disables when custom shaders are active and mo
         @as(?cpu_renderer.RuntimeCapabilityUnavailableReason, .pipeline_compile_failed),
         decision.custom_shader_unavailable_reason,
     );
+    try std.testing.expectEqual(
+        @as(?cpu_renderer.VulkanDriverHintSource, .vk_icd_filenames),
+        decision.custom_shader_unavailable_hint_source,
+    );
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/icd.json",
+        decision.custom_shader_unavailable_hint_path.?,
+    );
+    try std.testing.expect(!decision.custom_shader_unavailable_hint_readable);
 }
 
 test "software cpu route decision disables safe mode when timeout budget is zero" {
@@ -5092,6 +5206,9 @@ test "software cpu route decision disables full mode when custom shader executio
     input.custom_shaders_active = true;
     input.cpu_shader_mode = .full;
     input.custom_shader_execution_unavailable_reason = .runtime_init_failed;
+    input.custom_shader_execution_hint_source = .vk_driver_files;
+    input.custom_shader_execution_hint_path = "/opt/swiftshader/driver.json";
+    input.custom_shader_execution_hint_readable = false;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
@@ -5100,6 +5217,15 @@ test "software cpu route decision disables full mode when custom shader executio
         @as(?cpu_renderer.RuntimeCapabilityUnavailableReason, .runtime_init_failed),
         decision.custom_shader_unavailable_reason,
     );
+    try std.testing.expectEqual(
+        @as(?cpu_renderer.VulkanDriverHintSource, .vk_driver_files),
+        decision.custom_shader_unavailable_hint_source,
+    );
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/driver.json",
+        decision.custom_shader_unavailable_hint_path.?,
+    );
+    try std.testing.expect(!decision.custom_shader_unavailable_hint_readable);
 }
 
 test "software cpu route decision full mode still respects transport gate" {
@@ -5210,6 +5336,9 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
         snapshot.cpu_shader_backend,
     );
     try std.testing.expectEqualStrings("timeout-budget-zero", snapshot.shader_capability_reason);
+    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_source);
+    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_path);
+    try std.testing.expect(!snapshot.shader_capability_hint_readable);
 }
 
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
@@ -5237,6 +5366,9 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
         snapshot.cpu_shader_backend,
     );
     try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_reason);
+    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_source);
+    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_path);
+    try std.testing.expect(!snapshot.shader_capability_hint_readable);
 }
 
 test "shader capability reason derives from cpu runtime capability reason" {
@@ -5261,4 +5393,40 @@ test "shader capability reason derives from cpu runtime capability reason" {
             .backend_unavailable,
         ),
     );
+    try std.testing.expectEqualStrings(
+        "vk_driver_files",
+        shaderCapabilityHintSourceForDisableReason(
+            .custom_shaders_unsupported,
+            .vk_driver_files,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "none",
+        shaderCapabilityHintSourceForDisableReason(
+            .custom_shaders_unsupported,
+            null,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "/opt/swiftshader/icd.json",
+        shaderCapabilityHintPathForDisableReason(
+            .custom_shaders_unsupported,
+            "/opt/swiftshader/icd.json",
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "none",
+        shaderCapabilityHintPathForDisableReason(
+            .custom_shaders_unsupported,
+            null,
+        ),
+    );
+    try std.testing.expect(shaderCapabilityHintReadableForDisableReason(
+        .custom_shaders_unsupported,
+        true,
+    ));
+    try std.testing.expect(!shaderCapabilityHintReadableForDisableReason(
+        .transport_native,
+        true,
+    ));
 }

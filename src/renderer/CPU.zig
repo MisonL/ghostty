@@ -72,15 +72,37 @@ pub fn runtimeCapabilityStatus(capability: RuntimeCapability) RuntimeCapabilityS
     };
 }
 
-fn customShaderExecutionCapabilityStatus() RuntimeCapabilityStatus {
+pub fn customShaderExecutionProbe() CustomShaderExecutionProbe {
+    const timeout_ms = runtimeCustomShaderTimeoutMs();
     if (!@hasDecl(build_config, "software_renderer_cpu_shader_backend")) {
-        return .{ .unavailable = .backend_unavailable };
+        return .{
+            .status = .{ .unavailable = .backend_unavailable },
+            .backend = .off,
+            .timeout_ms = timeout_ms,
+        };
     }
 
-    return customShaderExecutionCapabilityStatusForBackendProbe(
-        build_config.software_renderer_cpu_shader_backend,
-        vulkanSwiftshaderProbe(),
-    );
+    const backend = build_config.software_renderer_cpu_shader_backend;
+    const probe: VulkanSwiftshaderProbe = switch (backend) {
+        .off => .{},
+        .vulkan_swiftshader => vulkanSwiftshaderProbe(),
+    };
+    return .{
+        .status = customShaderExecutionCapabilityStatusForBackendProbe(
+            backend,
+            timeout_ms,
+            probe,
+        ),
+        .backend = backend,
+        .timeout_ms = timeout_ms,
+        .vulkan_driver_hint_source = probe.hint_source,
+        .vulkan_driver_hint_path = probe.candidate_path,
+        .vulkan_driver_hint_readable = probe.candidate_readable,
+    };
+}
+
+fn customShaderExecutionCapabilityStatus() RuntimeCapabilityStatus {
+    return customShaderExecutionProbe().status;
 }
 
 const VulkanDriverEnvHints = struct {
@@ -89,9 +111,30 @@ const VulkanDriverEnvHints = struct {
     vk_add_driver_files: ?[]const u8 = null,
 };
 
+pub const VulkanDriverHintSource = enum {
+    vk_driver_files,
+    vk_icd_filenames,
+    vk_add_driver_files,
+};
+
+pub const CustomShaderExecutionProbe = struct {
+    status: RuntimeCapabilityStatus,
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    timeout_ms: u32,
+    vulkan_driver_hint_source: ?VulkanDriverHintSource = null,
+    vulkan_driver_hint_path: ?[]const u8 = null,
+    vulkan_driver_hint_readable: bool = false,
+};
+
 const VulkanSwiftshaderProbe = struct {
+    hint_source: ?VulkanDriverHintSource = null,
     candidate_path: ?[]const u8 = null,
     candidate_readable: bool = false,
+};
+
+const VulkanSwiftshaderDriverHint = struct {
+    source: VulkanDriverHintSource,
+    path: []const u8,
 };
 
 const CustomShaderExecutorInitError = error{
@@ -164,8 +207,16 @@ const CustomShaderExecutor = union(enum) {
     }
 };
 
+fn runtimeCustomShaderTimeoutMs() u32 {
+    return if (@hasDecl(build_config, "software_renderer_cpu_shader_timeout_ms"))
+        build_config.software_renderer_cpu_shader_timeout_ms
+    else
+        16;
+}
+
 fn customShaderExecutionCapabilityStatusForBackendProbe(
     backend: build_config.SoftwareRendererCpuShaderBackend,
+    timeout_ms: u32,
     probe: VulkanSwiftshaderProbe,
 ) RuntimeCapabilityStatus {
     if (backend == .off) {
@@ -183,10 +234,6 @@ fn customShaderExecutionCapabilityStatusForBackendProbe(
 
     // Compile stage currently always fails, but keep execution mapping wired
     // so we can enable it incrementally without changing decision plumbing.
-    const timeout_ms: u32 = if (@hasDecl(build_config, "software_renderer_cpu_shader_timeout_ms"))
-        build_config.software_renderer_cpu_shader_timeout_ms
-    else
-        16;
     executor.executeCustomShader(timeout_ms) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
     };
@@ -233,24 +280,44 @@ fn vulkanSwiftshaderProbeFromEnvHints(
     hints: VulkanDriverEnvHints,
     comptime path_readable_fn: fn ([]const u8) bool,
 ) VulkanSwiftshaderProbe {
-    const candidate = vulkanSwiftshaderDriverPathFromEnvHints(hints);
+    const hint = vulkanSwiftshaderDriverHintFromEnvHints(hints);
+    const candidate = if (hint) |driver_hint| driver_hint.path else null;
     return .{
+        .hint_source = if (hint) |driver_hint| driver_hint.source else null,
         .candidate_path = candidate,
         .candidate_readable = if (candidate) |path| path_readable_fn(path) else false,
     };
 }
 
 fn vulkanSwiftshaderDriverPathFromEnvHints(hints: VulkanDriverEnvHints) ?[]const u8 {
+    if (vulkanSwiftshaderDriverHintFromEnvHints(hints)) |hint| {
+        return hint.path;
+    }
+    return null;
+}
+
+fn vulkanSwiftshaderDriverHintFromEnvHints(
+    hints: VulkanDriverEnvHints,
+) ?VulkanSwiftshaderDriverHint {
     // Match Vulkan loader override precedence: VK_DRIVER_FILES >
     // VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES.
     if (hints.vk_driver_files) |value| {
-        if (extractSwiftshaderPath(value)) |path| return path;
+        if (extractSwiftshaderPath(value)) |path| return .{
+            .source = .vk_driver_files,
+            .path = path,
+        };
     }
     if (hints.vk_icd_filenames) |value| {
-        if (extractSwiftshaderPath(value)) |path| return path;
+        if (extractSwiftshaderPath(value)) |path| return .{
+            .source = .vk_icd_filenames,
+            .path = path,
+        };
     }
     if (hints.vk_add_driver_files) |value| {
-        if (extractSwiftshaderPath(value)) |path| return path;
+        if (extractSwiftshaderPath(value)) |path| return .{
+            .source = .vk_add_driver_files,
+            .path = path,
+        };
     }
     return null;
 }
@@ -2332,6 +2399,7 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
     ))
         customShaderExecutionCapabilityStatusForBackendProbe(
             build_config.software_renderer_cpu_shader_backend,
+            runtimeCustomShaderTimeoutMs(),
             vulkanSwiftshaderProbe(),
         )
     else
@@ -2356,6 +2424,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
         RuntimeCapabilityStatus{ .unavailable = .backend_disabled },
         customShaderExecutionCapabilityStatusForBackendProbe(
             .off,
+            runtimeCustomShaderTimeoutMs(),
             .{},
         ),
     );
@@ -2363,6 +2432,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
         RuntimeCapabilityStatus{ .unavailable = .backend_unavailable },
         customShaderExecutionCapabilityStatusForBackendProbe(
             .vulkan_swiftshader,
+            runtimeCustomShaderTimeoutMs(),
             .{},
         ),
     );
@@ -2370,6 +2440,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
         RuntimeCapabilityStatus{ .unavailable = .runtime_init_failed },
         customShaderExecutionCapabilityStatusForBackendProbe(
             .vulkan_swiftshader,
+            runtimeCustomShaderTimeoutMs(),
             .{
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = false,
@@ -2380,6 +2451,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe maps staged reasons" 
         RuntimeCapabilityStatus{ .unavailable = .pipeline_compile_failed },
         customShaderExecutionCapabilityStatusForBackendProbe(
             .vulkan_swiftshader,
+            runtimeCustomShaderTimeoutMs(),
             .{
                 .candidate_path = "/opt/swiftshader/icd.json",
                 .candidate_readable = true,
@@ -2447,6 +2519,43 @@ test "vulkanSwiftshaderDriverPathFromEnvHints follows loader precedence" {
     );
 }
 
+test "vulkanSwiftshaderDriverHintFromEnvHints tracks source precedence" {
+    try std.testing.expectEqualDeep(
+        VulkanSwiftshaderDriverHint{
+            .source = .vk_driver_files,
+            .path = "/opt/swiftshader/driver.json",
+        },
+        vulkanSwiftshaderDriverHintFromEnvHints(.{
+            .vk_driver_files = "/opt/swiftshader/driver.json",
+            .vk_icd_filenames = "/opt/swiftshader/icd.json",
+            .vk_add_driver_files = "/opt/swiftshader/add.json",
+        }).?,
+    );
+
+    try std.testing.expectEqualDeep(
+        VulkanSwiftshaderDriverHint{
+            .source = .vk_icd_filenames,
+            .path = "/opt/swiftshader/icd.json",
+        },
+        vulkanSwiftshaderDriverHintFromEnvHints(.{
+            .vk_driver_files = "/opt/other/driver.json",
+            .vk_icd_filenames = "/opt/swiftshader/icd.json",
+        }).?,
+    );
+
+    try std.testing.expectEqualDeep(
+        VulkanSwiftshaderDriverHint{
+            .source = .vk_add_driver_files,
+            .path = "/opt/swiftshader/add.json",
+        },
+        vulkanSwiftshaderDriverHintFromEnvHints(.{
+            .vk_driver_files = "/opt/other/driver.json",
+            .vk_icd_filenames = "/opt/other/icd.json",
+            .vk_add_driver_files = "/opt/swiftshader/add.json",
+        }).?,
+    );
+}
+
 test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
     const ReadableAlways = struct {
         fn fn_(path: []const u8) bool {
@@ -2465,12 +2574,20 @@ test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
         .{ .vk_icd_filenames = "/opt/swiftshader/icd.json" },
         ReadableAlways.fn_,
     );
+    try std.testing.expectEqual(
+        @as(?VulkanDriverHintSource, .vk_icd_filenames),
+        readable.hint_source,
+    );
     try std.testing.expectEqualStrings("/opt/swiftshader/icd.json", readable.candidate_path.?);
     try std.testing.expect(readable.candidate_readable);
 
     const unreadable = vulkanSwiftshaderProbeFromEnvHints(
         .{ .vk_icd_filenames = "/opt/swiftshader/icd.json" },
         ReadableNever.fn_,
+    );
+    try std.testing.expectEqual(
+        @as(?VulkanDriverHintSource, .vk_icd_filenames),
+        unreadable.hint_source,
     );
     try std.testing.expectEqualStrings("/opt/swiftshader/icd.json", unreadable.candidate_path.?);
     try std.testing.expect(!unreadable.candidate_readable);
@@ -2479,6 +2596,7 @@ test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
         .{ .vk_icd_filenames = "/opt/vendor/intel_icd.json" },
         ReadableAlways.fn_,
     );
+    try std.testing.expect(missing.hint_source == null);
     try std.testing.expect(missing.candidate_path == null);
     try std.testing.expect(!missing.candidate_readable);
 }
