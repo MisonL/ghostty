@@ -241,7 +241,10 @@ const CpuRouteDiagnosticsState = struct {
     }
 
     fn recordRouteDecision(self: *CpuRouteDiagnosticsState, decision: SoftwareCpuRouteDecision) void {
-        if (decision.enabled) return;
+        if (decision.enabled) {
+            self.last_fallback_reason = null;
+            return;
+        }
         const reason = decision.reason orelse return;
 
         self.last_fallback_reason = reason;
@@ -5585,10 +5588,7 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
-    try std.testing.expectEqual(
-        SoftwareCpuRouteDisableReason.custom_shaders_safe_timeout_invalid,
-        snapshot.last_fallback_reason.?,
-    );
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expect(snapshot.shader_capability_observed);
     try std.testing.expect(!snapshot.shader_capability_available);
     try std.testing.expect(snapshot.shader_minimal_runtime_enabled);

@@ -692,17 +692,21 @@ fi
 if [[ "$inject_fake_swiftshader_hint" == "true" ]]; then
   fake_swiftshader_hint_dir="$(mktemp -d -t ghostty-swiftshader-hint.XXXXXX)"
   fake_swiftshader_hint_path="$fake_swiftshader_hint_dir/fake-swiftshader-driver.json"
-  cat >"$fake_swiftshader_hint_path" <<'JSON'
+  fake_swiftshader_library_path="/tmp/libvk_swiftshader.so"
+  if [[ "$host_os" == "macos" ]]; then
+    fake_swiftshader_library_path="/tmp/libvk_swiftshader.dylib"
+  fi
+  cat >"$fake_swiftshader_hint_path" <<JSON
 {
   "file_format_version": "1.0.0",
   "ICD": {
-    "library_path": "/tmp/libvk_swiftshader.so",
+    "library_path": "$fake_swiftshader_library_path",
     "api_version": "1.1.0"
   }
 }
 JSON
   export VK_DRIVER_FILES="$fake_swiftshader_hint_path"
-  echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path"
+  echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path library=$fake_swiftshader_library_path"
 fi
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
@@ -742,7 +746,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         options_file="$candidate"
         break
       fi
-    done < <(find "$cache_dir/c" -type f -name options.zig 2>/dev/null || true)
+    done < <(find "$cache_dir" -type f -name options.zig 2>/dev/null || true)
 
     if [[ -z "$options_file" ]]; then
       options_candidates_count="${#options_candidates[@]}"
@@ -755,7 +759,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         "environment options-zig-missing" \
         "verify Zig cache layout and build options export symbols" \
         "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-shader-enable-minimal-runtime=${expect_cpu_shader_enable_minimal_runtime:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
-        "cache-root=$cache_dir/c options-candidates=$options_candidates_count" \
+        "cache-root=$cache_dir options-candidates=$options_candidates_count" \
         "options-candidates-preview=$options_preview"
     fi
 
@@ -862,7 +866,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" ]]; then
-    capability_line="$(grep -E 'software renderer cpu shader capability status=' "$log_file" | tail -n 1 || true)"
+    capability_line="$(grep -E 'software renderer cpu shader capability .*status=' "$log_file" | tail -n 1 || true)"
     if [[ -z "$capability_line" ]]; then
       report_failure \
         "assertion runtime-log-missing" \
