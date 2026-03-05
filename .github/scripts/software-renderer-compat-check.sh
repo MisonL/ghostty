@@ -45,6 +45,8 @@ Notes:
   auto-normalized to <major>.<minor>.<patch> for Zig.
   cpu-shader-mode=safe/full currently falls back to platform route while custom
   shaders are active unless CPU custom-shader execution capability is available.
+  vulkan_swiftshader loader hint precedence:
+  VK_DRIVER_FILES > VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES.
   In safe mode, timeout must be > 0.
 EOF
 }

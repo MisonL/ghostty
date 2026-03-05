@@ -31,7 +31,7 @@ const software_renderer_cpu_mvp_help =
 const software_renderer_cpu_shader_mode_help =
     "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=use CPU route only when custom-shader execution capability is available and timeout budget is > 0, otherwise fallback to platform route; full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route.";
 const software_renderer_cpu_shader_backend_help =
-    "CPU software renderer custom-shader execution backend: off|vulkan_swiftshader. off=disable CPU custom-shader execution and force platform-route fallback while shaders are active; vulkan_swiftshader=enable SwiftShader Vulkan execution when available, otherwise fallback to platform route.";
+    "CPU software renderer custom-shader execution backend: off|vulkan_swiftshader. off=disable CPU custom-shader execution and force platform-route fallback while shaders are active; vulkan_swiftshader=enable SwiftShader Vulkan execution when available (loader env precedence: VK_DRIVER_FILES > VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES), otherwise fallback to platform route.";
 const software_renderer_cpu_shader_timeout_help =
     "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness. Default: 16.";
 const software_renderer_cpu_frame_damage_mode_help =
@@ -958,6 +958,13 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
             u8,
             software_renderer_cpu_shader_backend_help,
             "SwiftShader Vulkan execution",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_shader_backend_help,
+            "VK_DRIVER_FILES > VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES",
         ) != null,
     );
     try std.testing.expect(

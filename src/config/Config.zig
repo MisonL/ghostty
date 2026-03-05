@@ -2025,6 +2025,8 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-backend=off|vulkan_swiftshader`:
 ///   selects the CPU custom-shader execution backend; `off` disables CPU shader
 ///   execution and always falls back while shaders are active.
+///   For `vulkan_swiftshader`, Vulkan loader hint precedence is:
+///   `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) must be > 0 in `safe` mode; timeout 0 forces platform fallback.
@@ -3077,6 +3079,8 @@ keybind: Keybinds = .{},
 ///
 /// * `-Dsoftware-renderer-cpu-shader-mode=off|safe|full`
 /// * `-Dsoftware-renderer-cpu-shader-backend=off|vulkan_swiftshader`
+///   (`vulkan_swiftshader` loader hint precedence:
+///   `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`)
 /// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
 ///
 /// Current implementation status:
