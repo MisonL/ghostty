@@ -241,9 +241,16 @@ const CpuRouteDiagnosticsState = struct {
         self.last_shader_capability_hint_readable = input.custom_shader_execution_hint_readable;
     }
 
-    fn recordRouteDecision(self: *CpuRouteDiagnosticsState, decision: SoftwareCpuRouteDecision) void {
+    fn recordRouteDecision(
+        self: *CpuRouteDiagnosticsState,
+        input: SoftwareCpuRouteDecisionInput,
+        decision: SoftwareCpuRouteDecision,
+    ) void {
         if (decision.enabled) {
             self.last_fallback_reason = null;
+            if (input.custom_shaders_active) {
+                self.custom_shader_bypass_count +%= 1;
+            }
             return;
         }
         const reason = decision.reason orelse return;
@@ -259,10 +266,6 @@ const CpuRouteDiagnosticsState = struct {
 
     fn recordPublishRetry(self: *CpuRouteDiagnosticsState) void {
         self.publish_retry_count +%= 1;
-    }
-
-    fn recordCustomShaderBypass(self: *CpuRouteDiagnosticsState) void {
-        self.custom_shader_bypass_count +%= 1;
     }
 
     fn recordCpuFramePublished(self: *CpuRouteDiagnosticsState, duration_ns: u64) void {
@@ -1943,11 +1946,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const input = self.softwareCpuRouteDecisionInput();
             self.cpu_route_diagnostics.recordCapabilityObservation(input);
             const decision = decideSoftwareCpuRoute(input);
-            self.cpu_route_diagnostics.recordRouteDecision(decision);
+            self.cpu_route_diagnostics.recordRouteDecision(input, decision);
             if (!decision.enabled) {
                 self.maybeLogSoftwareCpuRouteDisabled(decision, input);
             }
 
+            return decision.enabled;
+        }
+
+        fn wouldUseSoftwareCpuFramePath(self: *Self) bool {
+            const input = self.softwareCpuRouteDecisionInput();
+            const decision = decideSoftwareCpuRoute(input);
             return decision.enabled;
         }
 
@@ -2896,7 +2905,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // kitty state on every frame because any cell change can move
                 // an image.
                 const cpu_kitty_pixels_missing =
-                    self.shouldUseSoftwareCpuFramePath() and
+                    self.wouldUseSoftwareCpuFramePath() and
                     self.images.kittyNeedsCpuPixels();
                 if (self.images.kittyRequiresUpdate(state.terminal) or cpu_kitty_pixels_missing) {
                     // We need to grab the draw mutex since this updates
@@ -5579,34 +5588,36 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     capability_input.custom_shader_execution_hint_readable = true;
     capability_input.custom_shader_probe_minimal_runtime_enabled = true;
     diagnostics.recordCapabilityObservation(capability_input);
-    diagnostics.recordRouteDecision(.{
+    var route_input_custom = softwareCpuRouteDecisionInputDefaults();
+    route_input_custom.custom_shaders_active = true;
+    diagnostics.recordRouteDecision(route_input_custom, .{
         .enabled = false,
         .reason = .custom_shaders_mode_off,
     });
-    diagnostics.recordRouteDecision(.{
+    diagnostics.recordRouteDecision(softwareCpuRouteDecisionInputDefaults(), .{
         .enabled = true,
         .reason = null,
     });
-    diagnostics.recordRouteDecision(.{
+    diagnostics.recordRouteDecision(route_input_custom, .{
         .enabled = false,
         .reason = .runtime_publishing_disabled,
     });
-    diagnostics.recordRouteDecision(.{
+    diagnostics.recordRouteDecision(route_input_custom, .{
         .enabled = false,
         .reason = .custom_shaders_unsupported,
     });
-    diagnostics.recordRouteDecision(.{
+    diagnostics.recordRouteDecision(route_input_custom, .{
         .enabled = false,
         .reason = .custom_shaders_safe_timeout_invalid,
     });
-    diagnostics.recordRouteDecision(.{
+    diagnostics.recordRouteDecision(route_input_custom, .{
         .enabled = true,
         .reason = null,
     });
 
     const snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 3), snapshot.custom_shader_fallback_count);
-    try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_bypass_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
@@ -5626,6 +5637,37 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expect(snapshot.shader_capability_hint_readable);
 }
 
+test "cpu route diagnostics increments custom shader bypass only for enabled custom route" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+
+    const no_custom_input = softwareCpuRouteDecisionInputDefaults();
+    const no_custom_decision = decideSoftwareCpuRoute(no_custom_input);
+    try std.testing.expect(no_custom_decision.enabled);
+
+    var custom_disabled_input = softwareCpuRouteDecisionInputDefaults();
+    custom_disabled_input.custom_shaders_active = true;
+    custom_disabled_input.cpu_shader_mode = .full;
+    custom_disabled_input.custom_shader_execution_capability_observed = true;
+    custom_disabled_input.custom_shader_execution_available = true;
+    custom_disabled_input.transport_mode_native = true;
+    const custom_disabled_decision = decideSoftwareCpuRoute(custom_disabled_input);
+    try std.testing.expect(!custom_disabled_decision.enabled);
+
+    var custom_enabled_input = custom_disabled_input;
+    custom_enabled_input.transport_mode_native = false;
+    const custom_enabled_decision = decideSoftwareCpuRoute(custom_enabled_input);
+    try std.testing.expect(custom_enabled_decision.enabled);
+
+    diagnostics.recordRouteDecision(no_custom_input, no_custom_decision);
+    diagnostics.recordRouteDecision(custom_disabled_input, custom_disabled_decision);
+    diagnostics.recordRouteDecision(custom_enabled_input, custom_enabled_decision);
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.custom_shader_bypass_count);
+    try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
+}
+
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
     var diagnostics: CpuRouteDiagnosticsState = .{};
     var capability_input = softwareCpuRouteDecisionInputDefaults();
@@ -5634,8 +5676,6 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     capability_input.custom_shader_execution_unavailable_reason = null;
     capability_input.custom_shader_probe_minimal_runtime_enabled = false;
     diagnostics.recordCapabilityObservation(capability_input);
-    diagnostics.recordCustomShaderBypass();
-    diagnostics.recordCustomShaderBypass();
     diagnostics.recordPublishRetry();
     diagnostics.recordPublishRetry();
     diagnostics.recordDamageStats(3, 1);
@@ -5645,7 +5685,7 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
 
     const snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_fallback_count);
-    try std.testing.expectEqual(@as(u64, 2), snapshot.custom_shader_bypass_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.publish_retry_count);
     try std.testing.expectEqual(@as(u64, 3), snapshot.cpu_damage_rect_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_damage_rect_overflow_count);

@@ -92,13 +92,24 @@ pub fn customShaderExecutionProbe() CustomShaderExecutionProbe {
         .off => .{},
         .vulkan_swiftshader => vulkanSwiftshaderProbe(),
     };
-    return .{
-        .status = customShaderExecutionCapabilityStatusForBackendProbe(
+    const status_cache_key = capabilityProbeStatusCacheKey(
+        backend,
+        timeout_ms,
+        probe,
+        enable_minimal_runtime,
+    );
+    const status = loadCapabilityProbeStatusCache(status_cache_key) orelse status: {
+        const computed = customShaderExecutionCapabilityStatusForBackendProbe(
             backend,
             timeout_ms,
             probe,
             enable_minimal_runtime,
-        ),
+        );
+        storeCapabilityProbeStatusCache(status_cache_key, computed);
+        break :status computed;
+    };
+    return .{
+        .status = status,
         .backend = backend,
         .timeout_ms = timeout_ms,
         .enable_minimal_runtime = enable_minimal_runtime,
@@ -217,8 +228,57 @@ const CapabilityProbeCompileCache = struct {
     }
 };
 
+const CapabilityProbeStatusCacheKey = struct {
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    timeout_ms: u32,
+    enable_minimal_runtime: bool,
+    hint_source: ?VulkanDriverHintSource,
+    candidate_readable: bool,
+    candidate_path_len: usize,
+    candidate_path_hash: u64,
+};
+
+const CapabilityProbeStatusCache = struct {
+    valid: bool = false,
+    key: CapabilityProbeStatusCacheKey = .{
+        .backend = .off,
+        .timeout_ms = 0,
+        .enable_minimal_runtime = false,
+        .hint_source = null,
+        .candidate_readable = false,
+        .candidate_path_len = 0,
+        .candidate_path_hash = 0,
+    },
+    status: RuntimeCapabilityStatus = .{ .unavailable = .backend_unavailable },
+
+    fn clear(self: *CapabilityProbeStatusCache) void {
+        self.* = .{};
+    }
+
+    fn load(
+        self: *const CapabilityProbeStatusCache,
+        key: CapabilityProbeStatusCacheKey,
+    ) ?RuntimeCapabilityStatus {
+        if (!self.valid) return null;
+        if (!std.meta.eql(self.key, key)) return null;
+        return self.status;
+    }
+
+    fn store(
+        self: *CapabilityProbeStatusCache,
+        key: CapabilityProbeStatusCacheKey,
+        status: RuntimeCapabilityStatus,
+    ) void {
+        self.valid = true;
+        self.key = key;
+        self.status = status;
+    }
+};
+
 var capability_probe_compile_cache: CapabilityProbeCompileCache = .{};
 var capability_probe_compile_cache_mutex: std.Thread.Mutex = .{};
+var capability_probe_status_cache: CapabilityProbeStatusCache = .{};
+var capability_probe_status_cache_mutex: std.Thread.Mutex = .{};
 
 const VulkanSwiftshaderExecutor = struct {
     candidate_path: []const u8,
@@ -424,10 +484,52 @@ fn runtimeCustomShaderEnableMinimalRuntime() bool {
         false;
 }
 
+fn capabilityProbeStatusCacheKey(
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    timeout_ms: u32,
+    probe: VulkanSwiftshaderProbe,
+    enable_minimal_runtime: bool,
+) CapabilityProbeStatusCacheKey {
+    const candidate_path = probe.candidate_path orelse "";
+    return .{
+        .backend = backend,
+        .timeout_ms = timeout_ms,
+        .enable_minimal_runtime = enable_minimal_runtime,
+        .hint_source = probe.hint_source,
+        .candidate_readable = probe.candidate_readable,
+        .candidate_path_len = candidate_path.len,
+        .candidate_path_hash = customShaderSourceHash(candidate_path),
+    };
+}
+
+fn clearCapabilityProbeStatusCache() void {
+    capability_probe_status_cache_mutex.lock();
+    defer capability_probe_status_cache_mutex.unlock();
+    capability_probe_status_cache.clear();
+}
+
+fn loadCapabilityProbeStatusCache(
+    key: CapabilityProbeStatusCacheKey,
+) ?RuntimeCapabilityStatus {
+    capability_probe_status_cache_mutex.lock();
+    defer capability_probe_status_cache_mutex.unlock();
+    return capability_probe_status_cache.load(key);
+}
+
+fn storeCapabilityProbeStatusCache(
+    key: CapabilityProbeStatusCacheKey,
+    status: RuntimeCapabilityStatus,
+) void {
+    capability_probe_status_cache_mutex.lock();
+    defer capability_probe_status_cache_mutex.unlock();
+    capability_probe_status_cache.store(key, status);
+}
+
 fn clearCapabilityProbeCompileCache() void {
     capability_probe_compile_cache_mutex.lock();
     defer capability_probe_compile_cache_mutex.unlock();
     capability_probe_compile_cache.clear();
+    clearCapabilityProbeStatusCache();
 }
 
 fn loadCapabilityProbeCompiledShader(
@@ -445,6 +547,7 @@ fn storeCapabilityProbeCompiledShader(
     capability_probe_compile_cache_mutex.lock();
     defer capability_probe_compile_cache_mutex.unlock();
     capability_probe_compile_cache.store(backend, compiled_shader);
+    clearCapabilityProbeStatusCache();
 }
 
 fn customShaderExecutionCapabilityStatusForBackendProbe(
@@ -509,25 +612,36 @@ fn mapCustomShaderExecutorExecuteError(err: CustomShaderExecutorExecuteError) Ru
 }
 
 fn vulkanSwiftshaderProbe() VulkanSwiftshaderProbe {
-    return switch (builtin.os.tag) {
-        .windows => .{},
-        else => vulkanSwiftshaderProbeFromEnvHints(
-            .{
-                .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),
-                .vk_icd_filenames = std.posix.getenv("VK_ICD_FILENAMES"),
-                .vk_add_driver_files = std.posix.getenv("VK_ADD_DRIVER_FILES"),
-            },
-            pathLooksReadable,
-        ),
-    };
+    return vulkanSwiftshaderProbeFromEnvHintsForOs(
+        .{
+            .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),
+            .vk_icd_filenames = std.posix.getenv("VK_ICD_FILENAMES"),
+            .vk_add_driver_files = std.posix.getenv("VK_ADD_DRIVER_FILES"),
+        },
+        builtin.os.tag,
+        pathLooksReadable,
+    );
 }
 
 fn vulkanSwiftshaderProbeFromEnvHints(
     hints: VulkanDriverEnvHints,
     comptime path_readable_fn: fn ([]const u8) bool,
 ) VulkanSwiftshaderProbe {
-    const hint = vulkanSwiftshaderDriverProbeHintFromEnvHints(
+    return vulkanSwiftshaderProbeFromEnvHintsForOs(
         hints,
+        builtin.os.tag,
+        path_readable_fn,
+    );
+}
+
+fn vulkanSwiftshaderProbeFromEnvHintsForOs(
+    hints: VulkanDriverEnvHints,
+    os_tag: std.Target.Os.Tag,
+    comptime path_readable_fn: fn ([]const u8) bool,
+) VulkanSwiftshaderProbe {
+    const hint = vulkanSwiftshaderDriverProbeHintFromEnvHintsForOs(
+        hints,
+        os_tag,
         path_readable_fn,
     );
     return .{
@@ -538,7 +652,14 @@ fn vulkanSwiftshaderProbeFromEnvHints(
 }
 
 fn vulkanSwiftshaderDriverPathFromEnvHints(hints: VulkanDriverEnvHints) ?[]const u8 {
-    if (vulkanSwiftshaderDriverHintFromEnvHints(hints)) |hint| {
+    return vulkanSwiftshaderDriverPathFromEnvHintsForOs(hints, builtin.os.tag);
+}
+
+fn vulkanSwiftshaderDriverPathFromEnvHintsForOs(
+    hints: VulkanDriverEnvHints,
+    os_tag: std.Target.Os.Tag,
+) ?[]const u8 {
+    if (vulkanSwiftshaderDriverHintFromEnvHintsForOs(hints, os_tag)) |hint| {
         return hint.path;
     }
     return null;
@@ -547,22 +668,29 @@ fn vulkanSwiftshaderDriverPathFromEnvHints(hints: VulkanDriverEnvHints) ?[]const
 fn vulkanSwiftshaderDriverHintFromEnvHints(
     hints: VulkanDriverEnvHints,
 ) ?VulkanSwiftshaderDriverHint {
+    return vulkanSwiftshaderDriverHintFromEnvHintsForOs(hints, builtin.os.tag);
+}
+
+fn vulkanSwiftshaderDriverHintFromEnvHintsForOs(
+    hints: VulkanDriverEnvHints,
+    os_tag: std.Target.Os.Tag,
+) ?VulkanSwiftshaderDriverHint {
     // Match Vulkan loader override precedence: VK_DRIVER_FILES >
     // VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES.
     if (hints.vk_driver_files) |value| {
-        if (extractSwiftshaderPath(value)) |path| return .{
+        if (extractSwiftshaderPathForOs(value, os_tag)) |path| return .{
             .source = .vk_driver_files,
             .path = path,
         };
     }
     if (hints.vk_icd_filenames) |value| {
-        if (extractSwiftshaderPath(value)) |path| return .{
+        if (extractSwiftshaderPathForOs(value, os_tag)) |path| return .{
             .source = .vk_icd_filenames,
             .path = path,
         };
     }
     if (hints.vk_add_driver_files) |value| {
-        if (extractSwiftshaderPath(value)) |path| return .{
+        if (extractSwiftshaderPathForOs(value, os_tag)) |path| return .{
             .source = .vk_add_driver_files,
             .path = path,
         };
@@ -574,24 +702,36 @@ fn vulkanSwiftshaderDriverProbeHintFromEnvHints(
     hints: VulkanDriverEnvHints,
     comptime path_readable_fn: fn ([]const u8) bool,
 ) ?VulkanSwiftshaderDriverProbeHint {
+    return vulkanSwiftshaderDriverProbeHintFromEnvHintsForOs(
+        hints,
+        builtin.os.tag,
+        path_readable_fn,
+    );
+}
+
+fn vulkanSwiftshaderDriverProbeHintFromEnvHintsForOs(
+    hints: VulkanDriverEnvHints,
+    os_tag: std.Target.Os.Tag,
+    comptime path_readable_fn: fn ([]const u8) bool,
+) ?VulkanSwiftshaderDriverProbeHint {
     // Keep Vulkan loader precedence while preferring an actually readable
     // manifest candidate inside each override value.
     if (hints.vk_driver_files) |value| {
-        if (extractSwiftshaderPathCandidate(value, path_readable_fn)) |candidate| return .{
+        if (extractSwiftshaderPathCandidateForOs(value, os_tag, path_readable_fn)) |candidate| return .{
             .source = .vk_driver_files,
             .path = candidate.path,
             .readable = candidate.readable,
         };
     }
     if (hints.vk_icd_filenames) |value| {
-        if (extractSwiftshaderPathCandidate(value, path_readable_fn)) |candidate| return .{
+        if (extractSwiftshaderPathCandidateForOs(value, os_tag, path_readable_fn)) |candidate| return .{
             .source = .vk_icd_filenames,
             .path = candidate.path,
             .readable = candidate.readable,
         };
     }
     if (hints.vk_add_driver_files) |value| {
-        if (extractSwiftshaderPathCandidate(value, path_readable_fn)) |candidate| return .{
+        if (extractSwiftshaderPathCandidateForOs(value, os_tag, path_readable_fn)) |candidate| return .{
             .source = .vk_add_driver_files,
             .path = candidate.path,
             .readable = candidate.readable,
@@ -604,11 +744,23 @@ fn extractSwiftshaderPathCandidate(
     value: []const u8,
     comptime path_readable_fn: fn ([]const u8) bool,
 ) ?SwiftshaderPathCandidate {
+    return extractSwiftshaderPathCandidateForOs(
+        value,
+        builtin.os.tag,
+        path_readable_fn,
+    );
+}
+
+fn extractSwiftshaderPathCandidateForOs(
+    value: []const u8,
+    os_tag: std.Target.Os.Tag,
+    comptime path_readable_fn: fn ([]const u8) bool,
+) ?SwiftshaderPathCandidate {
     var fallback: ?SwiftshaderPathCandidate = null;
     var it = std.mem.splitScalar(
         u8,
         value,
-        if (builtin.os.tag == .windows) ';' else ':',
+        vulkanEnvListSeparator(os_tag),
     );
     while (it.next()) |entry| {
         const trimmed = trimEnvPathEntry(entry);
@@ -626,10 +778,17 @@ fn extractSwiftshaderPathCandidate(
 }
 
 fn extractSwiftshaderPath(value: []const u8) ?[]const u8 {
+    return extractSwiftshaderPathForOs(value, builtin.os.tag);
+}
+
+fn extractSwiftshaderPathForOs(
+    value: []const u8,
+    os_tag: std.Target.Os.Tag,
+) ?[]const u8 {
     var it = std.mem.splitScalar(
         u8,
         value,
-        if (builtin.os.tag == .windows) ';' else ':',
+        vulkanEnvListSeparator(os_tag),
     );
     while (it.next()) |entry| {
         const trimmed = trimEnvPathEntry(entry);
@@ -638,6 +797,10 @@ fn extractSwiftshaderPath(value: []const u8) ?[]const u8 {
     }
 
     return null;
+}
+
+fn vulkanEnvListSeparator(os_tag: std.Target.Os.Tag) u8 {
+    return if (os_tag == .windows) ';' else ':';
 }
 
 fn trimEnvPathEntry(value: []const u8) []const u8 {
@@ -2870,6 +3033,45 @@ test "customShaderExecutionCapabilityStatusForBackendProbe reuses cached compile
     try std.testing.expectEqualDeep(expected_with_sentinel, status);
 }
 
+test "capability status cache keys and invalidates with compile cache updates" {
+    defer clearCapabilityProbeCompileCache();
+    clearCapabilityProbeCompileCache();
+
+    const probe: VulkanSwiftshaderProbe = .{
+        .hint_source = .vk_driver_files,
+        .candidate_path = "/opt/swiftshader/icd.json",
+        .candidate_readable = true,
+    };
+    const key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        probe,
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(key) == null);
+
+    const expected_status = RuntimeCapabilityStatus{ .unavailable = .execution_timeout };
+    storeCapabilityProbeStatusCache(key, expected_status);
+    try std.testing.expectEqualDeep(
+        expected_status,
+        loadCapabilityProbeStatusCache(key).?,
+    );
+
+    const changed_timeout_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        17,
+        probe,
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_timeout_key) == null);
+
+    storeCapabilityProbeCompiledShader(.vulkan_swiftshader, .{
+        .source_len = 7,
+        .source_hash = 7,
+    });
+    try std.testing.expect(loadCapabilityProbeStatusCache(key) == null);
+}
+
 test "containsAsciiIgnoreCase matches swiftshader tokens" {
     try std.testing.expect(containsAsciiIgnoreCase(
         "/opt/swiftshader/icd.json",
@@ -2933,6 +3135,28 @@ test "vulkanSwiftshaderDriverPathFromEnvHints follows loader precedence" {
             .vk_icd_filenames = "/opt/other/icd.json",
             .vk_add_driver_files = "/opt/other/add.json",
         }) == null,
+    );
+}
+
+test "vulkanSwiftshaderDriverPathFromEnvHintsForOs handles windows delimiter and drive paths" {
+    try std.testing.expectEqualStrings(
+        "C:\\swiftshader\\vk_swiftshader_icd.json",
+        vulkanSwiftshaderDriverPathFromEnvHintsForOs(
+            .{
+                .vk_driver_files = "C:\\vendor\\intel_icd.json;C:\\swiftshader\\vk_swiftshader_icd.json",
+            },
+            .windows,
+        ).?,
+    );
+
+    try std.testing.expectEqualStrings(
+        "C:\\swiftshader\\vk_swiftshader_icd.json",
+        vulkanSwiftshaderDriverPathFromEnvHintsForOs(
+            .{
+                .vk_icd_filenames = "\"C:\\vendor\\intel_icd.json\";'C:\\swiftshader\\vk_swiftshader_icd.json'",
+            },
+            .windows,
+        ).?,
     );
 }
 
@@ -3054,6 +3278,23 @@ test "vulkanSwiftshaderProbeFromEnvHints uses readability callback" {
         prefers_manifest_suffix.candidate_path.?,
     );
     try std.testing.expect(prefers_manifest_suffix.candidate_readable);
+
+    const windows_probe = vulkanSwiftshaderProbeFromEnvHintsForOs(
+        .{
+            .vk_driver_files = "C:\\vendor\\intel_icd.json;C:\\swiftshader\\vk_swiftshader_icd.json",
+        },
+        .windows,
+        ReadableAlways.fn_,
+    );
+    try std.testing.expectEqual(
+        @as(?VulkanDriverHintSource, .vk_driver_files),
+        windows_probe.hint_source,
+    );
+    try std.testing.expectEqualStrings(
+        "C:\\swiftshader\\vk_swiftshader_icd.json",
+        windows_probe.candidate_path.?,
+    );
+    try std.testing.expect(windows_probe.candidate_readable);
 }
 
 test "customShaderExecutor tracks compiled state and maps staged errors" {
