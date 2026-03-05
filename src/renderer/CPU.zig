@@ -163,6 +163,40 @@ const CustomShaderCompileState = struct {
     source_hash: u64,
 };
 
+const CapabilityProbeCompileCache = struct {
+    valid: bool = false,
+    backend: build_config.SoftwareRendererCpuShaderBackend = .off,
+    compiled_shader: CustomShaderCompileState = .{
+        .source_len = 0,
+        .source_hash = 0,
+    },
+
+    fn clear(self: *CapabilityProbeCompileCache) void {
+        self.* = .{};
+    }
+
+    fn load(
+        self: *const CapabilityProbeCompileCache,
+        backend: build_config.SoftwareRendererCpuShaderBackend,
+    ) ?CustomShaderCompileState {
+        if (!self.valid) return null;
+        if (self.backend != backend) return null;
+        return self.compiled_shader;
+    }
+
+    fn store(
+        self: *CapabilityProbeCompileCache,
+        backend: build_config.SoftwareRendererCpuShaderBackend,
+        compiled_shader: CustomShaderCompileState,
+    ) void {
+        self.valid = true;
+        self.backend = backend;
+        self.compiled_shader = compiled_shader;
+    }
+};
+
+var capability_probe_compile_cache: CapabilityProbeCompileCache = .{};
+
 const VulkanSwiftshaderExecutor = struct {
     candidate_path: []const u8,
     compiled_shader: ?CustomShaderCompileState = null,
@@ -234,6 +268,21 @@ const CustomShaderExecutor = union(enum) {
         if (!enable_minimal_runtime) return error.DeviceLost;
         return;
     }
+
+    fn compiledShaderState(self: *const CustomShaderExecutor) ?CustomShaderCompileState {
+        return switch (self.*) {
+            .vulkan_swiftshader => |executor| executor.compiled_shader,
+        };
+    }
+
+    fn restoreCompiledShaderState(
+        self: *CustomShaderExecutor,
+        compiled_shader: CustomShaderCompileState,
+    ) void {
+        switch (self.*) {
+            .vulkan_swiftshader => |*executor| executor.compiled_shader = compiled_shader,
+        }
+    }
 };
 
 fn customShaderSourceHasCode(source: []const u8) bool {
@@ -287,9 +336,16 @@ fn customShaderExecutionCapabilityStatusForBackendProbe(
     };
     defer executor.deinit();
 
-    executor.compileCustomShader(CustomShaderExecutor.capability_probe_source) catch |err| {
-        return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
-    };
+    if (capability_probe_compile_cache.load(backend)) |compiled| {
+        executor.restoreCompiledShaderState(compiled);
+    } else {
+        executor.compileCustomShader(CustomShaderExecutor.capability_probe_source) catch |err| {
+            return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
+        };
+        if (executor.compiledShaderState()) |compiled| {
+            capability_probe_compile_cache.store(backend, compiled);
+        }
+    }
 
     executor.executeCustomShader(timeout_ms, enable_minimal_runtime) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
@@ -2568,6 +2624,61 @@ test "customShaderExecutionCapabilityStatusForBackendProbe allows controlled ava
             true,
         ),
     );
+}
+
+test "customShaderExecutionCapabilityStatusForBackendProbe reuses cached compile state for same backend" {
+    defer capability_probe_compile_cache.clear();
+    capability_probe_compile_cache.clear();
+
+    const real_compiled = CustomShaderCompileState{
+        .source_len = CustomShaderExecutor.capability_probe_source.len,
+        .source_hash = customShaderSourceHash(CustomShaderExecutor.capability_probe_source),
+    };
+    const real_floor = customShaderExecutionTimeoutFloorMs(real_compiled);
+
+    var sentinel_compiled = CustomShaderCompileState{
+        .source_len = 0,
+        .source_hash = 0,
+    };
+    var sentinel_floor = customShaderExecutionTimeoutFloorMs(sentinel_compiled);
+    if (sentinel_floor == real_floor) {
+        sentinel_compiled = .{
+            .source_len = 7,
+            .source_hash = 7,
+        };
+        sentinel_floor = customShaderExecutionTimeoutFloorMs(sentinel_compiled);
+        try std.testing.expect(sentinel_floor != real_floor);
+    }
+
+    const timeout_ms: u32 = if (sentinel_floor < real_floor)
+        sentinel_floor
+    else
+        real_floor;
+
+    const expected_with_sentinel: RuntimeCapabilityStatus = if (timeout_ms < sentinel_floor)
+        .{ .unavailable = .execution_timeout }
+    else
+        .{ .available = {} };
+
+    const expected_with_real: RuntimeCapabilityStatus = if (timeout_ms < real_floor)
+        .{ .unavailable = .execution_timeout }
+    else
+        .{ .available = {} };
+
+    try std.testing.expect(!std.meta.eql(expected_with_sentinel, expected_with_real));
+
+    capability_probe_compile_cache.store(.vulkan_swiftshader, sentinel_compiled);
+
+    const status = customShaderExecutionCapabilityStatusForBackendProbe(
+        .vulkan_swiftshader,
+        timeout_ms,
+        .{
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = true,
+        },
+        true,
+    );
+    try std.testing.expectEqualDeep(expected_with_sentinel, status);
 }
 
 test "containsAsciiIgnoreCase matches swiftshader tokens" {

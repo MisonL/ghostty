@@ -74,6 +74,13 @@ const software_renderer_cpu_damage_rect_pool_capacity: usize =
 const max_retired_cpu_frame_pools: usize = 4;
 const cpu_frame_pool_deinit_wait_ms: u64 = 25;
 const cpu_damage_row_span_vertical_overscan_divisor: u32 = 4;
+const cpu_frame_publish_warning_threshold_ms: u64 = 40;
+const cpu_frame_publish_warning_consecutive_limit: u8 = 3;
+
+const CpuFramePublishWarningState = struct {
+    consecutive_over_threshold: u8 = 0,
+    warned: bool = false,
+};
 
 fn effectiveCpuDamageRectCap(
     frame_damage_mode: cpu_renderer.FrameDamageMode,
@@ -285,37 +292,75 @@ const CpuRouteDiagnosticsState = struct {
             .shader_capability_available = self.last_shader_capability_available,
             .shader_minimal_runtime_enabled = self.last_shader_minimal_runtime_enabled,
             .cpu_shader_backend = build_config.software_renderer_cpu_shader_backend,
-            .shader_capability_reason = if (self.last_fallback_reason) |reason|
-                shaderCapabilityReasonForDisableReason(
-                    reason,
-                    self.last_shader_capability_reason,
-                )
-            else
-                "n/a",
-            .shader_capability_hint_source = if (self.last_fallback_reason) |reason|
-                shaderCapabilityHintSourceForDisableReason(
-                    reason,
-                    self.last_shader_capability_hint_source,
-                )
-            else
-                "n/a",
-            .shader_capability_hint_path = if (self.last_fallback_reason) |reason|
-                shaderCapabilityHintPathForDisableReason(
-                    reason,
-                    self.last_shader_capability_hint_path,
-                )
-            else
-                "n/a",
-            .shader_capability_hint_readable = if (self.last_fallback_reason) |reason|
-                shaderCapabilityHintReadableForDisableReason(
-                    reason,
-                    self.last_shader_capability_hint_readable,
-                )
-            else
-                false,
+            .shader_capability_reason = shaderCapabilityReasonForObservation(
+                self.last_shader_capability_observed,
+                self.last_shader_capability_available,
+                self.last_shader_capability_reason,
+            ),
+            .shader_capability_hint_source = shaderCapabilityHintSourceForObservation(
+                self.last_shader_capability_observed,
+                self.last_shader_capability_available,
+                self.last_shader_capability_hint_source,
+            ),
+            .shader_capability_hint_path = shaderCapabilityHintPathForObservation(
+                self.last_shader_capability_observed,
+                self.last_shader_capability_available,
+                self.last_shader_capability_hint_path,
+            ),
+            .shader_capability_hint_readable = shaderCapabilityHintReadableForObservation(
+                self.last_shader_capability_observed,
+                self.last_shader_capability_available,
+                self.last_shader_capability_hint_readable,
+            ),
         };
     }
 };
+
+fn shaderCapabilityReasonForObservation(
+    observed: bool,
+    available: bool,
+    custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason,
+) []const u8 {
+    if (!observed) return "n/a";
+    if (available) return "n/a";
+    return if (custom_shader_unavailable_reason) |reason|
+        @tagName(reason)
+    else
+        "unknown";
+}
+
+fn shaderCapabilityHintSourceForObservation(
+    observed: bool,
+    available: bool,
+    custom_shader_hint_source: ?cpu_renderer.VulkanDriverHintSource,
+) []const u8 {
+    if (!observed) return "n/a";
+    if (available) return "n/a";
+    return if (custom_shader_hint_source) |source|
+        @tagName(source)
+    else
+        "none";
+}
+
+fn shaderCapabilityHintPathForObservation(
+    observed: bool,
+    available: bool,
+    custom_shader_hint_path: ?[]const u8,
+) []const u8 {
+    if (!observed) return "n/a";
+    if (available) return "n/a";
+    return custom_shader_hint_path orelse "none";
+}
+
+fn shaderCapabilityHintReadableForObservation(
+    observed: bool,
+    available: bool,
+    custom_shader_hint_readable: bool,
+) bool {
+    if (!observed) return false;
+    if (available) return false;
+    return custom_shader_hint_readable;
+}
 
 fn shaderCapabilityReasonForDisableReason(
     reason: SoftwareCpuRouteDisableReason,
@@ -376,6 +421,37 @@ fn customShaderProbeMinimalRuntimeEnabled(probe: cpu_renderer.CustomShaderExecut
         @field(probe, "enable_minimal_runtime")
     else
         cpuShaderMinimalRuntimeEnabledDefault();
+}
+
+fn updateCpuFramePublishWarningState(
+    state: *CpuFramePublishWarningState,
+    snapshot: CpuRouteDiagnosticsSnapshot,
+) bool {
+    const frame_ms = snapshot.last_cpu_frame_ms orelse {
+        state.* = .{};
+        return false;
+    };
+
+    const capability_ready = snapshot.shader_capability_observed and
+        snapshot.shader_capability_available and
+        snapshot.shader_minimal_runtime_enabled;
+    if (!capability_ready or frame_ms <= cpu_frame_publish_warning_threshold_ms) {
+        state.* = .{};
+        return false;
+    }
+
+    state.consecutive_over_threshold = std.math.add(
+        u8,
+        state.consecutive_over_threshold,
+        1,
+    ) catch std.math.maxInt(u8);
+    if (state.consecutive_over_threshold < cpu_frame_publish_warning_consecutive_limit) {
+        return false;
+    }
+    if (state.warned) return false;
+
+    state.warned = true;
+    return true;
 }
 
 fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRouteDecision {
@@ -556,6 +632,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// One-shot warning guard when retired pool pressure blocks resizing.
         cpu_retired_pool_pressure_warned: bool = false,
+
+        /// Consecutive CPU publish latency warning state.
+        cpu_frame_publish_warning: CpuFramePublishWarningState = .{},
 
         /// Pending republish flag when CPU frame publication was backpressured.
         cpu_publish_pending: bool = false,
@@ -3042,7 +3121,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
             const use_software_cpu_path = self.shouldUseSoftwareCpuFramePath();
-            if (!use_software_cpu_path) self.cpu_publish_pending = false;
+            if (!use_software_cpu_path) {
+                self.cpu_publish_pending = false;
+                self.cpu_frame_publish_warning = .{};
+            }
             const has_animations = self.hasAnimations();
 
             const needs_redraw =
@@ -3113,6 +3195,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         const publish_end = std.time.Instant.now() catch null;
                         if (publish_end) |end| {
                             self.cpu_route_diagnostics.recordCpuFramePublished(end.since(start));
+                            const snapshot = self.cpu_route_diagnostics.snapshot();
+                            if (updateCpuFramePublishWarningState(
+                                &self.cpu_frame_publish_warning,
+                                snapshot,
+                            )) {
+                                log.warn(
+                                    "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
+                                    .{
+                                        snapshot.last_cpu_frame_ms.?,
+                                        cpu_frame_publish_warning_threshold_ms,
+                                        self.cpu_frame_publish_warning.consecutive_over_threshold,
+                                        snapshot.shader_capability_observed,
+                                        snapshot.shader_capability_available,
+                                        snapshot.shader_minimal_runtime_enabled,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -5101,6 +5200,27 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
     };
 }
 
+fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
+    return .{
+        .custom_shader_fallback_count = 0,
+        .custom_shader_bypass_count = 0,
+        .publish_retry_count = 0,
+        .cpu_damage_rect_count = 0,
+        .cpu_damage_rect_overflow_count = 0,
+        .cpu_publish_skipped_no_damage_count = 0,
+        .last_cpu_frame_ms = null,
+        .last_fallback_reason = null,
+        .shader_capability_observed = false,
+        .shader_capability_available = false,
+        .shader_minimal_runtime_enabled = false,
+        .cpu_shader_backend = build_config.software_renderer_cpu_shader_backend,
+        .shader_capability_reason = "n/a",
+        .shader_capability_hint_source = "n/a",
+        .shader_capability_hint_path = "n/a",
+        .shader_capability_hint_readable = false,
+    };
+}
+
 test "effectiveCpuDamageRectCap keeps configured value when frame damage mode is off" {
     try std.testing.expectEqual(@as(u16, 0), effectiveCpuDamageRectCap(.off, 0));
     try std.testing.expectEqual(@as(u16, 8), effectiveCpuDamageRectCap(.off, 8));
@@ -5476,10 +5596,10 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
         build_config.software_renderer_cpu_shader_backend,
         snapshot.cpu_shader_backend,
     );
-    try std.testing.expectEqualStrings("timeout-budget-zero", snapshot.shader_capability_reason);
-    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_source);
-    try std.testing.expectEqualStrings("n/a", snapshot.shader_capability_hint_path);
-    try std.testing.expect(!snapshot.shader_capability_hint_readable);
+    try std.testing.expectEqualStrings("pipeline_compile_failed", snapshot.shader_capability_reason);
+    try std.testing.expectEqualStrings("vk_driver_files", snapshot.shader_capability_hint_source);
+    try std.testing.expectEqualStrings("/opt/swiftshader/driver.json", snapshot.shader_capability_hint_path);
+    try std.testing.expect(snapshot.shader_capability_hint_readable);
 }
 
 test "cpu route diagnostics tracks publish retry and cpu frame publish duration" {
@@ -5621,4 +5741,53 @@ test "custom shader probe minimal runtime follows cpu probe field" {
     };
 
     try std.testing.expect(customShaderProbeMinimalRuntimeEnabled(probe));
+}
+
+test "cpu frame publish warning requires capability-ready consecutive slow frames" {
+    var state: CpuFramePublishWarningState = .{};
+    var snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    snapshot.last_cpu_frame_ms = cpu_frame_publish_warning_threshold_ms + 1;
+    snapshot.shader_capability_observed = true;
+    snapshot.shader_capability_available = true;
+    snapshot.shader_minimal_runtime_enabled = true;
+
+    try std.testing.expect(!updateCpuFramePublishWarningState(&state, snapshot));
+    try std.testing.expectEqual(@as(u8, 1), state.consecutive_over_threshold);
+    try std.testing.expect(!state.warned);
+
+    try std.testing.expect(!updateCpuFramePublishWarningState(&state, snapshot));
+    try std.testing.expectEqual(@as(u8, 2), state.consecutive_over_threshold);
+    try std.testing.expect(!state.warned);
+
+    try std.testing.expect(updateCpuFramePublishWarningState(&state, snapshot));
+    try std.testing.expect(state.warned);
+
+    // Same condition should not emit repeatedly once warned.
+    try std.testing.expect(!updateCpuFramePublishWarningState(&state, snapshot));
+}
+
+test "cpu frame publish warning resets on fast frame or capability-not-ready" {
+    var state: CpuFramePublishWarningState = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+
+    var fast_snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    fast_snapshot.last_cpu_frame_ms = cpu_frame_publish_warning_threshold_ms;
+    fast_snapshot.shader_capability_observed = true;
+    fast_snapshot.shader_capability_available = true;
+    fast_snapshot.shader_minimal_runtime_enabled = true;
+    try std.testing.expect(!updateCpuFramePublishWarningState(&state, fast_snapshot));
+    try std.testing.expectEqual(@as(u8, 0), state.consecutive_over_threshold);
+    try std.testing.expect(!state.warned);
+
+    var no_capability_snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    no_capability_snapshot.last_cpu_frame_ms = cpu_frame_publish_warning_threshold_ms + 100;
+    no_capability_snapshot.shader_capability_observed = true;
+    no_capability_snapshot.shader_capability_available = false;
+    no_capability_snapshot.shader_minimal_runtime_enabled = true;
+    state.consecutive_over_threshold = 2;
+    try std.testing.expect(!updateCpuFramePublishWarningState(&state, no_capability_snapshot));
+    try std.testing.expectEqual(@as(u8, 0), state.consecutive_over_threshold);
+    try std.testing.expect(!state.warned);
 }
