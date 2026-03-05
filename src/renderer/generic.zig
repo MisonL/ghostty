@@ -512,6 +512,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Runtime diagnostics state for software renderer CPU route.
         cpu_route_diagnostics: CpuRouteDiagnosticsState = .{},
 
+        /// Cached CPU custom-shader probe result to avoid repeated per-frame
+        /// environment/path probing while shader set is unchanged.
+        cpu_custom_shader_probe: ?cpu_renderer.CustomShaderExecutionProbe = null,
+
         /// CPU-route frame damage tracker.
         cpu_damage_tracker: cpu_renderer.DamageTracker =
             cpu_renderer.DamageTracker.init(software_renderer_cpu_damage_rect_cap),
@@ -1398,6 +1402,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.shaders = shaders;
             self.has_custom_shaders = has_custom_shaders;
+            self.cpu_custom_shader_probe = null;
         }
 
         /// This is called early right after surface creation.
@@ -1652,7 +1657,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
-        fn softwareCpuRouteDecisionInput(self: *const Self) SoftwareCpuRouteDecisionInput {
+        fn softwareCpuRouteDecisionInput(self: *Self) SoftwareCpuRouteDecisionInput {
             var custom_shader_available = true;
             var custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null;
             var custom_shader_hint_source: ?cpu_renderer.VulkanDriverHintSource = null;
@@ -1661,7 +1666,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (self.has_custom_shaders and
                 build_config.software_renderer_cpu_shader_mode != .off)
             {
-                const custom_shader_probe = cpu_renderer.customShaderExecutionProbe();
+                if (self.cpu_custom_shader_probe == null) {
+                    self.cpu_custom_shader_probe = cpu_renderer.customShaderExecutionProbe();
+                }
+                const custom_shader_probe = self.cpu_custom_shader_probe.?;
                 custom_shader_hint_source = custom_shader_probe.vulkan_driver_hint_source;
                 custom_shader_hint_path = custom_shader_probe.vulkan_driver_hint_path;
                 custom_shader_hint_readable = custom_shader_probe.vulkan_driver_hint_readable;
@@ -1672,6 +1680,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         custom_shader_unavailable_reason = reason;
                     },
                 }
+            } else {
+                self.cpu_custom_shader_probe = null;
             }
 
             return .{
@@ -3496,6 +3506,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             if (custom_shaders_changed) {
                 self.reinitialize_shaders = true;
+                self.cpu_custom_shader_probe = null;
             }
         }
 
