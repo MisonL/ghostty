@@ -10,11 +10,13 @@ Usage:
     [--target <zig-target>] \
     [--allow-legacy-os <true|false>] \
     [--cpu-shader-mode <off|safe|full>] \
+    [--cpu-shader-backend <off|vulkan_swiftshader>] \
     [--cpu-shader-timeout-ms <u32>] \
     [--cpu-frame-damage-mode <off|rects>] \
     [--cpu-damage-rect-cap <u16>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
+    [--expect-cpu-shader-backend <off|vulkan_swiftshader>] \
     [--expect-cpu-shader-timeout-ms <u32>] \
     [--expect-cpu-frame-damage-mode <off|rects>] \
     [--expect-cpu-damage-rect-cap <u16>] \
@@ -83,11 +85,13 @@ transport="auto"
 target=""
 allow_legacy_os="false"
 cpu_shader_mode=""
+cpu_shader_backend=""
 cpu_shader_timeout_ms=""
 cpu_frame_damage_mode=""
 cpu_damage_rect_cap=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
+expect_cpu_shader_backend=""
 expect_cpu_shader_timeout_ms=""
 expect_cpu_frame_damage_mode=""
 expect_cpu_damage_rect_cap=""
@@ -139,6 +143,14 @@ while (($# > 0)); do
       cpu_shader_mode="${2:-}"
       shift 2
       ;;
+    --cpu-shader-backend=*)
+      cpu_shader_backend="${1#*=}"
+      shift
+      ;;
+    --cpu-shader-backend)
+      cpu_shader_backend="${2:-}"
+      shift 2
+      ;;
     --cpu-shader-timeout-ms=*)
       cpu_shader_timeout_ms="${1#*=}"
       shift
@@ -177,6 +189,14 @@ while (($# > 0)); do
       ;;
     --expect-cpu-shader-mode)
       expect_cpu_shader_mode="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-shader-backend=*)
+      expect_cpu_shader_backend="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-shader-backend)
+      expect_cpu_shader_backend="${2:-}"
       shift 2
       ;;
     --expect-cpu-shader-timeout-ms=*)
@@ -269,6 +289,10 @@ if [[ -n "$cpu_shader_mode" && "$cpu_shader_mode" != "off" && "$cpu_shader_mode"
   echo "invalid --cpu-shader-mode: $cpu_shader_mode (expected: off|safe|full)" >&2
   exit 2
 fi
+if [[ -n "$cpu_shader_backend" && "$cpu_shader_backend" != "off" && "$cpu_shader_backend" != "vulkan_swiftshader" ]]; then
+  echo "invalid --cpu-shader-backend: $cpu_shader_backend (expected: off|vulkan_swiftshader)" >&2
+  exit 2
+fi
 
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
   if ! [[ "$cpu_shader_timeout_ms" =~ ^[0-9]+$ ]]; then
@@ -308,6 +332,10 @@ fi
 
 if [[ -n "$expect_cpu_shader_mode" && "$expect_cpu_shader_mode" != "off" && "$expect_cpu_shader_mode" != "safe" && "$expect_cpu_shader_mode" != "full" ]]; then
   echo "invalid --expect-cpu-shader-mode: $expect_cpu_shader_mode (expected: off|safe|full)" >&2
+  exit 2
+fi
+if [[ -n "$expect_cpu_shader_backend" && "$expect_cpu_shader_backend" != "off" && "$expect_cpu_shader_backend" != "vulkan_swiftshader" ]]; then
+  echo "invalid --expect-cpu-shader-backend: $expect_cpu_shader_backend (expected: off|vulkan_swiftshader)" >&2
   exit 2
 fi
 
@@ -439,6 +467,9 @@ cmd+=("-Dsoftware-renderer-cpu-allow-legacy-os=$allow_legacy_os")
 if [[ -n "$cpu_shader_mode" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-mode=$cpu_shader_mode")
 fi
+if [[ -n "$cpu_shader_backend" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-shader-backend=$cpu_shader_backend")
+fi
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-timeout-ms=$cpu_shader_timeout_ms")
 fi
@@ -466,9 +497,9 @@ fi
 cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
 if [[ "${cpu_shader_mode:-full}" == "full" || "${cpu_shader_mode:-safe}" == "safe" ]]; then
-  echo "[software-compat] note: cpu-shader-mode=safe/full currently falls back to platform route while custom shaders are active unless CPU custom-shader execution capability is available."
+  echo "[software-compat] note: cpu-shader-mode=safe/full may fallback to platform route while custom shaders are active when CPU custom-shader execution capability is unavailable."
 fi
 if [[ "${cpu_shader_mode:-}" == "safe" && -n "${cpu_shader_timeout_ms:-}" && "$cpu_shader_timeout_ms" == "0" ]]; then
   echo "[software-compat] note: cpu-shader-mode=safe with timeout 0 forces platform-route fallback."
@@ -482,12 +513,12 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_software_route_backend" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_software_route_backend" ]]; then
     options_file=""
     options_candidates=()
     while IFS= read -r candidate; do
       options_candidates+=("$candidate")
-      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_route_backend' "$candidate"; then
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_backend|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_route_backend' "$candidate"; then
         options_file="$candidate"
         break
       fi
@@ -503,7 +534,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       report_failure \
         "environment options-zig-missing" \
         "verify Zig cache layout and build options export symbols" \
-        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
+        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
         "cache-root=$cache_dir/c options-candidates=$options_candidates_count" \
         "options-candidates-preview=$options_preview"
     fi
@@ -534,6 +565,20 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
           "cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$actual_cpu_shader_mode file=$options_file"
       fi
       echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
+    fi
+
+    if [[ -n "$expect_cpu_shader_backend" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\\.?$expect_cpu_shader_backend([[:space:]]|,|;)" "$options_file"; then
+        actual_cpu_shader_backend="$(sed -nE 's/.*software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+        if [[ -z "$actual_cpu_shader_backend" ]]; then
+          actual_cpu_shader_backend="unknown"
+        fi
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-shader-backend mismatch expected=$expect_cpu_shader_backend actual=$actual_cpu_shader_backend file=$options_file"
+      fi
+      echo "[software-compat] cpu-shader-backend assertion matched expected=$expect_cpu_shader_backend"
     fi
 
     if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then

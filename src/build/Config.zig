@@ -30,6 +30,8 @@ const software_renderer_cpu_mvp_help =
     "Enable the CPU software renderer MVP scaffold route. Disabled by default. Effective only for macOS >= 11 and Linux >= 5.0 unless legacy override is enabled. For legacy target bring-up examples: macOS 10.15 => zig build -Dtarget=aarch64-macos.10.15.0 -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true ; Linux 4.19 => zig build -Dtarget=x86_64-linux.4.19.0-gnu -Dsoftware-renderer-cpu-mvp=true -Dsoftware-renderer-cpu-allow-legacy-os=true. Even when effective, Ghostty may auto-fallback to the platform route when custom shaders are active in off/safe modes or when software-frame-transport-mode=native.";
 const software_renderer_cpu_shader_mode_help =
     "CPU software renderer custom-shader mode: off/safe/full. off=always fallback to platform route while shaders are active; safe=use CPU route only when custom-shader execution capability is available and timeout budget is > 0, otherwise fallback to platform route; full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route.";
+const software_renderer_cpu_shader_backend_help =
+    "CPU software renderer custom-shader execution backend: off|vulkan_swiftshader. off=disable CPU custom-shader execution and force platform-route fallback while shaders are active; vulkan_swiftshader=enable SwiftShader Vulkan execution when available, otherwise fallback to platform route.";
 const software_renderer_cpu_shader_timeout_help =
     "CPU software renderer custom-shader timeout budget in milliseconds for safe mode when CPU-route shader execution is enabled. In safe mode, timeout must be > 0; timeout 0 forces platform-route fallback for correctness. Default: 16.";
 const software_renderer_cpu_frame_damage_mode_help =
@@ -61,6 +63,7 @@ software_renderer_cpu_allow_legacy_os: bool = false,
 software_renderer_cpu_effective: bool = false,
 software_frame_transport_mode: SoftwareFrameTransportMode = .auto,
 software_renderer_cpu_shader_mode: SoftwareRendererCpuShaderMode = .full,
+software_renderer_cpu_shader_backend: SoftwareRendererCpuShaderBackend = .vulkan_swiftshader,
 software_renderer_cpu_shader_timeout_ms: u32 = 16,
 software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode = .rects,
 software_renderer_cpu_damage_rect_cap: u16 = 64,
@@ -201,6 +204,11 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         "software-renderer-cpu-shader-mode",
         software_renderer_cpu_shader_mode_help,
     ) orelse .full;
+    config.software_renderer_cpu_shader_backend = b.option(
+        SoftwareRendererCpuShaderBackend,
+        "software-renderer-cpu-shader-backend",
+        software_renderer_cpu_shader_backend_help,
+    ) orelse .vulkan_swiftshader;
     config.software_renderer_cpu_shader_timeout_ms = b.option(
         u32,
         "software-renderer-cpu-shader-timeout-ms",
@@ -579,6 +587,11 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         self.software_renderer_cpu_shader_mode,
     );
     step.addOption(
+        SoftwareRendererCpuShaderBackend,
+        "software_renderer_cpu_shader_backend",
+        self.software_renderer_cpu_shader_backend,
+    );
+    step.addOption(
         u32,
         "software_renderer_cpu_shader_timeout_ms",
         self.software_renderer_cpu_shader_timeout_ms,
@@ -684,6 +697,10 @@ pub fn baselineTarget(self: *const Config) std.Build.ResolvedTarget {
 /// options are available at comptime, so look closely at this implementation
 /// to see what is and isn't available.
 pub fn fromOptions() Config {
+    // This function performs multiple comptime enum string mappings.
+    // Keep a higher branch quota so adding build options remains stable.
+    @setEvalBranchQuota(4000);
+
     const options = @import("build_options");
     const result: Config = .{
         // Unused at runtime.
@@ -711,6 +728,10 @@ pub fn fromOptions() Config {
         .software_renderer_cpu_shader_mode = std.meta.stringToEnum(
             SoftwareRendererCpuShaderMode,
             @tagName(options.software_renderer_cpu_shader_mode),
+        ).?,
+        .software_renderer_cpu_shader_backend = std.meta.stringToEnum(
+            SoftwareRendererCpuShaderBackend,
+            @tagName(options.software_renderer_cpu_shader_backend),
         ).?,
         .software_renderer_cpu_shader_timeout_ms = options.software_renderer_cpu_shader_timeout_ms,
         .software_renderer_cpu_frame_damage_mode = std.meta.stringToEnum(
@@ -875,6 +896,21 @@ test "softwareRendererCpuShaderMode string mapping" {
     );
 }
 
+test "softwareRendererCpuShaderBackend string mapping" {
+    const stdx = std;
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuShaderBackend.off,
+        std.meta.stringToEnum(SoftwareRendererCpuShaderBackend, "off").?,
+    );
+    try stdx.testing.expectEqual(
+        SoftwareRendererCpuShaderBackend.vulkan_swiftshader,
+        std.meta.stringToEnum(SoftwareRendererCpuShaderBackend, "vulkan_swiftshader").?,
+    );
+    try stdx.testing.expect(
+        std.meta.stringToEnum(SoftwareRendererCpuShaderBackend, "invalid") == null,
+    );
+}
+
 test "softwareRendererCpuShader default values stay stable" {
     const config: Config = .{
         .optimize = .Debug,
@@ -883,6 +919,10 @@ test "softwareRendererCpuShader default values stay stable" {
         .env = undefined,
     };
     try std.testing.expectEqual(SoftwareRendererCpuShaderMode.full, config.software_renderer_cpu_shader_mode);
+    try std.testing.expectEqual(
+        SoftwareRendererCpuShaderBackend.vulkan_swiftshader,
+        config.software_renderer_cpu_shader_backend,
+    );
     try std.testing.expectEqual(@as(u32, 16), config.software_renderer_cpu_shader_timeout_ms);
     try std.testing.expectEqual(
         SoftwareRendererCpuFrameDamageMode.rects,
@@ -904,6 +944,20 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
             u8,
             software_renderer_cpu_shader_mode_help,
             "full=use CPU route only when custom-shader execution capability is available, otherwise fallback to platform route",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_shader_backend_help,
+            "off|vulkan_swiftshader",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_shader_backend_help,
+            "SwiftShader Vulkan execution",
         ) != null,
     );
     try std.testing.expect(
@@ -1068,6 +1122,15 @@ pub const SoftwareRendererCpuShaderMode = enum {
     /// Keep CPU route while custom shaders are active only when
     /// custom-shader execution capability is available.
     full,
+};
+
+/// Controls the CPU-route custom-shader execution backend.
+pub const SoftwareRendererCpuShaderBackend = enum {
+    /// Disable CPU-route shader execution backend.
+    off,
+
+    /// Execute custom-shader passes through SwiftShader Vulkan when available.
+    vulkan_swiftshader,
 };
 
 /// Controls CPU-route frame publication damage behavior.

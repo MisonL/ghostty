@@ -989,6 +989,7 @@ jobs:
           - target_label: default-target
             target: ""
             cpu_shader_mode: ""
+            cpu_shader_backend: ""
             cpu_shader_timeout_ms: ""
           - target_label: linux-5.4
             target: x86_64-linux.5.4.0
@@ -1084,6 +1085,17 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # CPU shader backend off compatibility spot-check.
+          - target:
+              target_label: linux-5.0-backend-off
+              target: x86_64-linux.5.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: full
+              cpu_shader_backend: off
+              expect_cpu_shader_backend: off
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # Safe mode timeout=0 compatibility spot-check (must stay build-valid).
           - target:
               target_label: linux-5.0-safe-timeout0
@@ -1161,6 +1173,12 @@ jobs:
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
             compat_args+=(--expect-cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
           fi
+          if [[ -n "${{ matrix.target.cpu_shader_backend }}" ]]; then
+            compat_args+=(--cpu-shader-backend "${{ matrix.target.cpu_shader_backend }}")
+          fi
+          if [[ -n "${{ matrix.target.expect_cpu_shader_backend }}" ]]; then
+            compat_args+=(--expect-cpu-shader-backend "${{ matrix.target.expect_cpu_shader_backend }}")
+          fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
             compat_args+=(--expect-cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
@@ -1194,6 +1212,7 @@ jobs:
           - target_label: default-target
             target: ""
             cpu_shader_mode: ""
+            cpu_shader_backend: ""
             cpu_shader_timeout_ms: ""
           - target_label: macos-14.0
             target: x86_64-macos.14.0.0
@@ -1265,6 +1284,17 @@ jobs:
               expect_cpu_effective: "true"
               cpu_shader_mode: safe
               cpu_shader_timeout_ms: "16"
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # CPU shader backend off compatibility spot-check.
+          - target:
+              target_label: macos-11.0-backend-off
+              target: x86_64-macos.11.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: full
+              cpu_shader_backend: off
+              expect_cpu_shader_backend: off
             transport:
               transport_label: auto
               transport_mode: auto
@@ -1350,6 +1380,12 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_mode }}" ]]; then
             compat_args+=(--cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
             compat_args+=(--expect-cpu-shader-mode "${{ matrix.target.cpu_shader_mode }}")
+          fi
+          if [[ -n "${{ matrix.target.cpu_shader_backend }}" ]]; then
+            compat_args+=(--cpu-shader-backend "${{ matrix.target.cpu_shader_backend }}")
+          fi
+          if [[ -n "${{ matrix.target.expect_cpu_shader_backend }}" ]]; then
+            compat_args+=(--expect-cpu-shader-backend "${{ matrix.target.expect_cpu_shader_backend }}")
           fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")

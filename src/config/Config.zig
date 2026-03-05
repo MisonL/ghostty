@@ -2011,7 +2011,7 @@ keybind: Keybinds = .{},
 /// CPU-route compatibility fallback:
 ///
 /// When the software renderer CPU route is active, Ghostty automatically
-/// handles `custom-shader` according to build-time mode:
+/// handles `custom-shader` according to build-time mode and backend:
 ///
 /// * `-Dsoftware-renderer-cpu-shader-mode=off`:
 ///   always fallback to platform route while shaders are active.
@@ -2022,6 +2022,9 @@ keybind: Keybinds = .{},
 /// * `-Dsoftware-renderer-cpu-shader-mode=full`:
 ///   use CPU route only when custom-shader execution capability is available;
 ///   otherwise fallback to platform route while shaders are active.
+/// * `-Dsoftware-renderer-cpu-shader-backend=off|vulkan_swiftshader`:
+///   selects the CPU custom-shader execution backend; `off` disables CPU shader
+///   execution and always falls back while shaders are active.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) must be > 0 in `safe` mode; timeout 0 forces platform fallback.
@@ -3073,6 +3076,7 @@ keybind: Keybinds = .{},
 /// controlled by:
 ///
 /// * `-Dsoftware-renderer-cpu-shader-mode=off|safe|full`
+/// * `-Dsoftware-renderer-cpu-shader-backend=off|vulkan_swiftshader`
 /// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
 ///
 /// Current implementation status:
