@@ -154,13 +154,20 @@ const CustomShaderExecutorCompileError = error{
 
 const CustomShaderExecutorExecuteError = error{
     PipelineCompileFailed,
+    RuntimeInitFailed,
     ExecutionTimeout,
     DeviceLost,
+    ResultValidationFailed,
 };
 
 const CustomShaderCompileState = struct {
     source_len: usize,
     source_hash: u64,
+};
+
+const CustomShaderExecutionResult = struct {
+    signature: u64,
+    checksum: u32,
 };
 
 const CapabilityProbeCompileCache = struct {
@@ -196,6 +203,7 @@ const CapabilityProbeCompileCache = struct {
 };
 
 var capability_probe_compile_cache: CapabilityProbeCompileCache = .{};
+var capability_probe_compile_cache_mutex: std.Thread.Mutex = .{};
 
 const VulkanSwiftshaderExecutor = struct {
     candidate_path: []const u8,
@@ -219,6 +227,7 @@ const CustomShaderExecutor = union(enum) {
             .vulkan_swiftshader => init: {
                 const candidate = probe.candidate_path orelse break :init error.BackendUnavailable;
                 if (!probe.candidate_readable) break :init error.RuntimeInitFailed;
+                if (!pathLooksLikeVulkanManifest(candidate)) break :init error.RuntimeInitFailed;
                 break :init .{
                     .vulkan_swiftshader = .{
                         .candidate_path = candidate,
@@ -237,7 +246,11 @@ const CustomShaderExecutor = union(enum) {
         self: *CustomShaderExecutor,
         source: []const u8,
     ) CustomShaderExecutorCompileError!void {
-        if (!customShaderSourceHasCode(source)) return error.PipelineCompileFailed;
+        if (!customShaderSourceHasCode(source) or
+            !customShaderSourceHasStageDirective(source))
+        {
+            return error.PipelineCompileFailed;
+        }
 
         const compiled = CustomShaderCompileState{
             .source_len = source.len,
@@ -254,10 +267,19 @@ const CustomShaderExecutor = union(enum) {
         self: *CustomShaderExecutor,
         timeout_ms: u32,
         enable_minimal_runtime: bool,
-    ) CustomShaderExecutorExecuteError!void {
-        const compiled = switch (self.*) {
-            .vulkan_swiftshader => |*executor| executor.compiled_shader orelse return error.PipelineCompileFailed,
+    ) CustomShaderExecutorExecuteError!CustomShaderExecutionResult {
+        const state = switch (self.*) {
+            .vulkan_swiftshader => |*executor| .{
+                .compiled = executor.compiled_shader orelse return error.PipelineCompileFailed,
+                .candidate_path = executor.candidate_path,
+            },
         };
+        const compiled = state.compiled;
+        const candidate_path = state.candidate_path;
+
+        if (!pathLooksLikeVulkanManifest(candidate_path)) {
+            return error.RuntimeInitFailed;
+        }
 
         if (timeout_ms < customShaderExecutionTimeoutFloorMs(compiled)) {
             return error.ExecutionTimeout;
@@ -266,7 +288,11 @@ const CustomShaderExecutor = union(enum) {
         // Stage guard: keep conservative unavailability semantics unless
         // minimal runtime rollout is explicitly enabled.
         if (!enable_minimal_runtime) return error.DeviceLost;
-        return;
+        const result = customShaderExecutionResultFor(compiled, candidate_path);
+        if (!customShaderExecutionResultIsValid(result, compiled, candidate_path)) {
+            return error.ResultValidationFailed;
+        }
+        return result;
     }
 
     fn compiledShaderState(self: *const CustomShaderExecutor) ?CustomShaderCompileState {
@@ -283,6 +309,23 @@ const CustomShaderExecutor = union(enum) {
             .vulkan_swiftshader => |*executor| executor.compiled_shader = compiled_shader,
         }
     }
+
+    fn executionResultLooksValid(
+        self: *const CustomShaderExecutor,
+        result: CustomShaderExecutionResult,
+    ) bool {
+        const state = switch (self.*) {
+            .vulkan_swiftshader => |executor| .{
+                .compiled = executor.compiled_shader orelse return false,
+                .candidate_path = executor.candidate_path,
+            },
+        };
+        return customShaderExecutionResultIsValid(
+            result,
+            state.compiled,
+            state.candidate_path,
+        );
+    }
 };
 
 fn customShaderSourceHasCode(source: []const u8) bool {
@@ -290,6 +333,10 @@ fn customShaderSourceHasCode(source: []const u8) bool {
         if (!std.ascii.isWhitespace(byte)) return true;
     }
     return false;
+}
+
+fn customShaderSourceHasStageDirective(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "@stage") != null;
 }
 
 fn customShaderSourceHash(source: []const u8) u64 {
@@ -307,6 +354,47 @@ fn customShaderExecutionTimeoutFloorMs(compiled: CustomShaderCompileState) u32 {
     return 1 + len_component + hash_component;
 }
 
+fn pathLooksLikeVulkanManifest(path: []const u8) bool {
+    if (path.len < ".json".len) return false;
+    return std.ascii.eqlIgnoreCase(
+        path[path.len - ".json".len ..],
+        ".json",
+    );
+}
+
+fn customShaderExecutionResultSignature(
+    compiled: CustomShaderCompileState,
+    candidate_path: []const u8,
+) u64 {
+    return (compiled.source_hash ^ customShaderSourceHash(candidate_path)) +
+        @as(u64, compiled.source_len);
+}
+
+fn customShaderExecutionResultChecksum(signature: u64) u32 {
+    return @truncate((signature >> 32) ^ (signature & 0xFFFF_FFFF));
+}
+
+fn customShaderExecutionResultFor(
+    compiled: CustomShaderCompileState,
+    candidate_path: []const u8,
+) CustomShaderExecutionResult {
+    const signature = customShaderExecutionResultSignature(compiled, candidate_path);
+    return .{
+        .signature = signature,
+        .checksum = customShaderExecutionResultChecksum(signature),
+    };
+}
+
+fn customShaderExecutionResultIsValid(
+    result: CustomShaderExecutionResult,
+    compiled: CustomShaderCompileState,
+    candidate_path: []const u8,
+) bool {
+    const expected = customShaderExecutionResultFor(compiled, candidate_path);
+    return result.signature == expected.signature and
+        result.checksum == expected.checksum;
+}
+
 fn runtimeCustomShaderTimeoutMs() u32 {
     return if (@hasDecl(build_config, "software_renderer_cpu_shader_timeout_ms"))
         build_config.software_renderer_cpu_shader_timeout_ms
@@ -319,6 +407,29 @@ fn runtimeCustomShaderEnableMinimalRuntime() bool {
         build_config.software_renderer_cpu_shader_enable_minimal_runtime
     else
         false;
+}
+
+fn clearCapabilityProbeCompileCache() void {
+    capability_probe_compile_cache_mutex.lock();
+    defer capability_probe_compile_cache_mutex.unlock();
+    capability_probe_compile_cache.clear();
+}
+
+fn loadCapabilityProbeCompiledShader(
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+) ?CustomShaderCompileState {
+    capability_probe_compile_cache_mutex.lock();
+    defer capability_probe_compile_cache_mutex.unlock();
+    return capability_probe_compile_cache.load(backend);
+}
+
+fn storeCapabilityProbeCompiledShader(
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    compiled_shader: CustomShaderCompileState,
+) void {
+    capability_probe_compile_cache_mutex.lock();
+    defer capability_probe_compile_cache_mutex.unlock();
+    capability_probe_compile_cache.store(backend, compiled_shader);
 }
 
 fn customShaderExecutionCapabilityStatusForBackendProbe(
@@ -336,20 +447,23 @@ fn customShaderExecutionCapabilityStatusForBackendProbe(
     };
     defer executor.deinit();
 
-    if (capability_probe_compile_cache.load(backend)) |compiled| {
+    if (loadCapabilityProbeCompiledShader(backend)) |compiled| {
         executor.restoreCompiledShaderState(compiled);
     } else {
         executor.compileCustomShader(CustomShaderExecutor.capability_probe_source) catch |err| {
             return .{ .unavailable = mapCustomShaderExecutorCompileError(err) };
         };
         if (executor.compiledShaderState()) |compiled| {
-            capability_probe_compile_cache.store(backend, compiled);
+            storeCapabilityProbeCompiledShader(backend, compiled);
         }
     }
 
-    executor.executeCustomShader(timeout_ms, enable_minimal_runtime) catch |err| {
+    const execution_result = executor.executeCustomShader(timeout_ms, enable_minimal_runtime) catch |err| {
         return .{ .unavailable = mapCustomShaderExecutorExecuteError(err) };
     };
+    if (!executor.executionResultLooksValid(execution_result)) {
+        return .{ .unavailable = .device_lost };
+    }
 
     return .{ .available = {} };
 }
@@ -371,8 +485,10 @@ fn mapCustomShaderExecutorCompileError(err: CustomShaderExecutorCompileError) Ru
 fn mapCustomShaderExecutorExecuteError(err: CustomShaderExecutorExecuteError) RuntimeCapabilityUnavailableReason {
     return switch (err) {
         error.PipelineCompileFailed => .pipeline_compile_failed,
+        error.RuntimeInitFailed => .runtime_init_failed,
         error.ExecutionTimeout => .execution_timeout,
         error.DeviceLost => .device_lost,
+        error.ResultValidationFailed => .device_lost,
     };
 }
 
@@ -2627,8 +2743,8 @@ test "customShaderExecutionCapabilityStatusForBackendProbe allows controlled ava
 }
 
 test "customShaderExecutionCapabilityStatusForBackendProbe reuses cached compile state for same backend" {
-    defer capability_probe_compile_cache.clear();
-    capability_probe_compile_cache.clear();
+    defer clearCapabilityProbeCompileCache();
+    clearCapabilityProbeCompileCache();
 
     const real_compiled = CustomShaderCompileState{
         .source_len = CustomShaderExecutor.capability_probe_source.len,
@@ -2667,7 +2783,7 @@ test "customShaderExecutionCapabilityStatusForBackendProbe reuses cached compile
 
     try std.testing.expect(!std.meta.eql(expected_with_sentinel, expected_with_real));
 
-    capability_probe_compile_cache.store(.vulkan_swiftshader, sentinel_compiled);
+    storeCapabilityProbeCompiledShader(.vulkan_swiftshader, sentinel_compiled);
 
     const status = customShaderExecutionCapabilityStatusForBackendProbe(
         .vulkan_swiftshader,
@@ -2694,6 +2810,13 @@ test "containsAsciiIgnoreCase matches swiftshader tokens" {
         "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
         "swiftshader",
     ));
+}
+
+test "pathLooksLikeVulkanManifest recognizes json suffix case-insensitively" {
+    try std.testing.expect(pathLooksLikeVulkanManifest("/opt/swiftshader/icd.json"));
+    try std.testing.expect(pathLooksLikeVulkanManifest("/opt/swiftshader/ICD.JSON"));
+    try std.testing.expect(!pathLooksLikeVulkanManifest("/opt/swiftshader/icd.bin"));
+    try std.testing.expect(!pathLooksLikeVulkanManifest("json"));
 }
 
 test "vulkanSwiftshaderDriverPathFromEnvHints follows loader precedence" {
@@ -2834,6 +2957,13 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
             .candidate_readable = false,
         }),
     );
+    try std.testing.expectError(
+        error.RuntimeInitFailed,
+        CustomShaderExecutor.init(.vulkan_swiftshader, .{
+            .candidate_path = "/opt/swiftshader/icd.bin",
+            .candidate_readable = true,
+        }),
+    );
 
     var executor = try CustomShaderExecutor.init(
         .vulkan_swiftshader,
@@ -2851,6 +2981,10 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
     try std.testing.expectError(
         error.PipelineCompileFailed,
         executor.compileCustomShader(" \n\t "),
+    );
+    try std.testing.expectError(
+        error.PipelineCompileFailed,
+        executor.compileCustomShader("void main() {}"),
     );
 
     const source =
@@ -2874,7 +3008,12 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
         error.DeviceLost,
         executor.executeCustomShader(timeout_floor, false),
     );
-    try executor.executeCustomShader(timeout_floor, true);
+    const execution_result = try executor.executeCustomShader(timeout_floor, true);
+    try std.testing.expect(customShaderExecutionResultIsValid(
+        execution_result,
+        compiled,
+        "/opt/swiftshader/icd.json",
+    ));
 
     try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.backend_unavailable,
@@ -2893,12 +3032,20 @@ test "customShaderExecutor tracks compiled state and maps staged errors" {
         mapCustomShaderExecutorExecuteError(error.ExecutionTimeout),
     );
     try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.runtime_init_failed,
+        mapCustomShaderExecutorExecuteError(error.RuntimeInitFailed),
+    );
+    try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.pipeline_compile_failed,
         mapCustomShaderExecutorExecuteError(error.PipelineCompileFailed),
     );
     try std.testing.expectEqual(
         RuntimeCapabilityUnavailableReason.device_lost,
         mapCustomShaderExecutorExecuteError(error.DeviceLost),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.device_lost,
+        mapCustomShaderExecutorExecuteError(error.ResultValidationFailed),
     );
 }
 
