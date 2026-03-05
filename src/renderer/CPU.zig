@@ -106,11 +106,33 @@ fn customShaderExecutionUnavailableReasonForBackend(
 fn vulkanSwiftshaderHintConfigured() bool {
     return switch (builtin.os.tag) {
         .windows => false,
-        else => if (std.posix.getenv("VK_ICD_FILENAMES")) |value|
-            containsAsciiIgnoreCase(value, "swiftshader")
-        else
-            false,
+        else => vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+            .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),
+            .vk_icd_filenames = std.posix.getenv("VK_ICD_FILENAMES"),
+            .vk_add_driver_files = std.posix.getenv("VK_ADD_DRIVER_FILES"),
+        }),
     };
+}
+
+const VulkanDriverEnvHints = struct {
+    vk_driver_files: ?[]const u8 = null,
+    vk_icd_filenames: ?[]const u8 = null,
+    vk_add_driver_files: ?[]const u8 = null,
+};
+
+fn vulkanSwiftshaderHintConfiguredFromEnvHints(hints: VulkanDriverEnvHints) bool {
+    // Match Vulkan loader override precedence: VK_DRIVER_FILES >
+    // VK_ICD_FILENAMES > VK_ADD_DRIVER_FILES.
+    if (hints.vk_driver_files) |value| {
+        return containsAsciiIgnoreCase(value, "swiftshader");
+    }
+    if (hints.vk_icd_filenames) |value| {
+        return containsAsciiIgnoreCase(value, "swiftshader");
+    }
+    if (hints.vk_add_driver_files) |value| {
+        return containsAsciiIgnoreCase(value, "swiftshader");
+    }
+    return false;
 }
 
 fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -2196,6 +2218,40 @@ test "containsAsciiIgnoreCase matches swiftshader tokens" {
         "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
         "swiftshader",
     ));
+}
+
+test "vulkanSwiftshaderHintConfiguredFromEnvHints follows loader precedence" {
+    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+        .vk_driver_files = "/opt/swiftshader/icd.json",
+        .vk_icd_filenames = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+        .vk_add_driver_files = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+    }));
+
+    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+        .vk_driver_files = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+        .vk_icd_filenames = "/opt/swiftshader/icd.json",
+        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
+    }));
+
+    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+        .vk_driver_files = null,
+        .vk_icd_filenames = "/opt/SwiftShader/icd.json",
+        .vk_add_driver_files = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+    }));
+
+    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+        .vk_driver_files = null,
+        .vk_icd_filenames = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
+    }));
+
+    try std.testing.expect(vulkanSwiftshaderHintConfiguredFromEnvHints(.{
+        .vk_driver_files = null,
+        .vk_icd_filenames = null,
+        .vk_add_driver_files = "/opt/swiftshader/extra_icd.json",
+    }));
+
+    try std.testing.expect(!vulkanSwiftshaderHintConfiguredFromEnvHints(.{}));
 }
 
 test "isRuntimeCompatibleWithCpuRoute gates custom shader execution by runtime capability" {
