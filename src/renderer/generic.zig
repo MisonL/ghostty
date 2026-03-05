@@ -1264,6 +1264,41 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         build_config.software_renderer_cpu_allow_legacy_os,
                     },
                 );
+
+                if (comptime build_config.software_renderer_cpu_shader_mode != .off) {
+                    const probe = cpu_renderer.customShaderExecutionProbe();
+                    const hint_source = if (probe.vulkan_driver_hint_source) |source|
+                        @tagName(source)
+                    else
+                        "none";
+                    const hint_path = probe.vulkan_driver_hint_path orelse "none";
+                    switch (probe.status) {
+                        .available => log.info(
+                            "software renderer cpu shader capability status=available mode={s} backend={s} timeout_ms={} hint_source={s} hint_path={s} hint_readable={}",
+                            .{
+                                @tagName(build_config.software_renderer_cpu_shader_mode),
+                                @tagName(probe.backend),
+                                probe.timeout_ms,
+                                hint_source,
+                                hint_path,
+                                probe.vulkan_driver_hint_readable,
+                            },
+                        ),
+                        .unavailable => |reason| log.info(
+                            "software renderer cpu shader capability status=unavailable mode={s} backend={s} timeout_ms={} reason={s} hint_source={s} hint_path={s} hint_readable={}",
+                            .{
+                                @tagName(build_config.software_renderer_cpu_shader_mode),
+                                @tagName(probe.backend),
+                                probe.timeout_ms,
+                                @tagName(reason),
+                                hint_source,
+                                hint_path,
+                                probe.vulkan_driver_hint_readable,
+                            },
+                        ),
+                    }
+                }
+
                 return;
             }
 
