@@ -247,6 +247,7 @@ if [[ -n "$cpu_shader_timeout_ms" ]]; then
 fi
 if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
   compat_args+=(--cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
+  compat_args+=(--expect-cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
 fi
 if [[ -n "$cpu_shader_enable_minimal_runtime" ]]; then
   compat_args+=(--cpu-shader-enable-minimal-runtime "$cpu_shader_enable_minimal_runtime")
@@ -277,9 +278,11 @@ if [[ -n "$cpu_damage_rect_cap" ]]; then
 fi
 if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
   compat_args+=(--cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
+  compat_args+=(--expect-cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
 fi
 if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
   compat_args+=(--cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
+  compat_args+=(--expect-cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
 fi
 if [[ -n "$target" ]]; then
   compat_args+=(--target "$target")

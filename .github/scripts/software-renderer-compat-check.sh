@@ -23,6 +23,7 @@ Usage:
     [--expect-cpu-shader-mode <off|safe|full>] \
     [--expect-cpu-shader-backend <off|vulkan_swiftshader>] \
     [--expect-cpu-shader-timeout-ms <u32>] \
+    [--expect-cpu-shader-reprobe-interval-frames <u16>] \
     [--expect-cpu-shader-enable-minimal-runtime <true|false>] \
     [--expect-cpu-shader-capability-status <available|unavailable>] \
     [--expect-cpu-shader-capability-reason <reason|n/a>] \
@@ -30,6 +31,8 @@ Usage:
     [--expect-cpu-shader-capability-hint-readable <true|false>] \
     [--expect-cpu-frame-damage-mode <off|rects>] \
     [--expect-cpu-damage-rect-cap <u16>] \
+    [--expect-cpu-publish-warning-threshold-ms <u32>] \
+    [--expect-cpu-publish-warning-consecutive-limit <u8>] \
     [--expect-software-route-backend <opengl|metal>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
@@ -168,6 +171,7 @@ expect_cpu_effective=""
 expect_cpu_shader_mode=""
 expect_cpu_shader_backend=""
 expect_cpu_shader_timeout_ms=""
+expect_cpu_shader_reprobe_interval_frames=""
 expect_cpu_shader_enable_minimal_runtime=""
 expect_cpu_shader_capability_status=""
 expect_cpu_shader_capability_reason=""
@@ -175,6 +179,8 @@ expect_cpu_shader_capability_hint_source=""
 expect_cpu_shader_capability_hint_readable=""
 expect_cpu_frame_damage_mode=""
 expect_cpu_damage_rect_cap=""
+expect_cpu_publish_warning_threshold_ms=""
+expect_cpu_publish_warning_consecutive_limit=""
 expect_software_route_backend=""
 app_runtime=""
 system_path=""
@@ -327,6 +333,14 @@ while (($# > 0)); do
       expect_cpu_shader_timeout_ms="${2:-}"
       shift 2
       ;;
+    --expect-cpu-shader-reprobe-interval-frames=*)
+      expect_cpu_shader_reprobe_interval_frames="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-shader-reprobe-interval-frames)
+      expect_cpu_shader_reprobe_interval_frames="${2:-}"
+      shift 2
+      ;;
     --expect-cpu-shader-enable-minimal-runtime=*)
       expect_cpu_shader_enable_minimal_runtime="${1#*=}"
       shift
@@ -381,6 +395,22 @@ while (($# > 0)); do
       ;;
     --expect-cpu-damage-rect-cap)
       expect_cpu_damage_rect_cap="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-publish-warning-threshold-ms=*)
+      expect_cpu_publish_warning_threshold_ms="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-publish-warning-threshold-ms)
+      expect_cpu_publish_warning_threshold_ms="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-publish-warning-consecutive-limit=*)
+      expect_cpu_publish_warning_consecutive_limit="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-publish-warning-consecutive-limit)
+      expect_cpu_publish_warning_consecutive_limit="${2:-}"
       shift 2
       ;;
     --expect-software-route-backend=*)
@@ -561,6 +591,19 @@ if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
   fi
 fi
 
+if [[ -n "$expect_cpu_shader_reprobe_interval_frames" ]]; then
+  if ! [[ "$expect_cpu_shader_reprobe_interval_frames" =~ ^[0-9]+$ ]]; then
+    echo "invalid --expect-cpu-shader-reprobe-interval-frames: $expect_cpu_shader_reprobe_interval_frames (expected: u16)" >&2
+    exit 2
+  fi
+  if (( ${#expect_cpu_shader_reprobe_interval_frames} > 5 )) || {
+    (( ${#expect_cpu_shader_reprobe_interval_frames} == 5 )) && (( expect_cpu_shader_reprobe_interval_frames > 65535 ))
+  }; then
+    echo "invalid --expect-cpu-shader-reprobe-interval-frames: $expect_cpu_shader_reprobe_interval_frames (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "$expect_cpu_shader_enable_minimal_runtime" && "$expect_cpu_shader_enable_minimal_runtime" != "true" && "$expect_cpu_shader_enable_minimal_runtime" != "false" ]]; then
   echo "invalid --expect-cpu-shader-enable-minimal-runtime: $expect_cpu_shader_enable_minimal_runtime" >&2
   exit 2
@@ -600,6 +643,32 @@ if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
     (( ${#expect_cpu_damage_rect_cap} == 5 )) && (( expect_cpu_damage_rect_cap > 65535 ))
   }; then
     echo "invalid --expect-cpu-damage-rect-cap: $expect_cpu_damage_rect_cap (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$expect_cpu_publish_warning_threshold_ms" ]]; then
+  if ! [[ "$expect_cpu_publish_warning_threshold_ms" =~ ^[0-9]+$ ]]; then
+    echo "invalid --expect-cpu-publish-warning-threshold-ms: $expect_cpu_publish_warning_threshold_ms (expected: u32)" >&2
+    exit 2
+  fi
+  if (( ${#expect_cpu_publish_warning_threshold_ms} > 10 )) || {
+    (( ${#expect_cpu_publish_warning_threshold_ms} == 10 )) && (( expect_cpu_publish_warning_threshold_ms > 4294967295 ))
+  }; then
+    echo "invalid --expect-cpu-publish-warning-threshold-ms: $expect_cpu_publish_warning_threshold_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$expect_cpu_publish_warning_consecutive_limit" ]]; then
+  if ! [[ "$expect_cpu_publish_warning_consecutive_limit" =~ ^[0-9]+$ ]]; then
+    echo "invalid --expect-cpu-publish-warning-consecutive-limit: $expect_cpu_publish_warning_consecutive_limit (expected: u8)" >&2
+    exit 2
+  fi
+  if (( ${#expect_cpu_publish_warning_consecutive_limit} > 3 )) || {
+    (( ${#expect_cpu_publish_warning_consecutive_limit} == 3 )) && (( expect_cpu_publish_warning_consecutive_limit > 255 ))
+  }; then
+    echo "invalid --expect-cpu-publish-warning-consecutive-limit: $expect_cpu_publish_warning_consecutive_limit (expected: 0..255)" >&2
     exit 2
   fi
 fi
@@ -831,12 +900,12 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"; if [[ -n "$fake_swiftshader_hint_dir" ]]; then rm -rf "$fake_swiftshader_hint_dir"; fi; if [[ "$had_prev_vk_driver_files" == "true" ]]; then export VK_DRIVER_FILES="$prev_vk_driver_files"; else unset VK_DRIVER_FILES; fi' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_software_route_backend" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_reprobe_interval_frames" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_cpu_publish_warning_threshold_ms" || -n "$expect_cpu_publish_warning_consecutive_limit" || -n "$expect_software_route_backend" ]]; then
     options_file=""
     options_candidates=()
     while IFS= read -r candidate; do
       options_candidates+=("$candidate")
-      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_backend|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_shader_enable_minimal_runtime|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_route_backend' "$candidate"; then
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_backend|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_shader_reprobe_interval_frames|software_renderer_cpu_shader_enable_minimal_runtime|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_cpu_publish_warning_threshold_ms|software_renderer_cpu_publish_warning_consecutive_limit|software_renderer_route_backend' "$candidate"; then
         options_file="$candidate"
         break
       fi
@@ -852,7 +921,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       report_failure \
         "environment options-zig-missing" \
         "verify Zig cache layout and build options export symbols" \
-        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-shader-enable-minimal-runtime=${expect_cpu_shader_enable_minimal_runtime:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
+        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-shader-reprobe-interval-frames=${expect_cpu_shader_reprobe_interval_frames:-<unset>} expected-cpu-shader-enable-minimal-runtime=${expect_cpu_shader_enable_minimal_runtime:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-cpu-publish-warning-threshold-ms=${expect_cpu_publish_warning_threshold_ms:-<unset>} expected-cpu-publish-warning-consecutive-limit=${expect_cpu_publish_warning_consecutive_limit:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
         "cache-root=$cache_dir options-candidates=$options_candidates_count" \
         "options-candidates-preview=$options_preview"
     fi
@@ -861,21 +930,27 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     options_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_shader_backend="$(sed -nE 's/.*software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_shader_timeout_ms="$(sed -nE 's/.*software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_shader_reprobe_interval_frames="$(sed -nE 's/.*software_renderer_cpu_shader_reprobe_interval_frames[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_shader_enable_minimal_runtime="$(sed -nE 's/.*software_renderer_cpu_shader_enable_minimal_runtime[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_frame_damage_mode="$(sed -nE 's/.*software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_damage_rect_cap="$(sed -nE 's/.*software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_publish_warning_threshold_ms="$(sed -nE 's/.*software_renderer_cpu_publish_warning_threshold_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_publish_warning_consecutive_limit="$(sed -nE 's/.*software_renderer_cpu_publish_warning_consecutive_limit[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
     options_software_route_backend="$(sed -nE 's/.*software_renderer_route_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
 
     if [[ -z "$options_cpu_effective" ]]; then options_cpu_effective="unknown"; fi
     if [[ -z "$options_cpu_shader_mode" ]]; then options_cpu_shader_mode="unknown"; fi
     if [[ -z "$options_cpu_shader_backend" ]]; then options_cpu_shader_backend="unknown"; fi
     if [[ -z "$options_cpu_shader_timeout_ms" ]]; then options_cpu_shader_timeout_ms="unknown"; fi
+    if [[ -z "$options_cpu_shader_reprobe_interval_frames" ]]; then options_cpu_shader_reprobe_interval_frames="unknown"; fi
     if [[ -z "$options_cpu_shader_enable_minimal_runtime" ]]; then options_cpu_shader_enable_minimal_runtime="unknown"; fi
     if [[ -z "$options_cpu_frame_damage_mode" ]]; then options_cpu_frame_damage_mode="unknown"; fi
     if [[ -z "$options_cpu_damage_rect_cap" ]]; then options_cpu_damage_rect_cap="unknown"; fi
+    if [[ -z "$options_cpu_publish_warning_threshold_ms" ]]; then options_cpu_publish_warning_threshold_ms="unknown"; fi
+    if [[ -z "$options_cpu_publish_warning_consecutive_limit" ]]; then options_cpu_publish_warning_consecutive_limit="unknown"; fi
     if [[ -z "$options_software_route_backend" ]]; then options_software_route_backend="unknown"; fi
 
-    echo "[software-compat] options-snapshot file=$options_file cpu-effective=$options_cpu_effective cpu-shader-mode=$options_cpu_shader_mode cpu-shader-backend=$options_cpu_shader_backend cpu-shader-timeout-ms=$options_cpu_shader_timeout_ms cpu-shader-enable-minimal-runtime=$options_cpu_shader_enable_minimal_runtime cpu-frame-damage-mode=$options_cpu_frame_damage_mode cpu-damage-rect-cap=$options_cpu_damage_rect_cap software-route-backend=$options_software_route_backend"
+    echo "[software-compat] options-snapshot file=$options_file cpu-effective=$options_cpu_effective cpu-shader-mode=$options_cpu_shader_mode cpu-shader-backend=$options_cpu_shader_backend cpu-shader-timeout-ms=$options_cpu_shader_timeout_ms cpu-shader-reprobe-interval-frames=$options_cpu_shader_reprobe_interval_frames cpu-shader-enable-minimal-runtime=$options_cpu_shader_enable_minimal_runtime cpu-frame-damage-mode=$options_cpu_frame_damage_mode cpu-damage-rect-cap=$options_cpu_damage_rect_cap cpu-publish-warning-threshold-ms=$options_cpu_publish_warning_threshold_ms cpu-publish-warning-consecutive-limit=$options_cpu_publish_warning_consecutive_limit software-route-backend=$options_software_route_backend"
 
     if [[ -n "$expect_cpu_effective" ]]; then
       if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
@@ -917,6 +992,16 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       echo "[software-compat] cpu-shader-timeout-ms assertion matched expected=$expect_cpu_shader_timeout_ms"
     fi
 
+    if [[ -n "$expect_cpu_shader_reprobe_interval_frames" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_reprobe_interval_frames[^=]*=[[:space:]]*$expect_cpu_shader_reprobe_interval_frames([[:space:]]|,|;)" "$options_file"; then
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-shader-reprobe-interval-frames mismatch expected=$expect_cpu_shader_reprobe_interval_frames actual=$options_cpu_shader_reprobe_interval_frames file=$options_file"
+      fi
+      echo "[software-compat] cpu-shader-reprobe-interval-frames assertion matched expected=$expect_cpu_shader_reprobe_interval_frames"
+    fi
+
     if [[ -n "$expect_cpu_shader_enable_minimal_runtime" ]]; then
       if ! grep -Eq "software_renderer_cpu_shader_enable_minimal_runtime[^=]*=[[:space:]]*$expect_cpu_shader_enable_minimal_runtime([[:space:]]|,|;)" "$options_file"; then
         report_failure \
@@ -945,6 +1030,26 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
           "cpu-damage-rect-cap mismatch expected=$expect_cpu_damage_rect_cap actual=$options_cpu_damage_rect_cap file=$options_file"
       fi
       echo "[software-compat] cpu-damage-rect-cap assertion matched expected=$expect_cpu_damage_rect_cap"
+    fi
+
+    if [[ -n "$expect_cpu_publish_warning_threshold_ms" ]]; then
+      if ! grep -Eq "software_renderer_cpu_publish_warning_threshold_ms[^=]*=[[:space:]]*$expect_cpu_publish_warning_threshold_ms([[:space:]]|,|;)" "$options_file"; then
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-publish-warning-threshold-ms mismatch expected=$expect_cpu_publish_warning_threshold_ms actual=$options_cpu_publish_warning_threshold_ms file=$options_file"
+      fi
+      echo "[software-compat] cpu-publish-warning-threshold-ms assertion matched expected=$expect_cpu_publish_warning_threshold_ms"
+    fi
+
+    if [[ -n "$expect_cpu_publish_warning_consecutive_limit" ]]; then
+      if ! grep -Eq "software_renderer_cpu_publish_warning_consecutive_limit[^=]*=[[:space:]]*$expect_cpu_publish_warning_consecutive_limit([[:space:]]|,|;)" "$options_file"; then
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-publish-warning-consecutive-limit mismatch expected=$expect_cpu_publish_warning_consecutive_limit actual=$options_cpu_publish_warning_consecutive_limit file=$options_file"
+      fi
+      echo "[software-compat] cpu-publish-warning-consecutive-limit assertion matched expected=$expect_cpu_publish_warning_consecutive_limit"
     fi
 
     if [[ -n "$expect_software_route_backend" ]]; then

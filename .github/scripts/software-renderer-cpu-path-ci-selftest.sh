@@ -167,6 +167,8 @@ case_dry_run_cpu_publish_warning_knobs_passthrough() {
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--cpu-publish-warning-threshold-ms 55" "dry-run cpu publish warning threshold arg"
   assert_contains "$output" "--cpu-publish-warning-consecutive-limit 4" "dry-run cpu publish warning consecutive limit arg"
+  assert_contains "$output" "--expect-cpu-publish-warning-threshold-ms 55" "dry-run cpu publish warning threshold expect arg"
+  assert_contains "$output" "--expect-cpu-publish-warning-consecutive-limit 4" "dry-run cpu publish warning consecutive limit expect arg"
   pass "dry-run passes cpu publish warning knobs"
 }
 
@@ -182,6 +184,7 @@ case_dry_run_cpu_publish_warning_threshold_only_passthrough() {
 
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--cpu-publish-warning-threshold-ms 21" "dry-run cpu publish warning threshold-only arg"
+  assert_contains "$output" "--expect-cpu-publish-warning-threshold-ms 21" "dry-run cpu publish warning threshold-only expect arg"
   pass "dry-run passes cpu publish warning threshold-only knob"
 }
 
@@ -197,6 +200,7 @@ case_dry_run_cpu_damage_rect_cap_passthrough() {
 
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--cpu-damage-rect-cap 64" "dry-run cpu damage rect cap arg"
+  assert_contains "$output" "--expect-cpu-damage-rect-cap 64" "dry-run cpu damage rect cap expect arg"
   pass "dry-run passes cpu damage rect cap"
 }
 
@@ -254,6 +258,7 @@ case_dry_run_cpu_shader_reprobe_interval_frames_passthrough() {
 
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--cpu-shader-reprobe-interval-frames 77" "dry-run cpu shader reprobe interval arg"
+  assert_contains "$output" "--expect-cpu-shader-reprobe-interval-frames 77" "dry-run cpu shader reprobe interval expect arg"
   pass "dry-run passes cpu shader reprobe interval"
 }
 
@@ -269,6 +274,7 @@ case_dry_run_cpu_shader_reprobe_interval_zero_passthrough() {
 
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--cpu-shader-reprobe-interval-frames 0" "dry-run cpu shader reprobe interval zero arg"
+  assert_contains "$output" "--expect-cpu-shader-reprobe-interval-frames 0" "dry-run cpu shader reprobe interval zero expect arg"
   pass "dry-run passes cpu shader reprobe interval zero"
 }
 

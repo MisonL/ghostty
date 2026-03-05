@@ -212,6 +212,7 @@ macOS 额外必填：
 
 - 仅接受十进制非负整数文本；出现非数字或越界值时，入口脚本输出 `invalid SR_CI_...` 错误并以 `exit 2` 结束。
 - 失败发生在调用 `./.github/scripts/software-renderer-compat-check.sh` 之前，属于“启动前失败”，不会进入 compat-check 执行阶段。
+- 当参数合法且被设置时，入口脚本会同时透传 `--cpu-*` 与对应 `--expect-cpu-*` 断言参数到 compat-check，确保 `options.zig` 快照值和期望一致（防止“参数传入但未生效”）。
 
 ### 7.4 优先级（从高到低）
 
