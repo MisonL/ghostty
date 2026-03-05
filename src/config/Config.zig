@@ -2043,6 +2043,10 @@ keybind: Keybinds = .{},
 ///   backend disabled/unavailable, runtime init failure, compile failure,
 ///   timeout, or device loss), which triggers platform-route fallback while
 ///   shaders are active.
+/// * `-Dsoftware-renderer-cpu-shader-enable-minimal-runtime=true|false`:
+///   strict rollout gate for the CPU custom-shader minimal-runtime path.
+///   Default is `false`; the minimal-runtime path is only allowed when this is
+///   explicitly set to `true`.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) must be > 0 in `safe` mode; timeout 0 forces platform fallback.
@@ -3101,6 +3105,8 @@ keybind: Keybinds = .{},
 ///   (`vulkan_swiftshader` loader hint precedence:
 ///   `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`)
 /// * `-Dsoftware-renderer-cpu-shader-timeout-ms=<ms>` (used by `safe`)
+/// * `-Dsoftware-renderer-cpu-shader-enable-minimal-runtime=true|false`
+///   (default `false`; strict rollout gate for minimal runtime path)
 ///
 /// Current implementation status:
 ///

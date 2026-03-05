@@ -991,6 +991,7 @@ jobs:
             cpu_shader_mode: ""
             cpu_shader_backend: ""
             cpu_shader_timeout_ms: ""
+            cpu_shader_enable_minimal_runtime: ""
           - target_label: linux-5.4
             target: x86_64-linux.5.4.0
             expect_cpu_effective: "true"
@@ -1027,6 +1028,17 @@ jobs:
               expect_cpu_effective: "true"
               cpu_shader_mode: full
               cpu_shader_timeout_ms: ""
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # Non-legacy target minimal-runtime enable spot-check.
+          - target:
+              target_label: linux-5.4-min-runtime-enabled
+              target: x86_64-linux.5.4.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_shader_enable_minimal_runtime: "true"
             transport:
               transport_label: auto
               transport_mode: auto
@@ -1189,17 +1201,19 @@ jobs:
           resolved_cpu_shader_mode="${{ matrix.target.cpu_shader_mode }}"
           resolved_cpu_shader_backend="${{ matrix.target.cpu_shader_backend }}"
           resolved_cpu_shader_timeout_ms="${{ matrix.target.cpu_shader_timeout_ms }}"
+          resolved_cpu_shader_enable_minimal_runtime="${{ matrix.target.cpu_shader_enable_minimal_runtime }}"
           expect_cpu_shader_backend="${{ matrix.target.expect_cpu_shader_backend }}"
           if [[ -z "${resolved_cpu_shader_mode}" ]]; then resolved_cpu_shader_mode=full; fi
           if [[ -z "${resolved_cpu_shader_backend}" ]]; then resolved_cpu_shader_backend=vulkan_swiftshader; fi
           if [[ -z "${resolved_cpu_shader_timeout_ms}" ]]; then resolved_cpu_shader_timeout_ms=16; fi
+          if [[ -z "${resolved_cpu_shader_enable_minimal_runtime}" ]]; then resolved_cpu_shader_enable_minimal_runtime=false; fi
           if [[ -z "${expect_cpu_shader_backend}" && -n "${{ matrix.target.cpu_shader_mode }}" && -z "${{ matrix.target.cpu_shader_backend }}" ]]; then
             expect_cpu_shader_backend=vulkan_swiftshader
           fi
           expected_cpu_effective="${{ matrix.target.expect_cpu_effective }}"
           if [[ -z "${expected_cpu_effective}" ]]; then expected_cpu_effective="<unset>"; fi
           echo "[software-renderer-ci] linux target-label=${{ matrix.target.target_label }} transport-label=${{ matrix.transport.transport_label }} target=${target:-default} allow-legacy-os=${allow_legacy_os} gate-expected-cpu-effective=${target_gate_expected_cpu_effective} matrix-expect-cpu-effective=${expected_cpu_effective} app-runtime=${app_runtime}"
-          echo "[software-renderer-ci] linux resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
+          echo "[software-renderer-ci] linux resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} enable-minimal-runtime=${resolved_cpu_shader_enable_minimal_runtime} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
           if [[ "${allow_legacy_os}" == "true" ]]; then
             echo "[software-renderer-ci] linux note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
           fi
@@ -1225,6 +1239,10 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
             compat_args+=(--expect-cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
+          fi
+          if [[ -n "${{ matrix.target.cpu_shader_enable_minimal_runtime }}" ]]; then
+            compat_args+=(--cpu-shader-enable-minimal-runtime "${{ matrix.target.cpu_shader_enable_minimal_runtime }}")
+            compat_args+=(--expect-cpu-shader-enable-minimal-runtime "${{ matrix.target.cpu_shader_enable_minimal_runtime }}")
           fi
           if [[ -n "${{ matrix.target.cpu_frame_damage_mode }}" ]]; then
             compat_args+=(--cpu-frame-damage-mode "${{ matrix.target.cpu_frame_damage_mode }}")
@@ -1257,6 +1275,7 @@ jobs:
             cpu_shader_mode: ""
             cpu_shader_backend: ""
             cpu_shader_timeout_ms: ""
+            cpu_shader_enable_minimal_runtime: ""
           - target_label: macos-14.0
             target: x86_64-macos.14.0.0
             expect_cpu_effective: "true"
@@ -1294,6 +1313,17 @@ jobs:
               cpu_shader_timeout_ms: ""
               cpu_frame_damage_mode: off
               cpu_damage_rect_cap: "8"
+            transport:
+              transport_label: auto
+              transport_mode: auto
+          # Non-legacy target minimal-runtime enable spot-check.
+          - target:
+              target_label: macos-14.0-min-runtime-enabled
+              target: x86_64-macos.14.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_shader_enable_minimal_runtime: "true"
             transport:
               transport_label: auto
               transport_mode: auto
@@ -1441,17 +1471,19 @@ jobs:
           resolved_cpu_shader_mode="${{ matrix.target.cpu_shader_mode }}"
           resolved_cpu_shader_backend="${{ matrix.target.cpu_shader_backend }}"
           resolved_cpu_shader_timeout_ms="${{ matrix.target.cpu_shader_timeout_ms }}"
+          resolved_cpu_shader_enable_minimal_runtime="${{ matrix.target.cpu_shader_enable_minimal_runtime }}"
           expect_cpu_shader_backend="${{ matrix.target.expect_cpu_shader_backend }}"
           if [[ -z "${resolved_cpu_shader_mode}" ]]; then resolved_cpu_shader_mode=full; fi
           if [[ -z "${resolved_cpu_shader_backend}" ]]; then resolved_cpu_shader_backend=vulkan_swiftshader; fi
           if [[ -z "${resolved_cpu_shader_timeout_ms}" ]]; then resolved_cpu_shader_timeout_ms=16; fi
+          if [[ -z "${resolved_cpu_shader_enable_minimal_runtime}" ]]; then resolved_cpu_shader_enable_minimal_runtime=false; fi
           if [[ -z "${expect_cpu_shader_backend}" && -n "${{ matrix.target.cpu_shader_mode }}" && -z "${{ matrix.target.cpu_shader_backend }}" ]]; then
             expect_cpu_shader_backend=vulkan_swiftshader
           fi
           expected_cpu_effective="${{ matrix.target.expect_cpu_effective }}"
           if [[ -z "${expected_cpu_effective}" ]]; then expected_cpu_effective="<unset>"; fi
           echo "[software-renderer-ci] macos target-label=${{ matrix.target.target_label }} transport-label=${{ matrix.transport.transport_label }} target=${target:-default} allow-legacy-os=${allow_legacy_os} gate-expected-cpu-effective=${target_gate_expected_cpu_effective} matrix-expect-cpu-effective=${expected_cpu_effective}"
-          echo "[software-renderer-ci] macos resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
+          echo "[software-renderer-ci] macos resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} enable-minimal-runtime=${resolved_cpu_shader_enable_minimal_runtime} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
           if [[ "${allow_legacy_os}" == "true" ]]; then
             echo "[software-renderer-ci] macos note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
           fi
@@ -1477,6 +1509,10 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
             compat_args+=(--expect-cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
+          fi
+          if [[ -n "${{ matrix.target.cpu_shader_enable_minimal_runtime }}" ]]; then
+            compat_args+=(--cpu-shader-enable-minimal-runtime "${{ matrix.target.cpu_shader_enable_minimal_runtime }}")
+            compat_args+=(--expect-cpu-shader-enable-minimal-runtime "${{ matrix.target.cpu_shader_enable_minimal_runtime }}")
           fi
           if [[ -n "${{ matrix.target.cpu_frame_damage_mode }}" ]]; then
             compat_args+=(--cpu-frame-damage-mode "${{ matrix.target.cpu_frame_damage_mode }}")

@@ -12,12 +12,14 @@ Usage:
     [--cpu-shader-mode <off|safe|full>] \
     [--cpu-shader-backend <off|vulkan_swiftshader>] \
     [--cpu-shader-timeout-ms <u32>] \
+    [--cpu-shader-enable-minimal-runtime <true|false>] \
     [--cpu-frame-damage-mode <off|rects>] \
     [--cpu-damage-rect-cap <u16>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
     [--expect-cpu-shader-backend <off|vulkan_swiftshader>] \
     [--expect-cpu-shader-timeout-ms <u32>] \
+    [--expect-cpu-shader-enable-minimal-runtime <true|false>] \
     [--expect-cpu-frame-damage-mode <off|rects>] \
     [--expect-cpu-damage-rect-cap <u16>] \
     [--expect-software-route-backend <opengl|metal>] \
@@ -132,12 +134,14 @@ allow_legacy_os="false"
 cpu_shader_mode=""
 cpu_shader_backend=""
 cpu_shader_timeout_ms=""
+cpu_shader_enable_minimal_runtime=""
 cpu_frame_damage_mode=""
 cpu_damage_rect_cap=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
 expect_cpu_shader_backend=""
 expect_cpu_shader_timeout_ms=""
+expect_cpu_shader_enable_minimal_runtime=""
 expect_cpu_frame_damage_mode=""
 expect_cpu_damage_rect_cap=""
 expect_software_route_backend=""
@@ -204,6 +208,14 @@ while (($# > 0)); do
       cpu_shader_timeout_ms="${2:-}"
       shift 2
       ;;
+    --cpu-shader-enable-minimal-runtime=*)
+      cpu_shader_enable_minimal_runtime="${1#*=}"
+      shift
+      ;;
+    --cpu-shader-enable-minimal-runtime)
+      cpu_shader_enable_minimal_runtime="${2:-}"
+      shift 2
+      ;;
     --cpu-frame-damage-mode=*)
       cpu_frame_damage_mode="${1#*=}"
       shift
@@ -250,6 +262,14 @@ while (($# > 0)); do
       ;;
     --expect-cpu-shader-timeout-ms)
       expect_cpu_shader_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-shader-enable-minimal-runtime=*)
+      expect_cpu_shader_enable_minimal_runtime="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-shader-enable-minimal-runtime)
+      expect_cpu_shader_enable_minimal_runtime="${2:-}"
       shift 2
       ;;
     --expect-cpu-frame-damage-mode=*)
@@ -352,6 +372,11 @@ if [[ -n "$cpu_shader_timeout_ms" ]]; then
   fi
 fi
 
+if [[ -n "$cpu_shader_enable_minimal_runtime" && "$cpu_shader_enable_minimal_runtime" != "true" && "$cpu_shader_enable_minimal_runtime" != "false" ]]; then
+  echo "invalid --cpu-shader-enable-minimal-runtime: $cpu_shader_enable_minimal_runtime" >&2
+  exit 2
+fi
+
 if [[ -n "$cpu_frame_damage_mode" && "$cpu_frame_damage_mode" != "off" && "$cpu_frame_damage_mode" != "rects" ]]; then
   echo "invalid --cpu-frame-damage-mode: $cpu_frame_damage_mode (expected: off|rects)" >&2
   exit 2
@@ -395,6 +420,11 @@ if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
     echo "invalid --expect-cpu-shader-timeout-ms: $expect_cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
     exit 2
   fi
+fi
+
+if [[ -n "$expect_cpu_shader_enable_minimal_runtime" && "$expect_cpu_shader_enable_minimal_runtime" != "true" && "$expect_cpu_shader_enable_minimal_runtime" != "false" ]]; then
+  echo "invalid --expect-cpu-shader-enable-minimal-runtime: $expect_cpu_shader_enable_minimal_runtime" >&2
+  exit 2
 fi
 
 if [[ -n "$expect_cpu_frame_damage_mode" && "$expect_cpu_frame_damage_mode" != "off" && "$expect_cpu_frame_damage_mode" != "rects" ]]; then
@@ -549,6 +579,9 @@ fi
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-shader-timeout-ms=$cpu_shader_timeout_ms")
 fi
+if [[ -n "$cpu_shader_enable_minimal_runtime" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-shader-enable-minimal-runtime=$cpu_shader_enable_minimal_runtime")
+fi
 if [[ -n "$cpu_frame_damage_mode" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-frame-damage-mode=$cpu_frame_damage_mode")
 fi
@@ -573,11 +606,12 @@ fi
 cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
 resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
 resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
 resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"
-echo "[software-compat] resolved-cpu-shader-config mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms"
+resolved_cpu_shader_enable_minimal_runtime="${cpu_shader_enable_minimal_runtime:-false}"
+echo "[software-compat] resolved-cpu-shader-config mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime"
 if [[ "$resolved_cpu_shader_mode" == "off" ]]; then
   echo "[software-compat] note: cpu-shader-mode=off always falls back to platform route while custom shaders are active."
 elif [[ "$resolved_cpu_shader_mode" == "safe" && "$resolved_cpu_shader_timeout_ms" == "0" ]]; then
@@ -600,12 +634,12 @@ log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
-  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_software_route_backend" ]]; then
+  if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_software_route_backend" ]]; then
     options_file=""
     options_candidates=()
     while IFS= read -r candidate; do
       options_candidates+=("$candidate")
-      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_backend|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_route_backend' "$candidate"; then
+      if grep -Eq 'software_renderer_cpu_effective|software_renderer_cpu_shader_mode|software_renderer_cpu_shader_backend|software_renderer_cpu_shader_timeout_ms|software_renderer_cpu_shader_enable_minimal_runtime|software_renderer_cpu_frame_damage_mode|software_renderer_cpu_damage_rect_cap|software_renderer_route_backend' "$candidate"; then
         options_file="$candidate"
         break
       fi
@@ -621,7 +655,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
       report_failure \
         "environment options-zig-missing" \
         "verify Zig cache layout and build options export symbols" \
-        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
+        "assertions requested but options.zig with CPU symbols was not found expected-cpu-effective=${expect_cpu_effective:-<unset>} expected-cpu-shader-mode=${expect_cpu_shader_mode:-<unset>} expected-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>} expected-cpu-shader-timeout-ms=${expect_cpu_shader_timeout_ms:-<unset>} expected-cpu-shader-enable-minimal-runtime=${expect_cpu_shader_enable_minimal_runtime:-<unset>} expected-cpu-frame-damage-mode=${expect_cpu_frame_damage_mode:-<unset>} expected-cpu-damage-rect-cap=${expect_cpu_damage_rect_cap:-<unset>} expected-software-route-backend=${expect_software_route_backend:-<unset>}" \
         "cache-root=$cache_dir/c options-candidates=$options_candidates_count" \
         "options-candidates-preview=$options_preview"
     fi
@@ -630,6 +664,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     options_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_shader_backend="$(sed -nE 's/.*software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_shader_timeout_ms="$(sed -nE 's/.*software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_shader_enable_minimal_runtime="$(sed -nE 's/.*software_renderer_cpu_shader_enable_minimal_runtime[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_frame_damage_mode="$(sed -nE 's/.*software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
     options_cpu_damage_rect_cap="$(sed -nE 's/.*software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
     options_software_route_backend="$(sed -nE 's/.*software_renderer_route_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
@@ -638,11 +673,12 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     if [[ -z "$options_cpu_shader_mode" ]]; then options_cpu_shader_mode="unknown"; fi
     if [[ -z "$options_cpu_shader_backend" ]]; then options_cpu_shader_backend="unknown"; fi
     if [[ -z "$options_cpu_shader_timeout_ms" ]]; then options_cpu_shader_timeout_ms="unknown"; fi
+    if [[ -z "$options_cpu_shader_enable_minimal_runtime" ]]; then options_cpu_shader_enable_minimal_runtime="unknown"; fi
     if [[ -z "$options_cpu_frame_damage_mode" ]]; then options_cpu_frame_damage_mode="unknown"; fi
     if [[ -z "$options_cpu_damage_rect_cap" ]]; then options_cpu_damage_rect_cap="unknown"; fi
     if [[ -z "$options_software_route_backend" ]]; then options_software_route_backend="unknown"; fi
 
-    echo "[software-compat] options-snapshot file=$options_file cpu-effective=$options_cpu_effective cpu-shader-mode=$options_cpu_shader_mode cpu-shader-backend=$options_cpu_shader_backend cpu-shader-timeout-ms=$options_cpu_shader_timeout_ms cpu-frame-damage-mode=$options_cpu_frame_damage_mode cpu-damage-rect-cap=$options_cpu_damage_rect_cap software-route-backend=$options_software_route_backend"
+    echo "[software-compat] options-snapshot file=$options_file cpu-effective=$options_cpu_effective cpu-shader-mode=$options_cpu_shader_mode cpu-shader-backend=$options_cpu_shader_backend cpu-shader-timeout-ms=$options_cpu_shader_timeout_ms cpu-shader-enable-minimal-runtime=$options_cpu_shader_enable_minimal_runtime cpu-frame-damage-mode=$options_cpu_frame_damage_mode cpu-damage-rect-cap=$options_cpu_damage_rect_cap software-route-backend=$options_software_route_backend"
 
     if [[ -n "$expect_cpu_effective" ]]; then
       if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
@@ -682,6 +718,16 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
           "cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$options_cpu_shader_timeout_ms file=$options_file"
       fi
       echo "[software-compat] cpu-shader-timeout-ms assertion matched expected=$expect_cpu_shader_timeout_ms"
+    fi
+
+    if [[ -n "$expect_cpu_shader_enable_minimal_runtime" ]]; then
+      if ! grep -Eq "software_renderer_cpu_shader_enable_minimal_runtime[^=]*=[[:space:]]*$expect_cpu_shader_enable_minimal_runtime([[:space:]]|,|;)" "$options_file"; then
+        report_failure \
+          "assertion config-mismatch" \
+          "expected build option value does not match generated options.zig" \
+          "cpu-shader-enable-minimal-runtime mismatch expected=$expect_cpu_shader_enable_minimal_runtime actual=$options_cpu_shader_enable_minimal_runtime file=$options_file"
+      fi
+      echo "[software-compat] cpu-shader-enable-minimal-runtime assertion matched expected=$expect_cpu_shader_enable_minimal_runtime"
     fi
 
     if [[ -n "$expect_cpu_frame_damage_mode" ]]; then
