@@ -77,12 +77,52 @@ fn customShaderExecutionCapabilityStatus() RuntimeCapabilityStatus {
         return .{ .unavailable = .backend_unavailable };
     }
 
-    return switch (build_config.software_renderer_cpu_shader_backend) {
-        .off => .{ .unavailable = .backend_disabled },
+    return .{
+        .unavailable = customShaderExecutionUnavailableReasonForBackend(
+            build_config.software_renderer_cpu_shader_backend,
+            vulkanSwiftshaderHintConfigured(),
+        ),
+    };
+}
+
+fn customShaderExecutionUnavailableReasonForBackend(
+    backend: build_config.SoftwareRendererCpuShaderBackend,
+    vulkan_swiftshader_hint_configured: bool,
+) RuntimeCapabilityUnavailableReason {
+    return switch (backend) {
+        .off => .backend_disabled,
 
         // SwiftShader Vulkan backend integration is staged separately.
-        .vulkan_swiftshader => .{ .unavailable = .backend_unavailable },
+        // If SwiftShader ICD is explicitly hinted, classify as staged
+        // runtime initialization failure so logs can differentiate from
+        // plain "backend not configured" cases.
+        .vulkan_swiftshader => if (vulkan_swiftshader_hint_configured)
+            .runtime_init_failed
+        else
+            .backend_unavailable,
     };
+}
+
+fn vulkanSwiftshaderHintConfigured() bool {
+    return switch (builtin.os.tag) {
+        .windows => false,
+        else => if (std.posix.getenv("VK_ICD_FILENAMES")) |value|
+            containsAsciiIgnoreCase(value, "swiftshader")
+        else
+            false,
+    };
+}
+
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+
+    return false;
 }
 
 /// Runtime capability query for CPU-route feature gating.
@@ -2115,10 +2155,10 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
         build_config,
         "software_renderer_cpu_shader_backend",
     ))
-        switch (build_config.software_renderer_cpu_shader_backend) {
-            .off => .backend_disabled,
-            .vulkan_swiftshader => .backend_unavailable,
-        }
+        customShaderExecutionUnavailableReasonForBackend(
+            build_config.software_renderer_cpu_shader_backend,
+            vulkanSwiftshaderHintConfigured(),
+        )
     else
         .backend_unavailable;
     try std.testing.expectEqual(
@@ -2126,6 +2166,36 @@ test "runtimeCapabilityStatus reports staged custom shader execution reasons" {
         status.unavailable,
     );
     try std.testing.expectEqual(status.unavailable, runtimeCapabilityUnavailableReason(.custom_shader_execution).?);
+}
+
+test "customShaderExecutionUnavailableReasonForBackend maps staged reasons" {
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.backend_disabled,
+        customShaderExecutionUnavailableReasonForBackend(.off, false),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.backend_unavailable,
+        customShaderExecutionUnavailableReasonForBackend(.vulkan_swiftshader, false),
+    );
+    try std.testing.expectEqual(
+        RuntimeCapabilityUnavailableReason.runtime_init_failed,
+        customShaderExecutionUnavailableReasonForBackend(.vulkan_swiftshader, true),
+    );
+}
+
+test "containsAsciiIgnoreCase matches swiftshader tokens" {
+    try std.testing.expect(containsAsciiIgnoreCase(
+        "/opt/swiftshader/icd.json",
+        "swiftshader",
+    ));
+    try std.testing.expect(containsAsciiIgnoreCase(
+        "/opt/SwiftShader/icd.json",
+        "swiftshader",
+    ));
+    try std.testing.expect(!containsAsciiIgnoreCase(
+        "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+        "swiftshader",
+    ));
 }
 
 test "isRuntimeCompatibleWithCpuRoute gates custom shader execution by runtime capability" {
