@@ -147,6 +147,7 @@ const SoftwareCpuRouteDecisionInput = struct {
     software_renderer_presenter: configpkg.Config.SoftwareRendererPresenter,
     custom_shaders_active: bool,
     custom_shader_execution_available: bool,
+    custom_shader_execution_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason,
     cpu_shader_mode: build_config.SoftwareRendererCpuShaderMode,
     cpu_shader_timeout_ms: u32,
     transport_mode_native: bool,
@@ -155,6 +156,7 @@ const SoftwareCpuRouteDecisionInput = struct {
 const SoftwareCpuRouteDecision = struct {
     enabled: bool,
     reason: ?SoftwareCpuRouteDisableReason = null,
+    custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null,
 };
 
 const CpuRouteDiagnosticsSnapshot = struct {
@@ -179,12 +181,14 @@ const CpuRouteDiagnosticsState = struct {
     cpu_publish_skipped_no_damage_count: u64 = 0,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
+    last_shader_capability_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason = null,
 
     fn recordRouteDecision(self: *CpuRouteDiagnosticsState, decision: SoftwareCpuRouteDecision) void {
         if (decision.enabled) return;
         const reason = decision.reason orelse return;
 
         self.last_fallback_reason = reason;
+        self.last_shader_capability_reason = decision.custom_shader_unavailable_reason;
         if (reason == .custom_shaders_mode_off or
             reason == .custom_shaders_unsupported or
             reason == .custom_shaders_safe_timeout_invalid)
@@ -230,26 +234,24 @@ const CpuRouteDiagnosticsState = struct {
             .last_fallback_reason = self.last_fallback_reason,
             .cpu_shader_backend = build_config.software_renderer_cpu_shader_backend,
             .shader_capability_reason = if (self.last_fallback_reason) |reason|
-                shaderCapabilityReasonForDisableReason(reason)
+                shaderCapabilityReasonForDisableReason(
+                    reason,
+                    self.last_shader_capability_reason,
+                )
             else
                 "n/a",
         };
     }
 };
 
-fn shaderCapabilityReasonForDisableReason(reason: SoftwareCpuRouteDisableReason) []const u8 {
+fn shaderCapabilityReasonForDisableReason(
+    reason: SoftwareCpuRouteDisableReason,
+    custom_shader_unavailable_reason: ?cpu_renderer.RuntimeCapabilityUnavailableReason,
+) []const u8 {
     return switch (reason) {
         .custom_shaders_safe_timeout_invalid => "timeout-budget-zero",
-        .custom_shaders_unsupported => if (@hasDecl(
-            cpu_renderer,
-            "runtimeCapabilityUnavailableReason",
-        ))
-            if (cpu_renderer.runtimeCapabilityUnavailableReason(
-                .custom_shader_execution,
-            )) |capability_reason|
-                @tagName(capability_reason)
-            else
-                "unknown"
+        .custom_shaders_unsupported => if (custom_shader_unavailable_reason) |capability_reason|
+            @tagName(capability_reason)
         else
             "unknown",
         else => "n/a",
@@ -286,6 +288,7 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
             if (!input.custom_shader_execution_available) return .{
                 .enabled = false,
                 .reason = .custom_shaders_unsupported,
+                .custom_shader_unavailable_reason = input.custom_shader_execution_unavailable_reason,
             };
             if (input.cpu_shader_timeout_ms == 0) return .{
                 .enabled = false,
@@ -295,6 +298,7 @@ fn decideSoftwareCpuRoute(input: SoftwareCpuRouteDecisionInput) SoftwareCpuRoute
         .full => if (!input.custom_shader_execution_available) return .{
             .enabled = false,
             .reason = .custom_shaders_unsupported,
+            .custom_shader_unavailable_reason = input.custom_shader_execution_unavailable_reason,
         },
     };
     if (input.transport_mode_native) return .{
@@ -1574,6 +1578,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn softwareCpuRouteDecisionInput(self: *const Self) SoftwareCpuRouteDecisionInput {
+            const custom_shader_capability = cpu_renderer.runtimeCapabilityStatus(
+                .custom_shader_execution,
+            );
+            const custom_shader_available = switch (custom_shader_capability) {
+                .available => true,
+                .unavailable => false,
+            };
+            const custom_shader_unavailable_reason = switch (custom_shader_capability) {
+                .available => null,
+                .unavailable => |reason| reason,
+            };
+
             return .{
                 .cpu_route_build_effective = software_renderer_cpu_effective,
                 .renderer_is_software = build_config.renderer == .software,
@@ -1581,9 +1597,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .software_renderer_experimental = self.config.software_renderer_experimental,
                 .software_renderer_presenter = self.config.software_renderer_presenter,
                 .custom_shaders_active = self.has_custom_shaders,
-                .custom_shader_execution_available = cpu_renderer.supportsRuntimeCapability(
-                    .custom_shader_execution,
-                ),
+                .custom_shader_execution_available = custom_shader_available,
+                .custom_shader_execution_unavailable_reason = custom_shader_unavailable_reason,
                 .cpu_shader_mode = build_config.software_renderer_cpu_shader_mode,
                 .cpu_shader_timeout_ms = build_config.software_renderer_cpu_shader_timeout_ms,
                 .transport_mode_native = build_config.software_frame_transport_mode == .native,
@@ -1592,8 +1607,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         fn maybeLogSoftwareCpuRouteDisabled(
             self: *Self,
-            reason: SoftwareCpuRouteDisableReason,
+            decision: SoftwareCpuRouteDecision,
         ) void {
+            const reason = decision.reason orelse return;
             const warned = self.softwareCpuRouteWarnFlag(reason) orelse return;
             if (warned.*) return;
             warned.* = true;
@@ -1610,7 +1626,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     @tagName(build_config.software_renderer_cpu_shader_backend),
                     build_config.software_renderer_cpu_shader_timeout_ms,
                     @tagName(build_config.software_frame_transport_mode),
-                    shaderCapabilityReasonForDisableReason(reason),
+                    shaderCapabilityReasonForDisableReason(
+                        reason,
+                        decision.custom_shader_unavailable_reason,
+                    ),
                 },
             );
         }
@@ -1622,7 +1641,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const decision = decideSoftwareCpuRoute(input);
             self.cpu_route_diagnostics.recordRouteDecision(decision);
             if (!decision.enabled) {
-                self.maybeLogSoftwareCpuRouteDisabled(decision.reason.?);
+                self.maybeLogSoftwareCpuRouteDisabled(decision);
             }
 
             return decision.enabled;
@@ -4851,6 +4870,7 @@ fn softwareCpuRouteDecisionInputDefaults() SoftwareCpuRouteDecisionInput {
         .software_renderer_presenter = .auto,
         .custom_shaders_active = false,
         .custom_shader_execution_available = false,
+        .custom_shader_execution_unavailable_reason = .backend_unavailable,
         .cpu_shader_mode = .off,
         .cpu_shader_timeout_ms = 16,
         .transport_mode_native = false,
@@ -5017,10 +5037,15 @@ test "software cpu route decision disables when custom shaders are active and mo
     input.custom_shaders_active = true;
     input.cpu_shader_mode = .safe;
     input.cpu_shader_timeout_ms = 8;
+    input.custom_shader_execution_unavailable_reason = .pipeline_compile_failed;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
+    try std.testing.expectEqual(
+        @as(?cpu_renderer.RuntimeCapabilityUnavailableReason, .pipeline_compile_failed),
+        decision.custom_shader_unavailable_reason,
+    );
 }
 
 test "software cpu route decision disables safe mode when timeout budget is zero" {
@@ -5066,10 +5091,15 @@ test "software cpu route decision disables full mode when custom shader executio
     var input = softwareCpuRouteDecisionInputDefaults();
     input.custom_shaders_active = true;
     input.cpu_shader_mode = .full;
+    input.custom_shader_execution_unavailable_reason = .runtime_init_failed;
 
     const decision = decideSoftwareCpuRoute(input);
     try std.testing.expect(!decision.enabled);
     try std.testing.expectEqual(SoftwareCpuRouteDisableReason.custom_shaders_unsupported, decision.reason.?);
+    try std.testing.expectEqual(
+        @as(?cpu_renderer.RuntimeCapabilityUnavailableReason, .runtime_init_failed),
+        decision.custom_shader_unavailable_reason,
+    );
 }
 
 test "software cpu route decision full mode still respects transport gate" {
@@ -5210,14 +5240,25 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
 }
 
 test "shader capability reason derives from cpu runtime capability reason" {
-    const reason = shaderCapabilityReasonForDisableReason(.custom_shaders_unsupported);
-    if (@hasDecl(cpu_renderer, "runtimeCapabilityUnavailableReason")) {
-        if (cpu_renderer.runtimeCapabilityUnavailableReason(.custom_shader_execution)) |capability_reason| {
-            try std.testing.expectEqualStrings(@tagName(capability_reason), reason);
-        } else {
-            try std.testing.expectEqualStrings("unknown", reason);
-        }
-    } else {
-        try std.testing.expectEqualStrings("unknown", reason);
-    }
+    try std.testing.expectEqualStrings(
+        "runtime_init_failed",
+        shaderCapabilityReasonForDisableReason(
+            .custom_shaders_unsupported,
+            .runtime_init_failed,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "unknown",
+        shaderCapabilityReasonForDisableReason(
+            .custom_shaders_unsupported,
+            null,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "n/a",
+        shaderCapabilityReasonForDisableReason(
+            .transport_native,
+            .backend_unavailable,
+        ),
+    );
 }
