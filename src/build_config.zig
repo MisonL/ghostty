@@ -60,6 +60,10 @@ pub const software_renderer_cpu_shader_enable_minimal_runtime: bool =
 pub const software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode =
     config.software_renderer_cpu_frame_damage_mode;
 pub const software_renderer_cpu_damage_rect_cap: u16 = config.software_renderer_cpu_damage_rect_cap;
+pub const software_renderer_cpu_publish_warning_threshold_ms: u32 =
+    config.software_renderer_cpu_publish_warning_threshold_ms;
+pub const software_renderer_cpu_publish_warning_consecutive_limit: u8 =
+    config.software_renderer_cpu_publish_warning_consecutive_limit;
 pub const i18n: bool = config.i18n;
 
 /// The bundle ID for the app. This is used in many places and is currently

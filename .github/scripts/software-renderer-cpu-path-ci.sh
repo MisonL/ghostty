@@ -37,6 +37,8 @@ expect_cpu_shader_capability_hint_source="${SR_CI_EXPECT_CPU_SHADER_CAPABILITY_H
 expect_cpu_shader_capability_hint_readable="${SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE:-}"
 cpu_frame_damage_mode="${SR_CI_CPU_FRAME_DAMAGE_MODE:-}"
 cpu_damage_rect_cap="${SR_CI_CPU_DAMAGE_RECT_CAP:-}"
+cpu_publish_warning_threshold_ms="${SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS:-}"
+cpu_publish_warning_consecutive_limit="${SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
 dry_run="${SR_CI_DRY_RUN:-false}"
 
@@ -218,6 +220,12 @@ fi
 if [[ -n "$cpu_damage_rect_cap" ]]; then
   compat_args+=(--cpu-damage-rect-cap "$cpu_damage_rect_cap")
   compat_args+=(--expect-cpu-damage-rect-cap "$cpu_damage_rect_cap")
+fi
+if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
+  compat_args+=(--cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
+fi
+if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
+  compat_args+=(--cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
 fi
 if [[ -n "$target" ]]; then
   compat_args+=(--target "$target")

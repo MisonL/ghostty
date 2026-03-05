@@ -74,8 +74,18 @@ const software_renderer_cpu_damage_rect_pool_capacity: usize =
 const max_retired_cpu_frame_pools: usize = 4;
 const cpu_frame_pool_deinit_wait_ms: u64 = 25;
 const cpu_damage_row_span_vertical_overscan_divisor: u32 = 4;
-const cpu_frame_publish_warning_threshold_ms: u64 = 40;
-const cpu_frame_publish_warning_consecutive_limit: u8 = 3;
+const cpu_frame_publish_warning_threshold_ms: u64 =
+    if (@hasDecl(build_config, "software_renderer_cpu_publish_warning_threshold_ms"))
+        @as(u64, @intCast(build_config.software_renderer_cpu_publish_warning_threshold_ms))
+    else
+        40;
+const cpu_frame_publish_warning_consecutive_limit: u8 = @max(
+    @as(u8, 1),
+    if (@hasDecl(build_config, "software_renderer_cpu_publish_warning_consecutive_limit"))
+        @as(u8, @intCast(build_config.software_renderer_cpu_publish_warning_consecutive_limit))
+    else
+        3,
+);
 
 const CpuFramePublishWarningState = struct {
     consecutive_over_threshold: u8 = 0,
@@ -227,6 +237,7 @@ const CpuRouteDiagnosticsSnapshot = struct {
     cpu_damage_rect_count: u64,
     cpu_damage_rect_overflow_count: u64,
     cpu_publish_skipped_no_damage_count: u64,
+    cpu_publish_latency_warning_count: u64,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
     last_fallback_scope: []const u8,
@@ -252,6 +263,7 @@ const CpuRouteDiagnosticsState = struct {
     cpu_damage_rect_count: u64 = 0,
     cpu_damage_rect_overflow_count: u64 = 0,
     cpu_publish_skipped_no_damage_count: u64 = 0,
+    cpu_publish_latency_warning_count: u64 = 0,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
     last_shader_capability_observed: bool = false,
@@ -330,6 +342,10 @@ const CpuRouteDiagnosticsState = struct {
         self.cpu_publish_skipped_no_damage_count +%= 1;
     }
 
+    fn recordCpuPublishLatencyWarning(self: *CpuRouteDiagnosticsState) void {
+        self.cpu_publish_latency_warning_count +%= 1;
+    }
+
     fn snapshot(self: *const CpuRouteDiagnosticsState) CpuRouteDiagnosticsSnapshot {
         const build_cpu_route_source = buildCpuRouteAvailabilitySourceForCurrentBuild();
         return .{
@@ -339,6 +355,7 @@ const CpuRouteDiagnosticsState = struct {
             .cpu_damage_rect_count = self.cpu_damage_rect_count,
             .cpu_damage_rect_overflow_count = self.cpu_damage_rect_overflow_count,
             .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
+            .cpu_publish_latency_warning_count = self.cpu_publish_latency_warning_count,
             .last_cpu_frame_ms = self.last_cpu_frame_ms,
             .last_fallback_reason = self.last_fallback_reason,
             .last_fallback_scope = softwareCpuRouteFallbackScope(self.last_fallback_reason),
@@ -3355,6 +3372,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                                 &self.cpu_frame_publish_warning,
                                 snapshot,
                             )) {
+                                self.cpu_route_diagnostics.recordCpuPublishLatencyWarning();
                                 log.warn(
                                     "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
                                     .{
@@ -5368,6 +5386,7 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
         .cpu_damage_rect_count = 0,
         .cpu_damage_rect_overflow_count = 0,
         .cpu_publish_skipped_no_damage_count = 0,
+        .cpu_publish_latency_warning_count = 0,
         .last_cpu_frame_ms = null,
         .last_fallback_reason = null,
         .last_fallback_scope = "none",
@@ -5826,6 +5845,7 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_latency_warning_count);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -5923,6 +5943,7 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     diagnostics.recordDamageStats(3, 1);
     diagnostics.recordPublishSkippedNoDamage();
     diagnostics.recordPublishSkippedNoDamage();
+    diagnostics.recordCpuPublishLatencyWarning();
     diagnostics.recordCpuFramePublished((17 * std.time.ns_per_ms) + (500 * std.time.ns_per_us));
 
     const snapshot = diagnostics.snapshot();
@@ -5932,6 +5953,7 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     try std.testing.expectEqual(@as(u64, 3), snapshot.cpu_damage_rect_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_publish_skipped_no_damage_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_latency_warning_count);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -6123,4 +6145,27 @@ test "cpu frame publish warning resets on fast frame or capability-not-ready" {
     try std.testing.expect(!updateCpuFramePublishWarningState(&state, no_capability_snapshot));
     try std.testing.expectEqual(@as(u8, 0), state.consecutive_over_threshold);
     try std.testing.expect(!state.warned);
+}
+
+test "cpu publish latency warning count increments only when warning is emitted" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    var state: CpuFramePublishWarningState = .{};
+    var snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    snapshot.last_cpu_frame_ms = cpu_frame_publish_warning_threshold_ms + 1;
+    snapshot.shader_capability_observed = true;
+    snapshot.shader_capability_available = true;
+    snapshot.shader_minimal_runtime_enabled = true;
+
+    var i: u8 = 0;
+    while (i < cpu_frame_publish_warning_consecutive_limit) : (i += 1) {
+        if (updateCpuFramePublishWarningState(&state, snapshot)) {
+            diagnostics.recordCpuPublishLatencyWarning();
+        }
+    }
+    if (updateCpuFramePublishWarningState(&state, snapshot)) {
+        diagnostics.recordCpuPublishLatencyWarning();
+    }
+
+    const diagnostics_snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), diagnostics_snapshot.cpu_publish_latency_warning_count);
 }

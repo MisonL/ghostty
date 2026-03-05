@@ -16,6 +16,8 @@ Usage:
     [--inject-fake-swiftshader-hint <true|false>] \
     [--cpu-frame-damage-mode <off|rects>] \
     [--cpu-damage-rect-cap <u16>] \
+    [--cpu-publish-warning-threshold-ms <u32>] \
+    [--cpu-publish-warning-consecutive-limit <u8>] \
     [--expect-cpu-effective <true|false>] \
     [--expect-cpu-shader-mode <off|safe|full>] \
     [--expect-cpu-shader-backend <off|vulkan_swiftshader>] \
@@ -158,6 +160,8 @@ cpu_shader_enable_minimal_runtime=""
 inject_fake_swiftshader_hint="false"
 cpu_frame_damage_mode=""
 cpu_damage_rect_cap=""
+cpu_publish_warning_threshold_ms=""
+cpu_publish_warning_consecutive_limit=""
 expect_cpu_effective=""
 expect_cpu_shader_mode=""
 expect_cpu_shader_backend=""
@@ -263,6 +267,22 @@ while (($# > 0)); do
       ;;
     --cpu-damage-rect-cap)
       cpu_damage_rect_cap="${2:-}"
+      shift 2
+      ;;
+    --cpu-publish-warning-threshold-ms=*)
+      cpu_publish_warning_threshold_ms="${1#*=}"
+      shift
+      ;;
+    --cpu-publish-warning-threshold-ms)
+      cpu_publish_warning_threshold_ms="${2:-}"
+      shift 2
+      ;;
+    --cpu-publish-warning-consecutive-limit=*)
+      cpu_publish_warning_consecutive_limit="${1#*=}"
+      shift
+      ;;
+    --cpu-publish-warning-consecutive-limit)
+      cpu_publish_warning_consecutive_limit="${2:-}"
       shift 2
       ;;
     --expect-cpu-effective=*)
@@ -461,6 +481,32 @@ if [[ -n "$cpu_damage_rect_cap" ]]; then
     (( ${#cpu_damage_rect_cap} == 5 )) && (( cpu_damage_rect_cap > 65535 ))
   }; then
     echo "invalid --cpu-damage-rect-cap: $cpu_damage_rect_cap (expected: 0..65535)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
+  if ! [[ "$cpu_publish_warning_threshold_ms" =~ ^[0-9]+$ ]]; then
+    echo "invalid --cpu-publish-warning-threshold-ms: $cpu_publish_warning_threshold_ms (expected: u32)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_publish_warning_threshold_ms} > 10 )) || {
+    (( ${#cpu_publish_warning_threshold_ms} == 10 )) && (( cpu_publish_warning_threshold_ms > 4294967295 ))
+  }; then
+    echo "invalid --cpu-publish-warning-threshold-ms: $cpu_publish_warning_threshold_ms (expected: 0..4294967295)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
+  if ! [[ "$cpu_publish_warning_consecutive_limit" =~ ^[0-9]+$ ]]; then
+    echo "invalid --cpu-publish-warning-consecutive-limit: $cpu_publish_warning_consecutive_limit (expected: u8)" >&2
+    exit 2
+  fi
+  if (( ${#cpu_publish_warning_consecutive_limit} > 3 )) || {
+    (( ${#cpu_publish_warning_consecutive_limit} == 3 )) && (( cpu_publish_warning_consecutive_limit > 255 ))
+  }; then
+    echo "invalid --cpu-publish-warning-consecutive-limit: $cpu_publish_warning_consecutive_limit (expected: 0..255)" >&2
     exit 2
   fi
 fi
@@ -678,6 +724,12 @@ fi
 if [[ -n "$cpu_damage_rect_cap" ]]; then
   cmd+=("-Dsoftware-renderer-cpu-damage-rect-cap=$cpu_damage_rect_cap")
 fi
+if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-publish-warning-threshold-ms=$cpu_publish_warning_threshold_ms")
+fi
+if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
+  cmd+=("-Dsoftware-renderer-cpu-publish-warning-consecutive-limit=$cpu_publish_warning_consecutive_limit")
+fi
 cmd+=("-Dsoftware-frame-transport-mode=$transport")
 cmd+=(-Demit-macos-app=false)
 
@@ -724,7 +776,7 @@ JSON
   echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path library=$fake_swiftshader_library_path"
 fi
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
 resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
 resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
 resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"

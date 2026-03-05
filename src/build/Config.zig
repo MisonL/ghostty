@@ -40,6 +40,10 @@ const software_renderer_cpu_frame_damage_mode_help =
     "CPU software renderer frame-damage publishing mode: off|rects. off publishes full frames for each CPU-route update; rects tracks and reports damage rectangles (current stage still uses conservative full-frame composition).";
 const software_renderer_cpu_damage_rect_cap_help =
     "Maximum number of tracked damage rectangles for CPU software renderer per frame (u16). Overflow degrades to one full-frame rect for correctness. In rects mode, value 0 is auto-clamped to 1. Default: 64.";
+const software_renderer_cpu_publish_warning_threshold_help =
+    "CPU software renderer publish latency warning threshold in milliseconds (u32). Frames above this value increment the warning streak when capability is ready. Default: 40.";
+const software_renderer_cpu_publish_warning_consecutive_limit_help =
+    "CPU software renderer publish latency warning streak limit before emitting a warning (u8). Value 0 is auto-clamped to 1. Default: 3.";
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -70,6 +74,8 @@ software_renderer_cpu_shader_timeout_ms: u32 = 16,
 software_renderer_cpu_shader_enable_minimal_runtime: bool = false,
 software_renderer_cpu_frame_damage_mode: SoftwareRendererCpuFrameDamageMode = .rects,
 software_renderer_cpu_damage_rect_cap: u16 = 64,
+software_renderer_cpu_publish_warning_threshold_ms: u32 = 40,
+software_renderer_cpu_publish_warning_consecutive_limit: u8 = 3,
 
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
@@ -236,6 +242,20 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         config.software_renderer_cpu_frame_damage_mode,
         config.software_renderer_cpu_damage_rect_cap,
     );
+    config.software_renderer_cpu_publish_warning_threshold_ms = b.option(
+        u32,
+        "software-renderer-cpu-publish-warning-threshold-ms",
+        software_renderer_cpu_publish_warning_threshold_help,
+    ) orelse 40;
+    config.software_renderer_cpu_publish_warning_consecutive_limit = b.option(
+        u8,
+        "software-renderer-cpu-publish-warning-consecutive-limit",
+        software_renderer_cpu_publish_warning_consecutive_limit_help,
+    ) orelse 3;
+    config.software_renderer_cpu_publish_warning_consecutive_limit =
+        effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit(
+            config.software_renderer_cpu_publish_warning_consecutive_limit,
+        );
 
     //---------------------------------------------------------------
     // Feature Flags
@@ -621,6 +641,16 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     );
     step.addOption(
         u32,
+        "software_renderer_cpu_publish_warning_threshold_ms",
+        self.software_renderer_cpu_publish_warning_threshold_ms,
+    );
+    step.addOption(
+        u8,
+        "software_renderer_cpu_publish_warning_consecutive_limit",
+        self.software_renderer_cpu_publish_warning_consecutive_limit,
+    );
+    step.addOption(
+        u32,
         "software_renderer_cpu_min_macos_major",
         software_renderer_cpu_min_macos.major,
     );
@@ -759,6 +789,10 @@ pub fn fromOptions() Config {
             ).?,
             options.software_renderer_cpu_damage_rect_cap,
         ),
+        .software_renderer_cpu_publish_warning_threshold_ms = options.software_renderer_cpu_publish_warning_threshold_ms,
+        .software_renderer_cpu_publish_warning_consecutive_limit = effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit(
+            options.software_renderer_cpu_publish_warning_consecutive_limit,
+        ),
         .exe_entrypoint = std.meta.stringToEnum(ExeEntrypoint, @tagName(options.exe_entrypoint)).?,
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
@@ -805,6 +839,10 @@ fn effectiveSoftwareRendererCpuDamageRectCap(
         .off => configured_cap,
         .rects => @max(@as(u16, 1), configured_cap),
     };
+}
+
+fn effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit(configured_limit: u8) u8 {
+    return @max(@as(u8, 1), configured_limit);
 }
 
 test "softwareRendererCpuSupported requires macOS 11+" {
@@ -968,6 +1006,8 @@ test "softwareRendererCpuShader default values stay stable" {
         config.software_renderer_cpu_frame_damage_mode,
     );
     try std.testing.expectEqual(@as(u16, 64), config.software_renderer_cpu_damage_rect_cap);
+    try std.testing.expectEqual(@as(u32, 40), config.software_renderer_cpu_publish_warning_threshold_ms);
+    try std.testing.expectEqual(@as(u8, 3), config.software_renderer_cpu_publish_warning_consecutive_limit);
 }
 
 test "softwareRendererCpuShader help text keeps full capability-gated fallback semantics" {
@@ -1041,6 +1081,20 @@ test "softwareRendererCpuShader help text keeps full capability-gated fallback s
             "0 is auto-clamped to 1",
         ) != null,
     );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_publish_warning_threshold_help,
+            "Default: 40",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            software_renderer_cpu_publish_warning_consecutive_limit_help,
+            "0 is auto-clamped to 1",
+        ) != null,
+    );
 }
 
 test "effectiveSoftwareRendererCpuDamageRectCap keeps cap in off mode" {
@@ -1062,6 +1116,17 @@ test "effectiveSoftwareRendererCpuDamageRectCap clamps zero in rects mode" {
     try std.testing.expectEqual(
         @as(u16, 8),
         effectiveSoftwareRendererCpuDamageRectCap(.rects, 8),
+    );
+}
+
+test "effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit clamps zero to one" {
+    try std.testing.expectEqual(
+        @as(u8, 1),
+        effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit(0),
+    );
+    try std.testing.expectEqual(
+        @as(u8, 7),
+        effectiveSoftwareRendererCpuPublishWarningConsecutiveLimit(7),
     );
 }
 

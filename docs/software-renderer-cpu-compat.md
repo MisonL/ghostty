@@ -109,9 +109,36 @@ CPU 路由是否“构建生效”由编译参数决定，核心条件：
 
 因此，`capability unobserved` 不应被解释为“后续永远不支持”；只要进入可观测路径（例如相关 shader 路径被触发），状态可能变化。
 
-## 5. CI 脚本关键 env 与优先级
+## 5. CPU 发布告警阈值调优参数
 
-### 5.1 入口脚本与必填项
+这两个参数用于调节“CPU 路径发布延迟告警”的观测灵敏度，适用于兼容测试和老设备噪声控制。
+
+重要边界：它们只影响告警观测，不参与 CPU route gate 判定，不会改变 `software_renderer_cpu_effective`、运行时回退门禁和渲染正确性。
+
+| 参数 | 默认值 | 边界与语义 | 建议调优方向 |
+| --- | --- | --- | --- |
+| `-Dsoftware-renderer-cpu-publish-warning-threshold-ms=<u32>` | `40` | 合法输入 `0..4294967295`；仅当 `last_cpu_frame_ms > threshold` 才累计慢帧告警计数（`=` 阈值不计入） | 老设备告警过多时优先上调阈值；建议从 `60` 起步，常见区间 `60~120` |
+| `-Dsoftware-renderer-cpu-publish-warning-consecutive-limit=<u8>` | `3` | 合法输入 `0..255`，其中 `0` 会自动夹紧为 `1`；达到连续慢帧上限后才触发一次告警 | 若偶发抖动导致噪声，保持阈值不变，先把连续上限调到 `4~6`；抖动更重可到 `8` |
+
+补充语义（用于理解“为什么不影响路由正确性”）：
+
+- 告警只在 capability ready 时才累计（`observed=true && available=true && minimal-runtime-enabled=true`）。
+- 连续慢帧告警是一次性触发；后续需要“出现快帧或 capability 非 ready”才会复位后再次触发。
+
+推荐调优顺序（老设备）：
+
+1. 先调 `threshold-ms`（降低噪声但保留趋势）。
+2. 再调 `consecutive-limit`（过滤偶发尖峰）。
+3. 每次只改一个参数并保留一轮对照日志，避免把真正退化隐藏掉。
+
+CI 对应环境变量：
+
+- `SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS`
+- `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT`
+
+## 6. CI 脚本关键 env 与优先级
+
+### 6.1 入口脚本与必填项
 
 主入口脚本：`.github/scripts/software-renderer-cpu-path-ci.sh`
 
@@ -124,7 +151,7 @@ macOS 额外必填：
 
 - `SR_CI_SYSTEM_PATH`（传给 compat-check 的 `--system`）
 
-### 5.2 常用可选项
+### 6.2 常用可选项
 
 - target 与 gate 预期：
   - `SR_CI_TARGET`
@@ -136,13 +163,16 @@ macOS 额外必填：
   - `SR_CI_CPU_SHADER_TIMEOUT_MS`
   - `SR_CI_CPU_SHADER_ENABLE_MINIMAL_RUNTIME`
   - `SR_CI_INJECT_FAKE_SWIFTSHADER_HINT`
+- CPU 发布告警阈值相关：
+  - `SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS`
+  - `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT`
 - capability 断言：
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_STATUS`
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_REASON`
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_SOURCE`
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE`
 
-### 5.3 优先级（从高到低）
+### 6.3 优先级（从高到低）
 
 1. Workflow 注入的 `SR_CI_*` 显式值（最高优先级）。
 2. `software-renderer-cpu-path-ci.sh` 的推导/兜底：
@@ -156,7 +186,7 @@ macOS 额外必填：
 
 补充：当 `SR_CI_INJECT_FAKE_SWIFTSHADER_HINT=true` 时，compat-check 会临时设置 `VK_DRIVER_FILES` 指向伪造清单，并在退出时恢复原值。
 
-## 6. 排障建议流程
+## 7. 排障建议流程
 
 1. 先确认构建 gate：查看 `cpu-route-target-gate` 与 `options-snapshot` 日志。
 2. 若运行时未走 CPU 路由：查看 `software renderer cpu route is disabled reason=...`。

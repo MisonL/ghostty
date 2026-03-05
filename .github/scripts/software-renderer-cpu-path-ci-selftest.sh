@@ -153,6 +153,38 @@ case_macos_default_route_backend_is_metal() {
   pass "macOS default route backend is metal"
 }
 
+case_dry_run_cpu_publish_warning_knobs_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS=55 \
+    SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT=4; then
+    fail "dry-run with cpu publish warning knobs should succeed"
+  fi
+
+  assert_contains "$output" "dry-run compat-check command" "dry-run command print"
+  assert_contains "$output" "--cpu-publish-warning-threshold-ms 55" "dry-run cpu publish warning threshold arg"
+  assert_contains "$output" "--cpu-publish-warning-consecutive-limit 4" "dry-run cpu publish warning consecutive limit arg"
+  pass "dry-run passes cpu publish warning knobs"
+}
+
+case_dry_run_cpu_publish_warning_threshold_only_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS=21; then
+    fail "dry-run with cpu publish warning threshold only should succeed"
+  fi
+
+  assert_contains "$output" "dry-run compat-check command" "dry-run command print"
+  assert_contains "$output" "--cpu-publish-warning-threshold-ms 21" "dry-run cpu publish warning threshold-only arg"
+  pass "dry-run passes cpu publish warning threshold-only knob"
+}
+
 test_cases=(
   case_target_gate_mismatch_fails
   case_macos_missing_system_path_fails
@@ -162,6 +194,8 @@ test_cases=(
   case_linux_legacy_auto_transport_uses_gtk_runtime
   case_linux_non_legacy_auto_transport_uses_none_runtime
   case_macos_default_route_backend_is_metal
+  case_dry_run_cpu_publish_warning_knobs_passthrough
+  case_dry_run_cpu_publish_warning_threshold_only_passthrough
 )
 
 for test_case in "${test_cases[@]}"; do
