@@ -3033,6 +3033,89 @@ test "customShaderExecutionCapabilityStatusForBackendProbe reuses cached compile
     try std.testing.expectEqualDeep(expected_with_sentinel, status);
 }
 
+test "capability status cache key contract is sensitive to runtime and probe inputs" {
+    defer clearCapabilityProbeStatusCache();
+    clearCapabilityProbeStatusCache();
+
+    const probe: VulkanSwiftshaderProbe = .{
+        .hint_source = .vk_driver_files,
+        .candidate_path = "/opt/swiftshader/icd.json",
+        .candidate_readable = true,
+    };
+    const key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        probe,
+        true,
+    );
+    const expected_status = RuntimeCapabilityStatus{ .unavailable = .execution_timeout };
+    storeCapabilityProbeStatusCache(key, expected_status);
+    try std.testing.expectEqualDeep(
+        expected_status,
+        loadCapabilityProbeStatusCache(key).?,
+    );
+
+    const changed_hint_source_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        .{
+            .hint_source = .vk_icd_filenames,
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = true,
+        },
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_hint_source_key) == null);
+
+    const changed_candidate_readable_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        .{
+            .hint_source = .vk_driver_files,
+            .candidate_path = "/opt/swiftshader/icd.json",
+            .candidate_readable = false,
+        },
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_candidate_readable_key) == null);
+
+    const changed_candidate_path_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        .{
+            .hint_source = .vk_driver_files,
+            .candidate_path = "/opt/swiftshader/jcd.json",
+            .candidate_readable = true,
+        },
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_candidate_path_key) == null);
+
+    const changed_enable_minimal_runtime_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        16,
+        probe,
+        false,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_enable_minimal_runtime_key) == null);
+
+    const changed_timeout_key = capabilityProbeStatusCacheKey(
+        .vulkan_swiftshader,
+        17,
+        probe,
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_timeout_key) == null);
+
+    const changed_backend_key = capabilityProbeStatusCacheKey(
+        .off,
+        16,
+        probe,
+        true,
+    );
+    try std.testing.expect(loadCapabilityProbeStatusCache(changed_backend_key) == null);
+}
+
 test "capability status cache keys and invalidates with compile cache updates" {
     defer clearCapabilityProbeCompileCache();
     clearCapabilityProbeCompileCache();

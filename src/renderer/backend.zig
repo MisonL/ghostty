@@ -44,11 +44,40 @@ pub const Backend = enum {
     }
 };
 
-test "softwareRouteForOsTag" {
+test "softwareRouteForOsTag routes Darwin tags to metal" {
     const testing = std.testing;
 
-    try testing.expectEqual(Backend.opengl, Backend.softwareRouteForOsTag(.linux));
-    try testing.expectEqual(Backend.metal, Backend.softwareRouteForOsTag(.macos));
-    try testing.expectEqual(Backend.opengl, Backend.softwareRouteForOsTag(.freebsd));
-    try testing.expectEqual(Backend.metal, Backend.softwareRouteForOsTag(.ios));
+    const darwin_tags = [_]std.Target.Os.Tag{
+        .macos,
+        .ios,
+        .tvos,
+        .watchos,
+        .visionos,
+    };
+
+    for (darwin_tags) |os_tag| {
+        try testing.expectEqual(Backend.metal, Backend.softwareRouteForOsTag(os_tag));
+    }
+}
+
+test "softwareRouteForOsTag routes windows/linux/freebsd to opengl" {
+    const testing = std.testing;
+
+    const desktop_tags = [_]std.Target.Os.Tag{
+        .windows,
+        .linux,
+        .freebsd,
+    };
+
+    for (desktop_tags) |os_tag| {
+        try testing.expectEqual(Backend.opengl, Backend.softwareRouteForOsTag(os_tag));
+    }
+}
+
+test "softwareRouteForOsTag keeps macos software path off OpenGL" {
+    const testing = std.testing;
+    const macos_route = Backend.softwareRouteForOsTag(.macos);
+
+    try testing.expect(macos_route != .opengl);
+    try testing.expectEqual(Backend.metal, macos_route);
 }

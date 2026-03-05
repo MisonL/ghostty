@@ -20,6 +20,7 @@ target_label="${SR_CI_TARGET_LABEL:-unknown-target}"
 transport_label="${SR_CI_TRANSPORT_LABEL:-unknown-transport}"
 force_allow_legacy_os="${SR_CI_FORCE_ALLOW_LEGACY_OS:-}"
 expect_cpu_effective="${SR_CI_EXPECT_CPU_EFFECTIVE:-}"
+expect_software_route_backend="${SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND:-}"
 cpu_shader_mode="${SR_CI_CPU_SHADER_MODE:-}"
 cpu_shader_backend="${SR_CI_CPU_SHADER_BACKEND:-}"
 expect_cpu_shader_backend="${SR_CI_EXPECT_CPU_SHADER_BACKEND:-}"
@@ -89,6 +90,11 @@ if [[ -n "$target" && -n "$target_major" ]]; then
   fi
 fi
 
+if [[ "$target_gate_expected_cpu_effective" != "unknown" && -n "$expect_cpu_effective" && "$expect_cpu_effective" != "$target_gate_expected_cpu_effective" ]]; then
+  echo "Target gate expected cpu_effective ($target_gate_expected_cpu_effective) mismatches matrix expect_cpu_effective ($expect_cpu_effective) for target-label=$target_label target=${target:-default}" >&2
+  exit 1
+fi
+
 resolved_cpu_shader_mode="$cpu_shader_mode"
 resolved_cpu_shader_backend="$cpu_shader_backend"
 resolved_cpu_shader_timeout_ms="$cpu_shader_timeout_ms"
@@ -110,9 +116,18 @@ if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
 fi
 
-route_backend=opengl
-if [[ "$SR_CI_OS" == "macos" ]]; then
-  route_backend=metal
+if [[ -n "$expect_software_route_backend" ]]; then
+  route_backend="$expect_software_route_backend"
+else
+  route_backend=opengl
+  if [[ "$SR_CI_OS" == "macos" ]]; then
+    route_backend=metal
+  fi
+fi
+
+if [[ "$SR_CI_OS" == "macos" && -z "$system_path" ]]; then
+  echo "SR_CI_SYSTEM_PATH is required for macOS software-renderer cpu-path CI" >&2
+  exit 1
 fi
 
 compat_args=(
@@ -172,7 +187,7 @@ if [[ "$expect_cpu_effective" != "<unset>" ]]; then
 fi
 if [[ "$SR_CI_OS" == "linux" ]]; then
   compat_args+=(--app-runtime "$app_runtime")
-elif [[ -n "$system_path" ]]; then
+else
   compat_args+=(--system "$system_path")
 fi
 

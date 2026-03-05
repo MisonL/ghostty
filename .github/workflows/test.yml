@@ -1219,6 +1219,7 @@ jobs:
           SR_CI_TARGET: ${{ matrix.target.target }}
           SR_CI_TRANSPORT_LABEL: ${{ matrix.transport.transport_label }}
           SR_CI_TRANSPORT_MODE: ${{ matrix.transport.transport_mode }}
+          SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: opengl
           SR_CI_FORCE_ALLOW_LEGACY_OS: ${{ matrix.target.force_allow_legacy_os }}
           SR_CI_EXPECT_CPU_EFFECTIVE: ${{ matrix.target.expect_cpu_effective }}
           SR_CI_CPU_SHADER_MODE: ${{ matrix.target.cpu_shader_mode }}
@@ -1464,6 +1465,7 @@ jobs:
           SR_CI_TARGET: ${{ matrix.target.target }}
           SR_CI_TRANSPORT_LABEL: ${{ matrix.transport.transport_label }}
           SR_CI_TRANSPORT_MODE: ${{ matrix.transport.transport_mode }}
+          SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: metal
           SR_CI_FORCE_ALLOW_LEGACY_OS: ${{ matrix.target.force_allow_legacy_os }}
           SR_CI_EXPECT_CPU_EFFECTIVE: ${{ matrix.target.expect_cpu_effective }}
           SR_CI_CPU_SHADER_MODE: ${{ matrix.target.cpu_shader_mode }}
