@@ -2008,7 +2008,19 @@ keybind: Keybinds = .{},
 /// When this is `false` (default), Ghostty uses the stable legacy
 /// presentation path even if `renderer=software` is selected at build time.
 ///
-/// CPU-route compatibility fallback:
+/// Build-time CPU-route gate:
+///
+/// CPU route is build-effective only when all of the following are true:
+///
+/// * `-Dsoftware-renderer-cpu-mvp=true`
+/// * Target OS passes minimum version gate, or
+///   `-Dsoftware-renderer-cpu-allow-legacy-os=true` is set.
+///
+/// Current minimum versions are macOS `11.0.0` and Linux `5.0.0`.
+/// `-Dsoftware-renderer-cpu-allow-legacy-os=true` only bypasses this
+/// build-time OS-version gate. It does not bypass runtime fallback gates.
+///
+/// Runtime CPU-route fallback gates:
 ///
 /// When the software renderer CPU route is active, Ghostty automatically
 /// handles `custom-shader` according to build-time mode and backend:
@@ -2027,12 +2039,19 @@ keybind: Keybinds = .{},
 ///   execution and always falls back while shaders are active.
 ///   For `vulkan_swiftshader`, Vulkan loader hint precedence is:
 ///   `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`.
+///   Current staged capability probing may report unavailable (for example:
+///   backend disabled/unavailable, runtime init failure, compile failure,
+///   timeout, or device loss), which triggers platform-route fallback while
+///   shaders are active.
 ///
 /// Timeout budget (`-Dsoftware-renderer-cpu-shader-timeout-ms`, default:
 /// `16` ms) must be > 0 in `safe` mode; timeout 0 forces platform fallback.
 ///
 /// Transport mode `-Dsoftware-frame-transport-mode=native` still forces
 /// the platform route.
+///
+/// Presenter `software-renderer-presenter=legacy-gl` also forces platform
+/// route for the CPU path.
 ///
 /// Build-time compatibility note: by default the CPU route only becomes
 /// effective for macOS >= 11 and Linux >= 5.0. For experimental testing on
@@ -3090,6 +3109,16 @@ keybind: Keybinds = .{},
 ///   available and timeout budget is > 0; otherwise fallback to platform route.
 /// * `full`: use CPU route only when custom-shader execution capability is
 ///   available; otherwise fallback to platform route while shaders are active.
+///
+/// Additional staged boundaries:
+///
+/// * CPU route must be build-effective
+///   (`-Dsoftware-renderer-cpu-mvp=true` and target gate passed, optionally
+///   overridden by `-Dsoftware-renderer-cpu-allow-legacy-os=true`).
+/// * `-Dsoftware-renderer-cpu-allow-legacy-os=true` only bypasses the
+///   build-time target-version gate, not runtime fallback gates.
+/// * `software-renderer-presenter=legacy-gl` and
+///   `-Dsoftware-frame-transport-mode=native` force platform-route fallback.
 ///
 /// This can be repeated multiple times to load multiple shaders. The shaders
 /// will be run in the order they are specified.

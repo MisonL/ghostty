@@ -69,6 +69,49 @@ normalize_target_for_zig() {
   printf '%s' "$raw_target"
 }
 
+target_version_tuple() {
+  local target_value="$1"
+
+  if [[ "$target_value" =~ ^.+-(linux|macos)\.([0-9]+)\.([0-9]+)\.([0-9]+)([+-].*)?$ ]]; then
+    printf '%s %s %s %s\n' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[2]}" \
+      "${BASH_REMATCH[3]}" \
+      "${BASH_REMATCH[4]}"
+    return 0
+  fi
+
+  return 1
+}
+
+target_meets_cpu_min_version() {
+  local os="$1"
+  local major="$2"
+  local minor="$3"
+
+  case "$os" in
+    linux)
+      (( major > 5 || (major == 5 && minor >= 0) ))
+      ;;
+    macos)
+      (( major > 11 || (major == 11 && minor >= 0) ))
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+cpu_min_version_for_os() {
+  local os="$1"
+
+  case "$os" in
+    linux) printf '5.0.0' ;;
+    macos) printf '11.0.0' ;;
+    *) printf 'n/a' ;;
+  esac
+}
+
 report_failure() {
   local failure_class="$1"
   local hint="$2"
@@ -422,6 +465,37 @@ if [[ -n "$target" ]]; then
   esac
 fi
 
+target_cpu_gate_expectation=""
+if [[ -n "$target" ]]; then
+  if tuple="$(target_version_tuple "$target")"; then
+    read -r target_version_os target_version_major target_version_minor target_version_patch <<< "$tuple"
+    min_version="$(cpu_min_version_for_os "$target_version_os")"
+    target_supported="false"
+    if target_meets_cpu_min_version "$target_version_os" "$target_version_major" "$target_version_minor"; then
+      target_supported="true"
+    fi
+    if [[ "$target_supported" == "true" || "$allow_legacy_os" == "true" ]]; then
+      target_cpu_gate_expectation="true"
+    else
+      target_cpu_gate_expectation="false"
+    fi
+
+    echo "[software-compat] cpu-route-target-gate os=$target_version_os version=$target_version_major.$target_version_minor.$target_version_patch min-required=$min_version allow-legacy-os=$allow_legacy_os expected-build-cpu-effective=$target_cpu_gate_expectation"
+    if [[ "$target_supported" == "false" ]]; then
+      if [[ "$allow_legacy_os" == "true" ]]; then
+        echo "[software-compat] note: legacy target override enabled; this bypasses OS-version gate only."
+      else
+        echo "[software-compat] note: target is below CPU-route minimum and legacy override is disabled, so build cpu-effective is expected to be false."
+      fi
+    fi
+    if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "$target_cpu_gate_expectation" ]]; then
+      echo "[software-compat] note: expect-cpu-effective=$expect_cpu_effective differs from target gate expectation=$target_cpu_gate_expectation; verify matrix intent."
+    fi
+  else
+    echo "[software-compat] note: unable to parse target version tuple for cpu-route gate: $target"
+  fi
+fi
+
 if [[ -z "$expect_software_route_backend" ]]; then
   route_os="$target_os"
   if [[ -z "$route_os" ]]; then
@@ -500,11 +574,22 @@ cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
 cmd+=(--cache-dir "$cache_dir")
 
 echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} target=${target:-default}"
-if [[ "${cpu_shader_mode:-full}" == "full" || "${cpu_shader_mode:-safe}" == "safe" ]]; then
+resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
+resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
+resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"
+echo "[software-compat] resolved-cpu-shader-config mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms"
+if [[ "$resolved_cpu_shader_mode" == "off" ]]; then
+  echo "[software-compat] note: cpu-shader-mode=off always falls back to platform route while custom shaders are active."
+elif [[ "$resolved_cpu_shader_mode" == "safe" && "$resolved_cpu_shader_timeout_ms" == "0" ]]; then
+  echo "[software-compat] note: cpu-shader-mode=safe with timeout 0 forces platform-route fallback."
+elif [[ "$resolved_cpu_shader_backend" == "off" ]]; then
+  echo "[software-compat] note: cpu-shader-backend=off disables CPU custom-shader capability; safe/full will fallback while shaders are active."
+fi
+if [[ "$resolved_cpu_shader_mode" == "full" || "$resolved_cpu_shader_mode" == "safe" ]]; then
   echo "[software-compat] note: cpu-shader-mode=safe/full may fallback to platform route while custom shaders are active when CPU custom-shader execution capability is unavailable."
 fi
-if [[ "${cpu_shader_mode:-}" == "safe" && -n "${cpu_shader_timeout_ms:-}" && "$cpu_shader_timeout_ms" == "0" ]]; then
-  echo "[software-compat] note: cpu-shader-mode=safe with timeout 0 forces platform-route fallback."
+if [[ "$resolved_cpu_shader_backend" == "vulkan_swiftshader" && "$resolved_cpu_shader_mode" != "off" ]]; then
+  echo "[software-compat] note: inspect runtime shader_capability_reason/hint_source/hint_path/hint_readable logs when diagnosing custom-shader CPU-route fallback."
 fi
 if [[ -n "$expect_software_route_backend" ]]; then
   echo "[software-compat] expect-software-route-backend=$expect_software_route_backend"
@@ -541,100 +626,90 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
         "options-candidates-preview=$options_preview"
     fi
 
+    options_cpu_effective="$(sed -nE 's/.*software_renderer_cpu_effective[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_shader_backend="$(sed -nE 's/.*software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_shader_timeout_ms="$(sed -nE 's/.*software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_frame_damage_mode="$(sed -nE 's/.*software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+    options_cpu_damage_rect_cap="$(sed -nE 's/.*software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
+    options_software_route_backend="$(sed -nE 's/.*software_renderer_route_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
+
+    if [[ -z "$options_cpu_effective" ]]; then options_cpu_effective="unknown"; fi
+    if [[ -z "$options_cpu_shader_mode" ]]; then options_cpu_shader_mode="unknown"; fi
+    if [[ -z "$options_cpu_shader_backend" ]]; then options_cpu_shader_backend="unknown"; fi
+    if [[ -z "$options_cpu_shader_timeout_ms" ]]; then options_cpu_shader_timeout_ms="unknown"; fi
+    if [[ -z "$options_cpu_frame_damage_mode" ]]; then options_cpu_frame_damage_mode="unknown"; fi
+    if [[ -z "$options_cpu_damage_rect_cap" ]]; then options_cpu_damage_rect_cap="unknown"; fi
+    if [[ -z "$options_software_route_backend" ]]; then options_software_route_backend="unknown"; fi
+
+    echo "[software-compat] options-snapshot file=$options_file cpu-effective=$options_cpu_effective cpu-shader-mode=$options_cpu_shader_mode cpu-shader-backend=$options_cpu_shader_backend cpu-shader-timeout-ms=$options_cpu_shader_timeout_ms cpu-frame-damage-mode=$options_cpu_frame_damage_mode cpu-damage-rect-cap=$options_cpu_damage_rect_cap software-route-backend=$options_software_route_backend"
+
     if [[ -n "$expect_cpu_effective" ]]; then
       if ! grep -Eq "software_renderer_cpu_effective[^=]*=[[:space:]]*$expect_cpu_effective([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_effective="$(sed -nE 's/.*software_renderer_cpu_effective[^=]*=[[:space:]]*(true|false).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_effective" ]]; then
-          actual_cpu_effective="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-effective mismatch expected=$expect_cpu_effective actual=$actual_cpu_effective file=$options_file"
+          "cpu-effective mismatch expected=$expect_cpu_effective actual=$options_cpu_effective file=$options_file"
       fi
       echo "[software-compat] cpu-effective assertion matched expected=$expect_cpu_effective"
     fi
 
     if [[ -n "$expect_cpu_shader_mode" ]]; then
       if ! grep -Eq "software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\\.?$expect_cpu_shader_mode([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_shader_mode="$(sed -nE 's/.*software_renderer_cpu_shader_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_shader_mode" ]]; then
-          actual_cpu_shader_mode="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$actual_cpu_shader_mode file=$options_file"
+          "cpu-shader-mode mismatch expected=$expect_cpu_shader_mode actual=$options_cpu_shader_mode file=$options_file"
       fi
       echo "[software-compat] cpu-shader-mode assertion matched expected=$expect_cpu_shader_mode"
     fi
 
     if [[ -n "$expect_cpu_shader_backend" ]]; then
       if ! grep -Eq "software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\\.?$expect_cpu_shader_backend([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_shader_backend="$(sed -nE 's/.*software_renderer_cpu_shader_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_shader_backend" ]]; then
-          actual_cpu_shader_backend="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-shader-backend mismatch expected=$expect_cpu_shader_backend actual=$actual_cpu_shader_backend file=$options_file"
+          "cpu-shader-backend mismatch expected=$expect_cpu_shader_backend actual=$options_cpu_shader_backend file=$options_file"
       fi
       echo "[software-compat] cpu-shader-backend assertion matched expected=$expect_cpu_shader_backend"
     fi
 
     if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
       if ! grep -Eq "software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*$expect_cpu_shader_timeout_ms([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_shader_timeout_ms="$(sed -nE 's/.*software_renderer_cpu_shader_timeout_ms[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_shader_timeout_ms" ]]; then
-          actual_cpu_shader_timeout_ms="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$actual_cpu_shader_timeout_ms file=$options_file"
+          "cpu-shader-timeout-ms mismatch expected=$expect_cpu_shader_timeout_ms actual=$options_cpu_shader_timeout_ms file=$options_file"
       fi
       echo "[software-compat] cpu-shader-timeout-ms assertion matched expected=$expect_cpu_shader_timeout_ms"
     fi
 
     if [[ -n "$expect_cpu_frame_damage_mode" ]]; then
       if ! grep -Eq "software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\\.?$expect_cpu_frame_damage_mode([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_frame_damage_mode="$(sed -nE 's/.*software_renderer_cpu_frame_damage_mode[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_frame_damage_mode" ]]; then
-          actual_cpu_frame_damage_mode="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-frame-damage-mode mismatch expected=$expect_cpu_frame_damage_mode actual=$actual_cpu_frame_damage_mode file=$options_file"
+          "cpu-frame-damage-mode mismatch expected=$expect_cpu_frame_damage_mode actual=$options_cpu_frame_damage_mode file=$options_file"
       fi
       echo "[software-compat] cpu-frame-damage-mode assertion matched expected=$expect_cpu_frame_damage_mode"
     fi
 
     if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
       if ! grep -Eq "software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*$expect_cpu_damage_rect_cap([[:space:]]|,|;)" "$options_file"; then
-        actual_cpu_damage_rect_cap="$(sed -nE 's/.*software_renderer_cpu_damage_rect_cap[^=]*=[[:space:]]*([0-9]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_cpu_damage_rect_cap" ]]; then
-          actual_cpu_damage_rect_cap="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "cpu-damage-rect-cap mismatch expected=$expect_cpu_damage_rect_cap actual=$actual_cpu_damage_rect_cap file=$options_file"
+          "cpu-damage-rect-cap mismatch expected=$expect_cpu_damage_rect_cap actual=$options_cpu_damage_rect_cap file=$options_file"
       fi
       echo "[software-compat] cpu-damage-rect-cap assertion matched expected=$expect_cpu_damage_rect_cap"
     fi
 
     if [[ -n "$expect_software_route_backend" ]]; then
       if ! grep -Eq "software_renderer_route_backend[^=]*=[[:space:]]*\\.?$expect_software_route_backend([[:space:]]|,|;)" "$options_file"; then
-        actual_software_route_backend="$(sed -nE 's/.*software_renderer_route_backend[^=]*=[[:space:]]*\.?([[:alnum:]_]+).*/\1/p' "$options_file" | head -n 1)"
-        if [[ -z "$actual_software_route_backend" ]]; then
-          actual_software_route_backend="unknown"
-        fi
         report_failure \
           "assertion config-mismatch" \
           "expected build option value does not match generated options.zig" \
-          "software-route-backend mismatch expected=$expect_software_route_backend actual=$actual_software_route_backend file=$options_file"
+          "software-route-backend mismatch expected=$expect_software_route_backend actual=$options_software_route_backend file=$options_file"
       fi
       echo "[software-compat] software-route-backend assertion matched expected=$expect_software_route_backend"
     fi

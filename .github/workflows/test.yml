@@ -1149,11 +1149,11 @@ jobs:
         run: |
           allow_legacy_os=false
           app_runtime=none
+          target_major=""
           target="${{ matrix.target.target }}"
           if [[ -n "${target}" ]]; then
             if [[ "${target}" =~ ^[^-]+-linux\.([0-9]+)\.([0-9]+)(\..*)?$ ]]; then
               target_major="${BASH_REMATCH[1]}"
-              target_minor="${BASH_REMATCH[2]}"
               if (( target_major < 5 )); then
                 allow_legacy_os=true
               fi
@@ -1173,6 +1173,37 @@ jobs:
             app_runtime=gtk
           fi
 
+          target_gate_expected_cpu_effective="unknown"
+          if [[ -n "${target}" && -n "${target_major}" ]]; then
+            target_supported=true
+            if (( target_major < 5 )); then
+              target_supported=false
+            fi
+            if [[ "${target_supported}" == "true" || "${allow_legacy_os}" == "true" ]]; then
+              target_gate_expected_cpu_effective=true
+            else
+              target_gate_expected_cpu_effective=false
+            fi
+          fi
+
+          resolved_cpu_shader_mode="${{ matrix.target.cpu_shader_mode }}"
+          resolved_cpu_shader_backend="${{ matrix.target.cpu_shader_backend }}"
+          resolved_cpu_shader_timeout_ms="${{ matrix.target.cpu_shader_timeout_ms }}"
+          expect_cpu_shader_backend="${{ matrix.target.expect_cpu_shader_backend }}"
+          if [[ -z "${resolved_cpu_shader_mode}" ]]; then resolved_cpu_shader_mode=full; fi
+          if [[ -z "${resolved_cpu_shader_backend}" ]]; then resolved_cpu_shader_backend=vulkan_swiftshader; fi
+          if [[ -z "${resolved_cpu_shader_timeout_ms}" ]]; then resolved_cpu_shader_timeout_ms=16; fi
+          if [[ -z "${expect_cpu_shader_backend}" && -n "${{ matrix.target.cpu_shader_mode }}" && -z "${{ matrix.target.cpu_shader_backend }}" ]]; then
+            expect_cpu_shader_backend=vulkan_swiftshader
+          fi
+          expected_cpu_effective="${{ matrix.target.expect_cpu_effective }}"
+          if [[ -z "${expected_cpu_effective}" ]]; then expected_cpu_effective="<unset>"; fi
+          echo "[software-renderer-ci] linux target-label=${{ matrix.target.target_label }} transport-label=${{ matrix.transport.transport_label }} target=${target:-default} allow-legacy-os=${allow_legacy_os} gate-expected-cpu-effective=${target_gate_expected_cpu_effective} matrix-expect-cpu-effective=${expected_cpu_effective} app-runtime=${app_runtime}"
+          echo "[software-renderer-ci] linux resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
+          if [[ "${allow_legacy_os}" == "true" ]]; then
+            echo "[software-renderer-ci] linux note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
+          fi
+
           compat_args=(
             --mode test
             --transport "${{ matrix.transport.transport_mode }}"
@@ -1188,8 +1219,8 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_backend }}" ]]; then
             compat_args+=(--cpu-shader-backend "${{ matrix.target.cpu_shader_backend }}")
           fi
-          if [[ -n "${{ matrix.target.expect_cpu_shader_backend }}" ]]; then
-            compat_args+=(--expect-cpu-shader-backend "${{ matrix.target.expect_cpu_shader_backend }}")
+          if [[ -n "${expect_cpu_shader_backend}" ]]; then
+            compat_args+=(--expect-cpu-shader-backend "${expect_cpu_shader_backend}")
           fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
@@ -1373,6 +1404,7 @@ jobs:
       - name: Test software renderer CPU path
         run: |
           allow_legacy_os=false
+          target_major=""
           target="${{ matrix.target.target }}"
           if [[ -n "${target}" ]]; then
             if [[ "${target}" =~ ^[^-]+-macos\.([0-9]+)(\..*)?$ ]]; then
@@ -1393,6 +1425,37 @@ jobs:
             exit 1
           fi
 
+          target_gate_expected_cpu_effective="unknown"
+          if [[ -n "${target}" && -n "${target_major}" ]]; then
+            target_supported=true
+            if (( target_major < 11 )); then
+              target_supported=false
+            fi
+            if [[ "${target_supported}" == "true" || "${allow_legacy_os}" == "true" ]]; then
+              target_gate_expected_cpu_effective=true
+            else
+              target_gate_expected_cpu_effective=false
+            fi
+          fi
+
+          resolved_cpu_shader_mode="${{ matrix.target.cpu_shader_mode }}"
+          resolved_cpu_shader_backend="${{ matrix.target.cpu_shader_backend }}"
+          resolved_cpu_shader_timeout_ms="${{ matrix.target.cpu_shader_timeout_ms }}"
+          expect_cpu_shader_backend="${{ matrix.target.expect_cpu_shader_backend }}"
+          if [[ -z "${resolved_cpu_shader_mode}" ]]; then resolved_cpu_shader_mode=full; fi
+          if [[ -z "${resolved_cpu_shader_backend}" ]]; then resolved_cpu_shader_backend=vulkan_swiftshader; fi
+          if [[ -z "${resolved_cpu_shader_timeout_ms}" ]]; then resolved_cpu_shader_timeout_ms=16; fi
+          if [[ -z "${expect_cpu_shader_backend}" && -n "${{ matrix.target.cpu_shader_mode }}" && -z "${{ matrix.target.cpu_shader_backend }}" ]]; then
+            expect_cpu_shader_backend=vulkan_swiftshader
+          fi
+          expected_cpu_effective="${{ matrix.target.expect_cpu_effective }}"
+          if [[ -z "${expected_cpu_effective}" ]]; then expected_cpu_effective="<unset>"; fi
+          echo "[software-renderer-ci] macos target-label=${{ matrix.target.target_label }} transport-label=${{ matrix.transport.transport_label }} target=${target:-default} allow-legacy-os=${allow_legacy_os} gate-expected-cpu-effective=${target_gate_expected_cpu_effective} matrix-expect-cpu-effective=${expected_cpu_effective}"
+          echo "[software-renderer-ci] macos resolved-cpu-shader mode=${resolved_cpu_shader_mode} backend=${resolved_cpu_shader_backend} timeout-ms=${resolved_cpu_shader_timeout_ms} expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
+          if [[ "${allow_legacy_os}" == "true" ]]; then
+            echo "[software-renderer-ci] macos note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
+          fi
+
           compat_args=(
             --mode test
             --transport "${{ matrix.transport.transport_mode }}"
@@ -1408,8 +1471,8 @@ jobs:
           if [[ -n "${{ matrix.target.cpu_shader_backend }}" ]]; then
             compat_args+=(--cpu-shader-backend "${{ matrix.target.cpu_shader_backend }}")
           fi
-          if [[ -n "${{ matrix.target.expect_cpu_shader_backend }}" ]]; then
-            compat_args+=(--expect-cpu-shader-backend "${{ matrix.target.expect_cpu_shader_backend }}")
+          if [[ -n "${expect_cpu_shader_backend}" ]]; then
+            compat_args+=(--expect-cpu-shader-backend "${expect_cpu_shader_backend}")
           fi
           if [[ -n "${{ matrix.target.cpu_shader_timeout_ms }}" ]]; then
             compat_args+=(--cpu-shader-timeout-ms "${{ matrix.target.cpu_shader_timeout_ms }}")
