@@ -167,6 +167,314 @@ fn needsFrameBgImageBuffer(bg_image: ?imagepkg.Image) bool {
     };
 }
 
+fn applyPreparedBackgroundImage(
+    alloc: Allocator,
+    bg_image: *?imagepkg.Image,
+    image: imagepkg.Image,
+) void {
+    if (bg_image.*) |*current| {
+        current.markForReplace(alloc, image);
+    } else {
+        bg_image.* = image;
+    }
+}
+
+fn clearConfiguredBackgroundImage(bg_image: *?imagepkg.Image) void {
+    if (bg_image.*) |*image| image.markForUnload();
+}
+
+fn bgImageRequiresConservativeFullCpuDamage(
+    bg_image: ?imagepkg.Image,
+    config_has_bg_image: bool,
+) bool {
+    const image = bg_image orelse return false;
+    return config_has_bg_image or image.isUnloading();
+}
+
+fn finalizeUnloadingBgImage(
+    alloc: Allocator,
+    bg_image: *?imagepkg.Image,
+) bool {
+    if (bg_image.*) |*image| {
+        if (!image.isUnloading()) return false;
+        image.deinit(alloc);
+        bg_image.* = null;
+        return true;
+    }
+
+    return false;
+}
+
+fn discardStaleUnloadingBackgroundImageAfterPrepareFailure(
+    alloc: Allocator,
+    bg_image: *?imagepkg.Image,
+) bool {
+    // A config flip from "no background" to a broken path can leave the old
+    // slot parked in unload_* forever unless we clear it explicitly.
+    return finalizeUnloadingBgImage(alloc, bg_image);
+}
+
+const CpuImagePixels = struct {
+    width: u32,
+    height: u32,
+    stride_bytes: u32,
+    data: []const u8,
+};
+
+const CpuBackgroundImageFit = enum {
+    contain,
+    cover,
+    stretch,
+    none,
+};
+
+const CpuBackgroundImagePosition = enum {
+    tl,
+    tc,
+    tr,
+    ml,
+    mc,
+    mr,
+    bl,
+    bc,
+    br,
+};
+
+const CpuBackgroundImageConfig = struct {
+    opacity: f32,
+    fit: CpuBackgroundImageFit,
+    position: CpuBackgroundImagePosition,
+    repeat: bool,
+};
+
+fn scaleByAlpha(channel: u8, alpha: u8) u8 {
+    return @intCast((@as(u16, channel) * @as(u16, alpha) + 127) / 255);
+}
+
+fn overPremul(src: u8, dst: u8, src_a: u8) u8 {
+    const inv = @as(u16, 255) - src_a;
+    const blend = (@as(u16, dst) * inv + 127) / 255;
+    const out = @as(u16, src) + blend;
+    return @intCast(@min(out, 255));
+}
+
+fn float01ToByte(value: f32) u8 {
+    const clamped = @max(@as(f32, 0.0), @min(value, 1.0));
+    return @intFromFloat(@round(clamped * 255.0));
+}
+
+fn premulStorageColor(
+    pixel_format: cpu_renderer.PixelFormat,
+    rgba: [4]u8,
+) [4]u8 {
+    const alpha = rgba[3];
+    const r = scaleByAlpha(rgba[0], alpha);
+    const g = scaleByAlpha(rgba[1], alpha);
+    const b = scaleByAlpha(rgba[2], alpha);
+    return switch (pixel_format) {
+        .bgra8_premul => .{ b, g, r, alpha },
+        .rgba8_premul => .{ r, g, b, alpha },
+    };
+}
+
+fn wrapRepeatCoord(coord: f32, size: f32) f32 {
+    return @mod(@mod(coord, size) + size, size);
+}
+
+fn composeCpuBackgroundImageLegacy(
+    alloc: Allocator,
+    framebuffer: *cpu_renderer.FrameBuffer,
+    bg_color_rgba: [4]u8,
+    config: CpuBackgroundImageConfig,
+    pixels: CpuImagePixels,
+) !void {
+    const bg_color = premulStorageColor(
+        framebuffer.pixel_format,
+        bg_color_rgba,
+    );
+    if (pixels.width == 0 or pixels.height == 0) {
+        framebuffer.clear(bg_color);
+        return;
+    }
+
+    const row_stride = try std.math.mul(
+        u32,
+        framebuffer.width_px,
+        4,
+    );
+    const row_rgba = try alloc.alloc(
+        u8,
+        @as(usize, @intCast(row_stride)),
+    );
+    defer alloc.free(row_rgba);
+
+    const screen_width = @as(f32, @floatFromInt(framebuffer.width_px));
+    const screen_height = @as(f32, @floatFromInt(framebuffer.height_px));
+    const tex_width = @as(f32, @floatFromInt(pixels.width));
+    const tex_height = @as(f32, @floatFromInt(pixels.height));
+    if (screen_width <= 0 or screen_height <= 0 or tex_width <= 0 or tex_height <= 0) {
+        framebuffer.clear(bg_color);
+        return;
+    }
+
+    var dest_width = tex_width;
+    var dest_height = tex_height;
+    switch (config.fit) {
+        .contain => {
+            const scale = @min(
+                screen_width / tex_width,
+                screen_height / tex_height,
+            );
+            dest_width = tex_width * scale;
+            dest_height = tex_height * scale;
+        },
+        .cover => {
+            const scale = @max(
+                screen_width / tex_width,
+                screen_height / tex_height,
+            );
+            dest_width = tex_width * scale;
+            dest_height = tex_height * scale;
+        },
+        .stretch => {
+            dest_width = screen_width;
+            dest_height = screen_height;
+        },
+        .none => {},
+    }
+    if (dest_width <= 0 or dest_height <= 0) {
+        framebuffer.clear(bg_color);
+        return;
+    }
+
+    const start_x: f32 = 0;
+    const start_y: f32 = 0;
+    const mid_x = (screen_width - dest_width) / 2.0;
+    const mid_y = (screen_height - dest_height) / 2.0;
+    const end_x = screen_width - dest_width;
+    const end_y = screen_height - dest_height;
+
+    var offset_x = mid_x;
+    var offset_y = mid_y;
+    switch (config.position) {
+        .tl => {
+            offset_x = start_x;
+            offset_y = start_y;
+        },
+        .tc => {
+            offset_x = mid_x;
+            offset_y = start_y;
+        },
+        .tr => {
+            offset_x = end_x;
+            offset_y = start_y;
+        },
+        .ml => {
+            offset_x = start_x;
+            offset_y = mid_y;
+        },
+        .mc => {
+            offset_x = mid_x;
+            offset_y = mid_y;
+        },
+        .mr => {
+            offset_x = end_x;
+            offset_y = mid_y;
+        },
+        .bl => {
+            offset_x = start_x;
+            offset_y = end_y;
+        },
+        .bc => {
+            offset_x = mid_x;
+            offset_y = end_y;
+        },
+        .br => {
+            offset_x = end_x;
+            offset_y = end_y;
+        },
+    }
+
+    const scale_x = tex_width / dest_width;
+    const scale_y = tex_height / dest_height;
+    const bg_r = @as(f32, @floatFromInt(bg_color_rgba[0])) / 255.0;
+    const bg_g = @as(f32, @floatFromInt(bg_color_rgba[1])) / 255.0;
+    const bg_b = @as(f32, @floatFromInt(bg_color_rgba[2])) / 255.0;
+    const bg_a = @as(f32, @floatFromInt(bg_color_rgba[3])) / 255.0;
+    const image_opacity = @max(@as(f32, 0), @min(config.opacity, 1));
+    const opacity = if (bg_a > 0)
+        @min(image_opacity, 1.0 / bg_a)
+    else
+        image_opacity;
+
+    framebuffer.clear(.{ 0, 0, 0, 0 });
+    for (0..framebuffer.height_px) |yi| {
+        const y_u32: u32 = @intCast(yi);
+        const frag_y = @as(f32, @floatFromInt(y_u32)) + 0.5;
+        for (0..framebuffer.width_px) |xi| {
+            const x_u32: u32 = @intCast(xi);
+            const frag_x = @as(f32, @floatFromInt(x_u32)) + 0.5;
+
+            var tex_x = (frag_x - offset_x) * scale_x;
+            var tex_y = (frag_y - offset_y) * scale_y;
+            if (config.repeat) {
+                tex_x = wrapRepeatCoord(tex_x, tex_width);
+                tex_y = wrapRepeatCoord(tex_y, tex_height);
+            }
+
+            var src_r_premul: f32 = 0;
+            var src_g_premul: f32 = 0;
+            var src_b_premul: f32 = 0;
+            var src_alpha: f32 = 0;
+            if (tex_x >= 0 and tex_y >= 0 and tex_x <= tex_width and tex_y <= tex_height) {
+                const sx = @min(
+                    pixels.width - 1,
+                    @as(u32, @intFromFloat(@floor(tex_x))),
+                );
+                const sy = @min(
+                    pixels.height - 1,
+                    @as(u32, @intFromFloat(@floor(tex_y))),
+                );
+                const off =
+                    @as(usize, @intCast(sy)) * @as(usize, @intCast(pixels.stride_bytes)) +
+                    @as(usize, @intCast(sx)) * 4;
+                const r = pixels.data[off];
+                const g = pixels.data[off + 1];
+                const b = pixels.data[off + 2];
+                const a = pixels.data[off + 3];
+                src_alpha = @as(f32, @floatFromInt(a)) / 255.0;
+                src_r_premul = (@as(f32, @floatFromInt(r)) / 255.0) * src_alpha;
+                src_g_premul = (@as(f32, @floatFromInt(g)) / 255.0) * src_alpha;
+                src_b_premul = (@as(f32, @floatFromInt(b)) / 255.0) * src_alpha;
+            }
+
+            const src_alpha_scaled = src_alpha * opacity;
+            const src_r_scaled = src_r_premul * opacity;
+            const src_g_scaled = src_g_premul * opacity;
+            const src_b_scaled = src_b_premul * opacity;
+            const bg_mix = 1.0 - src_alpha_scaled;
+            const out_r = (src_r_scaled + bg_r * bg_mix) * bg_a;
+            const out_g = (src_g_scaled + bg_g * bg_mix) * bg_a;
+            const out_b = (src_b_scaled + bg_b * bg_mix) * bg_a;
+
+            const row_off = @as(usize, @intCast(x_u32)) * 4;
+            row_rgba[row_off] = float01ToByte(out_r);
+            row_rgba[row_off + 1] = float01ToByte(out_g);
+            row_rgba[row_off + 2] = float01ToByte(out_b);
+            row_rgba[row_off + 3] = float01ToByte(bg_a);
+        }
+
+        framebuffer.blendPremulRgbaImage(
+            0,
+            y_u32,
+            framebuffer.width_px,
+            1,
+            row_stride,
+            row_rgba,
+        );
+    }
+}
+
 const SoftwareCpuRouteDisableReason = enum {
     build_cpu_route_unavailable,
     build_renderer_not_software,
@@ -507,6 +815,128 @@ const CpuRouteDiagnosticsState = struct {
         };
     }
 };
+
+fn collectRetiredCpuFramePoolsForDiagnostics(
+    retired_cpu_frame_pools: *std.ArrayListUnmanaged(cpu_renderer.FramePool),
+    retired_pool_pressure_warned: *bool,
+) void {
+    var i: usize = 0;
+    while (i < retired_cpu_frame_pools.items.len) {
+        if (!retired_cpu_frame_pools.items[i].isIdle()) {
+            i += 1;
+            continue;
+        }
+
+        var retired = retired_cpu_frame_pools.swapRemove(i);
+        retired.deinitIdle();
+    }
+
+    if (retired_cpu_frame_pools.items.len < max_retired_cpu_frame_pools) {
+        retired_pool_pressure_warned.* = false;
+    }
+}
+
+fn retireCpuFramePoolWithDiagnostics(
+    alloc: Allocator,
+    retired_cpu_frame_pools: *std.ArrayListUnmanaged(cpu_renderer.FramePool),
+    retired_pool_pressure_warned: *bool,
+    diagnostics: *CpuRouteDiagnosticsState,
+    pool: cpu_renderer.FramePool,
+) !void {
+    collectRetiredCpuFramePoolsForDiagnostics(
+        retired_cpu_frame_pools,
+        retired_pool_pressure_warned,
+    );
+    if (retired_cpu_frame_pools.items.len >= max_retired_cpu_frame_pools) {
+        if (!retired_pool_pressure_warned.*) {
+            retired_pool_pressure_warned.* = true;
+            diagnostics.recordFramePoolWarning(.retired_pool_pressure);
+            const snapshot = diagnostics.snapshot();
+            log.warn(
+                "software renderer cpu retired pool pressure; delaying resize until in-flight frames retire count={} warning_count={} last_reason={s}",
+                .{
+                    retired_cpu_frame_pools.items.len,
+                    snapshot.cpu_retired_pool_pressure_warning_count,
+                    snapshot.last_cpu_frame_pool_warning_reason,
+                },
+            );
+        }
+        return error.CpuFramePoolRetiredPressure;
+    }
+    try retired_cpu_frame_pools.append(alloc, pool);
+}
+
+fn acquireCpuFramePoolSlotWithDiagnostics(
+    pool: *cpu_renderer.FramePool,
+    frame_pool_exhausted_warned: *bool,
+    diagnostics: *CpuRouteDiagnosticsState,
+) ?cpu_renderer.FramePool.Acquired {
+    const acquired = pool.acquire() orelse {
+        if (!frame_pool_exhausted_warned.*) {
+            frame_pool_exhausted_warned.* = true;
+            diagnostics.recordFramePoolWarning(.frame_pool_exhausted);
+            const snapshot = diagnostics.snapshot();
+            log.warn(
+                "software renderer cpu frame pool exhausted; dropping frame warning_count={} last_reason={s}",
+                .{
+                    snapshot.cpu_frame_pool_exhausted_warning_count,
+                    snapshot.last_cpu_frame_pool_warning_reason,
+                },
+            );
+        }
+        return null;
+    };
+
+    frame_pool_exhausted_warned.* = false;
+    return acquired;
+}
+
+fn logCpuDamageOverflowKv(snapshot: CpuRouteDiagnosticsSnapshot) void {
+    if (snapshot.cpu_damage_rect_overflow_count == 0) return;
+    log.warn(
+        "software renderer cpu damage kv frame_damage_mode={s} rect_count={} overflow_count={} damage_rect_cap={}",
+        .{
+            snapshot.cpu_frame_damage_mode,
+            snapshot.cpu_damage_rect_count,
+            snapshot.cpu_damage_rect_overflow_count,
+            snapshot.cpu_damage_rect_cap,
+        },
+    );
+}
+
+fn logCpuPublishRetryKv(
+    snapshot: CpuRouteDiagnosticsSnapshot,
+    publish_pending: bool,
+) void {
+    log.warn(
+        "software renderer cpu publish retry kv reason={s} retry_count={} invalid_surface_count={} pool_retired_pressure_count={} frame_pool_exhausted_count={} mailbox_backpressure_count={} publish_pending={}",
+        .{
+            snapshot.last_cpu_publish_retry_reason,
+            snapshot.publish_retry_count,
+            snapshot.cpu_publish_retry_invalid_surface_count,
+            snapshot.cpu_publish_retry_pool_pressure_count,
+            snapshot.cpu_publish_retry_pool_exhausted_count,
+            snapshot.cpu_publish_retry_mailbox_backpressure_count,
+            publish_pending,
+        },
+    );
+}
+
+fn logCpuPublishWarningKv(snapshot: CpuRouteDiagnosticsSnapshot) void {
+    const last_cpu_frame_ms = snapshot.last_cpu_publish_latency_warning_frame_ms orelse return;
+    log.warn(
+        "software renderer cpu publish warning kv last_cpu_frame_ms={} threshold_ms={} consecutive={} warning_count={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
+        .{
+            last_cpu_frame_ms,
+            snapshot.cpu_publish_warning_threshold_ms,
+            snapshot.last_cpu_publish_latency_warning_consecutive_count,
+            snapshot.cpu_publish_latency_warning_count,
+            snapshot.shader_capability_observed,
+            snapshot.shader_capability_available,
+            snapshot.shader_minimal_runtime_enabled,
+        },
+    );
+}
 
 fn softwareCpuRouteDisableScope(reason: SoftwareCpuRouteDisableReason) []const u8 {
     return switch (reason) {
@@ -2320,41 +2750,20 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn collectRetiredCpuFramePools(self: *Self) void {
-            var i: usize = 0;
-            while (i < self.retired_cpu_frame_pools.items.len) {
-                if (!self.retired_cpu_frame_pools.items[i].isIdle()) {
-                    i += 1;
-                    continue;
-                }
-
-                var retired = self.retired_cpu_frame_pools.swapRemove(i);
-                retired.deinitIdle();
-            }
-
-            if (self.retired_cpu_frame_pools.items.len < max_retired_cpu_frame_pools) {
-                self.cpu_retired_pool_pressure_warned = false;
-            }
+            collectRetiredCpuFramePoolsForDiagnostics(
+                &self.retired_cpu_frame_pools,
+                &self.cpu_retired_pool_pressure_warned,
+            );
         }
 
         fn retireCpuFramePool(self: *Self, pool: cpu_renderer.FramePool) !void {
-            self.collectRetiredCpuFramePools();
-            if (self.retired_cpu_frame_pools.items.len >= max_retired_cpu_frame_pools) {
-                if (!self.cpu_retired_pool_pressure_warned) {
-                    self.cpu_retired_pool_pressure_warned = true;
-                    self.cpu_route_diagnostics.recordFramePoolWarning(.retired_pool_pressure);
-                    const diagnostics = self.cpu_route_diagnostics.snapshot();
-                    log.warn(
-                        "software renderer cpu retired pool pressure; delaying resize until in-flight frames retire count={} warning_count={} last_reason={s}",
-                        .{
-                            self.retired_cpu_frame_pools.items.len,
-                            diagnostics.cpu_retired_pool_pressure_warning_count,
-                            diagnostics.last_cpu_frame_pool_warning_reason,
-                        },
-                    );
-                }
-                return error.CpuFramePoolRetiredPressure;
-            }
-            try self.retired_cpu_frame_pools.append(self.alloc, pool);
+            try retireCpuFramePoolWithDiagnostics(
+                self.alloc,
+                &self.retired_cpu_frame_pools,
+                &self.cpu_retired_pool_pressure_warned,
+                &self.cpu_route_diagnostics,
+                pool,
+            );
         }
 
         fn ensureCpuFramePool(
@@ -2389,6 +2798,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             return &self.cpu_frame_pool.?;
         }
 
+        fn acquireCpuFramePoolSlot(
+            self: *Self,
+            pool: *cpu_renderer.FramePool,
+        ) ?cpu_renderer.FramePool.Acquired {
+            return acquireCpuFramePoolSlotWithDiagnostics(
+                pool,
+                &self.cpu_frame_pool_exhausted_warned,
+                &self.cpu_route_diagnostics,
+            );
+        }
+
         fn ensureCpuTextLayer(
             self: *Self,
             width_px: u32,
@@ -2413,43 +2833,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .bgra8_premul,
             );
             return &self.cpu_text_layer.?;
-        }
-
-        const CpuImagePixels = struct {
-            width: u32,
-            height: u32,
-            stride_bytes: u32,
-            data: []const u8,
-        };
-
-        fn scaleByAlpha(channel: u8, alpha: u8) u8 {
-            return @intCast((@as(u16, channel) * @as(u16, alpha) + 127) / 255);
-        }
-
-        fn overPremul(src: u8, dst: u8, src_a: u8) u8 {
-            const inv = @as(u16, 255) - src_a;
-            const blend = (@as(u16, dst) * inv + 127) / 255;
-            const out = @as(u16, src) + blend;
-            return @intCast(@min(out, 255));
-        }
-
-        fn float01ToByte(value: f32) u8 {
-            const clamped = @max(@as(f32, 0.0), @min(value, 1.0));
-            return @intFromFloat(@round(clamped * 255.0));
-        }
-
-        fn premulStorageColor(
-            pixel_format: cpu_renderer.PixelFormat,
-            rgba: [4]u8,
-        ) [4]u8 {
-            const alpha = rgba[3];
-            const r = scaleByAlpha(rgba[0], alpha);
-            const g = scaleByAlpha(rgba[1], alpha);
-            const b = scaleByAlpha(rgba[2], alpha);
-            return switch (pixel_format) {
-                .bgra8_premul => .{ b, g, r, alpha },
-                .rgba8_premul => .{ r, g, b, alpha },
-            };
         }
 
         fn pendingRgbaPixels(pending: imagepkg.Image.Pending) ?CpuImagePixels {
@@ -2492,10 +2875,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             };
         }
 
-        fn wrapRepeatCoord(coord: f32, size: f32) f32 {
-            return @mod(@mod(coord, size) + size, size);
-        }
-
         fn composeCpuBackground(self: *Self, framebuffer: *cpu_renderer.FrameBuffer) void {
             const bg_color = premulStorageColor(
                 framebuffer.pixel_format,
@@ -2505,6 +2884,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 framebuffer.clear(bg_color);
                 return;
             };
+            if (bg_image.isUnloading() and self.config.bg_image == null) {
+                framebuffer.clear(bg_color);
+                return;
+            }
             const pixels = imageCpuPixels(bg_image) orelse {
                 framebuffer.clear(bg_color);
                 return;
@@ -2513,191 +2896,35 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 framebuffer.clear(bg_color);
                 return;
             }
-
-            const row_stride = std.math.mul(
-                u32,
-                framebuffer.width_px,
-                4,
+            composeCpuBackgroundImageLegacy(
+                self.alloc,
+                framebuffer,
+                self.uniforms.bg_color,
+                .{
+                    .opacity = self.bg_image_buffer.opacity,
+                    .fit = switch (self.bg_image_buffer.info.fit) {
+                        .contain => .contain,
+                        .cover => .cover,
+                        .stretch => .stretch,
+                        .none => .none,
+                    },
+                    .position = switch (self.bg_image_buffer.info.position) {
+                        .tl => .tl,
+                        .tc => .tc,
+                        .tr => .tr,
+                        .ml => .ml,
+                        .mc => .mc,
+                        .mr => .mr,
+                        .bl => .bl,
+                        .bc => .bc,
+                        .br => .br,
+                    },
+                    .repeat = self.bg_image_buffer.info.repeat,
+                },
+                pixels,
             ) catch {
                 framebuffer.clear(bg_color);
-                return;
             };
-            const row_rgba = self.alloc.alloc(
-                u8,
-                @as(usize, @intCast(row_stride)),
-            ) catch {
-                framebuffer.clear(bg_color);
-                return;
-            };
-            defer self.alloc.free(row_rgba);
-
-            const screen_width = @as(f32, @floatFromInt(framebuffer.width_px));
-            const screen_height = @as(f32, @floatFromInt(framebuffer.height_px));
-            const tex_width = @as(f32, @floatFromInt(pixels.width));
-            const tex_height = @as(f32, @floatFromInt(pixels.height));
-            if (screen_width <= 0 or screen_height <= 0 or tex_width <= 0 or tex_height <= 0) {
-                framebuffer.clear(bg_color);
-                return;
-            }
-
-            var dest_width = tex_width;
-            var dest_height = tex_height;
-            switch (self.bg_image_buffer.info.fit) {
-                .contain => {
-                    const scale = @min(
-                        screen_width / tex_width,
-                        screen_height / tex_height,
-                    );
-                    dest_width = tex_width * scale;
-                    dest_height = tex_height * scale;
-                },
-                .cover => {
-                    const scale = @max(
-                        screen_width / tex_width,
-                        screen_height / tex_height,
-                    );
-                    dest_width = tex_width * scale;
-                    dest_height = tex_height * scale;
-                },
-                .stretch => {
-                    dest_width = screen_width;
-                    dest_height = screen_height;
-                },
-                .none => {},
-            }
-            if (dest_width <= 0 or dest_height <= 0) {
-                framebuffer.clear(bg_color);
-                return;
-            }
-
-            const start_x: f32 = 0;
-            const start_y: f32 = 0;
-            const mid_x = (screen_width - dest_width) / 2.0;
-            const mid_y = (screen_height - dest_height) / 2.0;
-            const end_x = screen_width - dest_width;
-            const end_y = screen_height - dest_height;
-
-            var offset_x = mid_x;
-            var offset_y = mid_y;
-            switch (self.bg_image_buffer.info.position) {
-                .tl => {
-                    offset_x = start_x;
-                    offset_y = start_y;
-                },
-                .tc => {
-                    offset_x = mid_x;
-                    offset_y = start_y;
-                },
-                .tr => {
-                    offset_x = end_x;
-                    offset_y = start_y;
-                },
-                .ml => {
-                    offset_x = start_x;
-                    offset_y = mid_y;
-                },
-                .mc => {
-                    offset_x = mid_x;
-                    offset_y = mid_y;
-                },
-                .mr => {
-                    offset_x = end_x;
-                    offset_y = mid_y;
-                },
-                .bl => {
-                    offset_x = start_x;
-                    offset_y = end_y;
-                },
-                .bc => {
-                    offset_x = mid_x;
-                    offset_y = end_y;
-                },
-                .br => {
-                    offset_x = end_x;
-                    offset_y = end_y;
-                },
-            }
-
-            const scale_x = tex_width / dest_width;
-            const scale_y = tex_height / dest_height;
-            const bg_r = @as(f32, @floatFromInt(self.uniforms.bg_color[0])) / 255.0;
-            const bg_g = @as(f32, @floatFromInt(self.uniforms.bg_color[1])) / 255.0;
-            const bg_b = @as(f32, @floatFromInt(self.uniforms.bg_color[2])) / 255.0;
-            const bg_a = @as(f32, @floatFromInt(self.uniforms.bg_color[3])) / 255.0;
-            const image_opacity = @max(@as(f32, 0), @min(self.bg_image_buffer.opacity, 1));
-            const opacity = if (bg_a > 0)
-                @min(image_opacity, 1.0 / bg_a)
-            else
-                image_opacity;
-            const repeat = self.bg_image_buffer.info.repeat;
-
-            framebuffer.clear(.{ 0, 0, 0, 0 });
-            for (0..framebuffer.height_px) |yi| {
-                const y_u32: u32 = @intCast(yi);
-                const frag_y = @as(f32, @floatFromInt(y_u32)) + 0.5;
-                for (0..framebuffer.width_px) |xi| {
-                    const x_u32: u32 = @intCast(xi);
-                    const frag_x = @as(f32, @floatFromInt(x_u32)) + 0.5;
-
-                    var tex_x = (frag_x - offset_x) * scale_x;
-                    var tex_y = (frag_y - offset_y) * scale_y;
-
-                    if (repeat) {
-                        tex_x = wrapRepeatCoord(tex_x, tex_width);
-                        tex_y = wrapRepeatCoord(tex_y, tex_height);
-                    }
-
-                    var src_r_premul: f32 = 0;
-                    var src_g_premul: f32 = 0;
-                    var src_b_premul: f32 = 0;
-                    var src_alpha: f32 = 0;
-                    if (tex_x >= 0 and tex_y >= 0 and tex_x <= tex_width and tex_y <= tex_height) {
-                        const sx = @min(
-                            pixels.width - 1,
-                            @as(u32, @intFromFloat(@floor(tex_x))),
-                        );
-                        const sy = @min(
-                            pixels.height - 1,
-                            @as(u32, @intFromFloat(@floor(tex_y))),
-                        );
-                        const off =
-                            @as(usize, @intCast(sy)) * @as(usize, @intCast(pixels.stride_bytes)) +
-                            @as(usize, @intCast(sx)) * 4;
-                        const r = pixels.data[off];
-                        const g = pixels.data[off + 1];
-                        const b = pixels.data[off + 2];
-                        const a = pixels.data[off + 3];
-                        src_alpha = @as(f32, @floatFromInt(a)) / 255.0;
-                        src_r_premul = (@as(f32, @floatFromInt(r)) / 255.0) * src_alpha;
-                        src_g_premul = (@as(f32, @floatFromInt(g)) / 255.0) * src_alpha;
-                        src_b_premul = (@as(f32, @floatFromInt(b)) / 255.0) * src_alpha;
-                    }
-
-                    const src_alpha_scaled = src_alpha * opacity;
-                    const src_r_scaled = src_r_premul * opacity;
-                    const src_g_scaled = src_g_premul * opacity;
-                    const src_b_scaled = src_b_premul * opacity;
-                    const bg_mix = 1.0 - src_alpha_scaled;
-                    const out_r = (src_r_scaled + bg_r * bg_mix) * bg_a;
-                    const out_g = (src_g_scaled + bg_g * bg_mix) * bg_a;
-                    const out_b = (src_b_scaled + bg_b * bg_mix) * bg_a;
-
-                    const row_off = @as(usize, @intCast(x_u32)) * 4;
-                    row_rgba[row_off] = float01ToByte(out_r);
-                    row_rgba[row_off + 1] = float01ToByte(out_g);
-                    row_rgba[row_off + 2] = float01ToByte(out_b);
-                    row_rgba[row_off + 3] = float01ToByte(bg_a);
-                }
-
-                framebuffer.blendPremulRgbaImage(
-                    0,
-                    y_u32,
-                    framebuffer.width_px,
-                    1,
-                    row_stride,
-                    row_rgba,
-                );
-            }
         }
 
         fn composeCpuCellBackgrounds(self: *Self, framebuffer: *cpu_renderer.FrameBuffer) void {
@@ -2901,7 +3128,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         fn hasCpuNonTextCompositingDamage(self: *const Self) bool {
             if (self.overlay != null) return true;
-            if (self.bg_image != null and self.config.bg_image != null) return true;
+            if (bgImageRequiresConservativeFullCpuDamage(
+                self.bg_image,
+                self.config.bg_image != null,
+            )) return true;
 
             const kitty_placements = [_]ImageState.DrawPlacements{
                 .kitty_below_bg,
@@ -2985,6 +3215,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.cpu_damage_tracker.rectCount(),
                 self.cpu_damage_tracker.overflowCount(),
             );
+            logCpuDamageOverflowKv(self.cpu_route_diagnostics.snapshot());
 
             var pool = self.ensureCpuFramePool(width_px, height_px) catch |err| switch (err) {
                 error.CpuFramePoolRetiredPressure => return .{
@@ -2992,22 +3223,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 },
                 else => return err,
             };
-            var acquired = pool.acquire() orelse {
-                if (!self.cpu_frame_pool_exhausted_warned) {
-                    self.cpu_frame_pool_exhausted_warned = true;
-                    self.cpu_route_diagnostics.recordFramePoolWarning(.frame_pool_exhausted);
-                    const diagnostics = self.cpu_route_diagnostics.snapshot();
-                    log.warn(
-                        "software renderer cpu frame pool exhausted; dropping frame warning_count={} last_reason={s}",
-                        .{
-                            diagnostics.cpu_frame_pool_exhausted_warning_count,
-                            diagnostics.last_cpu_frame_pool_warning_reason,
-                        },
-                    );
-                }
-                return .{ .retry = .frame_pool_exhausted };
+            var acquired = self.acquireCpuFramePoolSlot(pool) orelse return .{
+                .retry = .frame_pool_exhausted,
             };
-            self.cpu_frame_pool_exhausted_warned = false;
 
             self.font_grid.lock.lockShared();
             defer self.font_grid.lock.unlockShared();
@@ -3610,10 +3828,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .retry => |reason| {
                         self.cpu_route_diagnostics.recordPublishRetryReason(reason);
                         self.cpu_publish_pending = true;
+                        logCpuPublishRetryKv(
+                            self.cpu_route_diagnostics.snapshot(),
+                            self.cpu_publish_pending,
+                        );
                         self.cells_rebuilt = true;
                     },
                     .published => {
                         self.cpu_publish_pending = false;
+                        if (self.config.bg_image == null) {
+                            _ = finalizeUnloadingBgImage(self.alloc, &self.bg_image);
+                        }
                         if (publish_start) |start| {
                             const publish_end = std.time.Instant.now() catch null;
                             if (publish_end) |end| {
@@ -3640,6 +3865,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                                             snapshot.shader_minimal_runtime_enabled,
                                         },
                                     );
+                                    logCpuPublishWarningKv(warning_snapshot);
                                 }
                             }
                         }
@@ -3979,6 +4205,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         fn prepBackgroundImage(self: *Self) !void {
             // Then we try to load the background image if we have a path.
             if (self.config.bg_image) |p| load_background: {
+                var prepared = false;
+                defer if (!prepared) {
+                    _ = discardStaleUnloadingBackgroundImageAfterPrepareFailure(
+                        self.alloc,
+                        &self.bg_image,
+                    );
+                };
+
                 const path = switch (p) {
                     .required, .optional => |slice| slice,
                 };
@@ -4045,26 +4279,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // If we have an existing background image, replace it.
                 // Otherwise, set this as our background image directly.
-                if (self.bg_image) |*img| {
-                    img.markForReplace(self.alloc, image);
-                } else {
-                    self.bg_image = image;
-                }
+                applyPreparedBackgroundImage(self.alloc, &self.bg_image, image);
+                prepared = true;
             } else {
                 // If we don't have a background image path, mark our
                 // background image for unload if we currently have one.
-                if (self.bg_image) |*img| img.markForUnload();
+                clearConfiguredBackgroundImage(&self.bg_image);
             }
         }
 
         fn uploadBackgroundImage(self: *Self) !void {
             // Make sure our bg image is uploaded if it needs to be.
+            if (finalizeUnloadingBgImage(self.alloc, &self.bg_image)) return;
             if (self.bg_image) |*bg| {
-                if (bg.isUnloading()) {
-                    bg.deinit(self.alloc);
-                    self.bg_image = null;
-                    return;
-                }
                 if (bg.isPending()) try bg.upload(self.alloc, &self.api);
             }
         }
@@ -5800,6 +6027,140 @@ test "needsFrameBgImageBuffer only enables for ready image" {
     try std.testing.expect(needsFrameBgImageBuffer(.{ .ready = undefined }));
 }
 
+fn makeOwnedPendingRgbaImage(
+    alloc: Allocator,
+    width: u32,
+    height: u32,
+    rgba: []const u8,
+) !imagepkg.Image {
+    try std.testing.expectEqual(
+        @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * 4,
+        rgba.len,
+    );
+
+    const data = try alloc.dupe(u8, rgba);
+    return .{ .pending = .{
+        .height = height,
+        .width = width,
+        .pixel_format = .rgba,
+        .data = data.ptr,
+    } };
+}
+
+test "applyPreparedBackgroundImage stores first pending image" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = null;
+    defer if (bg_image) |*image| image.deinit(alloc);
+
+    applyPreparedBackgroundImage(
+        alloc,
+        &bg_image,
+        try makeOwnedPendingRgbaImage(alloc, 1, 1, &.{ 1, 2, 3, 4 }),
+    );
+
+    try std.testing.expect(bg_image != null);
+    try std.testing.expect(bg_image.?.isPending());
+    switch (bg_image.?) {
+        .pending => |pending| try std.testing.expectEqual(@as(u32, 1), pending.width),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(!needsFrameBgImageBuffer(bg_image));
+}
+
+test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBackgroundImage marks unload" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+    defer if (bg_image) |*image| image.deinit(alloc);
+
+    applyPreparedBackgroundImage(
+        alloc,
+        &bg_image,
+        try makeOwnedPendingRgbaImage(
+            alloc,
+            2,
+            1,
+            &.{ 5, 6, 7, 8, 9, 10, 11, 12 },
+        ),
+    );
+
+    try std.testing.expect(bg_image != null);
+    try std.testing.expect(bg_image.?.isPending());
+    switch (bg_image.?) {
+        .pending => |pending| {
+            try std.testing.expectEqual(@as(u32, 2), pending.width);
+            try std.testing.expectEqual(@as(u32, 1), pending.height);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    clearConfiguredBackgroundImage(&bg_image);
+    try std.testing.expect(bg_image.?.isUnloading());
+}
+
+test "bg image unload boundary still forces full cpu damage" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+    defer if (bg_image) |*image| image.deinit(alloc);
+
+    try std.testing.expect(bgImageRequiresConservativeFullCpuDamage(
+        bg_image,
+        true,
+    ));
+
+    clearConfiguredBackgroundImage(&bg_image);
+    try std.testing.expect(bg_image.?.isUnloading());
+    try std.testing.expect(bgImageRequiresConservativeFullCpuDamage(
+        bg_image,
+        false,
+    ));
+}
+
+test "partial cpu row damage resumes after bg image slot is cleared" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+
+    clearConfiguredBackgroundImage(&bg_image);
+    try std.testing.expect(finalizeUnloadingBgImage(alloc, &bg_image));
+    try std.testing.expect(bg_image == null);
+    try std.testing.expect(!bgImageRequiresConservativeFullCpuDamage(
+        bg_image,
+        false,
+    ));
+}
+
+test "background image prepare failure clears stale unload slot" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+
+    clearConfiguredBackgroundImage(&bg_image);
+    try std.testing.expect(bg_image.?.isUnloading());
+    try std.testing.expect(discardStaleUnloadingBackgroundImageAfterPrepareFailure(
+        alloc,
+        &bg_image,
+    ));
+    try std.testing.expect(bg_image == null);
+}
+
 test "build cpu route availability source classifies build-side causes" {
     try std.testing.expectEqual(
         BuildCpuRouteAvailabilitySource.effective,
@@ -6592,4 +6953,312 @@ test "cpu publish latency warning count increments only when warning is emitted"
         cpu_frame_publish_warning_consecutive_limit,
         diagnostics_snapshot.last_cpu_publish_latency_warning_consecutive_count,
     );
+}
+
+test "cpu route diagnostics kv helpers emit structured logs" {
+    var snapshot = cpuRouteDiagnosticsSnapshotDefaults();
+    snapshot.cpu_damage_rect_count = 3;
+    snapshot.cpu_damage_rect_overflow_count = 1;
+    snapshot.publish_retry_count = 4;
+    snapshot.cpu_publish_retry_invalid_surface_count = 1;
+    snapshot.cpu_publish_retry_pool_pressure_count = 1;
+    snapshot.cpu_publish_retry_pool_exhausted_count = 1;
+    snapshot.cpu_publish_retry_mailbox_backpressure_count = 1;
+    snapshot.last_cpu_publish_retry_reason = "mailbox_backpressure";
+    snapshot.cpu_publish_latency_warning_count = 1;
+    snapshot.last_cpu_publish_latency_warning_frame_ms = 17;
+    snapshot.last_cpu_publish_latency_warning_consecutive_count =
+        cpu_frame_publish_warning_consecutive_limit;
+    snapshot.shader_capability_observed = true;
+    snapshot.shader_capability_available = true;
+    snapshot.shader_minimal_runtime_enabled = true;
+
+    logCpuDamageOverflowKv(snapshot);
+    logCpuPublishRetryKv(snapshot, true);
+    logCpuPublishWarningKv(snapshot);
+}
+
+const GenericRendererTestPool = struct {
+    pool: cpu_renderer.FramePool,
+    frame: apprt.surface.Message.SoftwareFrameReady,
+
+    fn init(alloc: Allocator, width_px: u32, height_px: u32) !GenericRendererTestPool {
+        var pool = try cpu_renderer.FramePool.init(
+            alloc,
+            1,
+            width_px,
+            height_px,
+            .bgra8_premul,
+            software_renderer_cpu_damage_rect_pool_capacity,
+        );
+        var acquired = pool.acquire() orelse return error.TestUnexpectedResult;
+        return .{
+            .pool = pool,
+            .frame = pool.publish(&acquired, 1, &.{}),
+        };
+    }
+
+    fn releaseAndDeinit(self: *GenericRendererTestPool) void {
+        self.frame.release();
+        self.pool.deinitIdle();
+        self.* = undefined;
+    }
+};
+
+fn expectFramebufferPixel(
+    framebuffer: *const cpu_renderer.FrameBuffer,
+    x: usize,
+    y: usize,
+    expected: [4]u8,
+) !void {
+    const stride = @as(usize, @intCast(framebuffer.stride_bytes));
+    const off = y * stride + x * 4;
+    try std.testing.expectEqualSlices(
+        u8,
+        expected[0..],
+        framebuffer.bytes[off..][0..4],
+    );
+}
+
+test "composeCpuBackground preserves translucent background alpha for opaque texels" {
+    const alloc = std.testing.allocator;
+    var framebuffer = try cpu_renderer.FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer framebuffer.deinit(alloc);
+
+    const pixels = CpuImagePixels{
+        .width = 1,
+        .height = 1,
+        .stride_bytes = 4,
+        .data = &.{ 255, 0, 0, 255 },
+    };
+
+    try composeCpuBackgroundImageLegacy(
+        alloc,
+        &framebuffer,
+        .{ 0, 0, 0, 128 },
+        .{
+            .opacity = 1.0,
+            .fit = .none,
+            .position = .mc,
+            .repeat = false,
+        },
+        pixels,
+    );
+
+    try expectFramebufferPixel(&framebuffer, 0, 0, .{ 0, 0, 128, 128 });
+}
+
+test "composeCpuBackground stretch keeps scaled sampling stable across texel boundaries" {
+    const alloc = std.testing.allocator;
+    var framebuffer = try cpu_renderer.FrameBuffer.init(alloc, 4, 1, .bgra8_premul);
+    defer framebuffer.deinit(alloc);
+
+    const pixels = CpuImagePixels{
+        .width = 2,
+        .height = 1,
+        .stride_bytes = 8,
+        .data = &.{
+            255, 0,   0, 255,
+            0,   255, 0, 255,
+        },
+    };
+
+    try composeCpuBackgroundImageLegacy(
+        alloc,
+        &framebuffer,
+        .{ 0, 0, 0, 255 },
+        .{
+            .opacity = 1.0,
+            .fit = .stretch,
+            .position = .mc,
+            .repeat = false,
+        },
+        pixels,
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{
+            0, 0,   255, 255,
+            0, 0,   255, 255,
+            0, 255, 0,   255,
+            0, 255, 0,   255,
+        },
+        framebuffer.bytes,
+    );
+}
+
+test "retired cpu frame pool pressure diagnostics reset after idle pool collection" {
+    const alloc = std.testing.allocator;
+
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    var retired_cpu_frame_pools: std.ArrayListUnmanaged(cpu_renderer.FramePool) = .{};
+    defer retired_cpu_frame_pools.deinit(alloc);
+    var retired_pool_pressure_warned = false;
+
+    var retired_frames: [max_retired_cpu_frame_pools]apprt.surface.Message.SoftwareFrameReady =
+        undefined;
+    for (0..max_retired_cpu_frame_pools) |i| {
+        const in_flight = try GenericRendererTestPool.init(alloc, 1, 1);
+        try retireCpuFramePoolWithDiagnostics(
+            alloc,
+            &retired_cpu_frame_pools,
+            &retired_pool_pressure_warned,
+            &diagnostics,
+            in_flight.pool,
+        );
+        retired_frames[i] = in_flight.frame;
+    }
+
+    var overflow_one = try GenericRendererTestPool.init(alloc, 1, 1);
+    defer overflow_one.releaseAndDeinit();
+    try std.testing.expectError(
+        error.CpuFramePoolRetiredPressure,
+        retireCpuFramePoolWithDiagnostics(
+            alloc,
+            &retired_cpu_frame_pools,
+            &retired_pool_pressure_warned,
+            &diagnostics,
+            overflow_one.pool,
+        ),
+    );
+
+    var snapshot = diagnostics.snapshot();
+    try std.testing.expect(retired_pool_pressure_warned);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqualStrings(
+        "retired_pool_pressure",
+        snapshot.last_cpu_frame_pool_warning_reason,
+    );
+
+    var overflow_two = try GenericRendererTestPool.init(alloc, 1, 1);
+    defer overflow_two.releaseAndDeinit();
+    try std.testing.expectError(
+        error.CpuFramePoolRetiredPressure,
+        retireCpuFramePoolWithDiagnostics(
+            alloc,
+            &retired_cpu_frame_pools,
+            &retired_pool_pressure_warned,
+            &diagnostics,
+            overflow_two.pool,
+        ),
+    );
+
+    snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_retired_pool_pressure_warning_count);
+
+    retired_frames[0].release();
+    collectRetiredCpuFramePoolsForDiagnostics(
+        &retired_cpu_frame_pools,
+        &retired_pool_pressure_warned,
+    );
+    try std.testing.expect(!retired_pool_pressure_warned);
+
+    const replacement = try GenericRendererTestPool.init(alloc, 1, 1);
+    try retireCpuFramePoolWithDiagnostics(
+        alloc,
+        &retired_cpu_frame_pools,
+        &retired_pool_pressure_warned,
+        &diagnostics,
+        replacement.pool,
+    );
+    retired_frames[0] = replacement.frame;
+
+    var overflow_three = try GenericRendererTestPool.init(alloc, 1, 1);
+    defer overflow_three.releaseAndDeinit();
+    try std.testing.expectError(
+        error.CpuFramePoolRetiredPressure,
+        retireCpuFramePoolWithDiagnostics(
+            alloc,
+            &retired_cpu_frame_pools,
+            &retired_pool_pressure_warned,
+            &diagnostics,
+            overflow_three.pool,
+        ),
+    );
+
+    snapshot = diagnostics.snapshot();
+    try std.testing.expect(retired_pool_pressure_warned);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqualStrings(
+        "retired_pool_pressure",
+        snapshot.last_cpu_frame_pool_warning_reason,
+    );
+
+    for (retired_frames) |frame| frame.release();
+    collectRetiredCpuFramePoolsForDiagnostics(
+        &retired_cpu_frame_pools,
+        &retired_pool_pressure_warned,
+    );
+    try std.testing.expectEqual(@as(usize, 0), retired_cpu_frame_pools.items.len);
+}
+
+test "cpu frame pool exhaustion diagnostics reset after successful acquire" {
+    const alloc = std.testing.allocator;
+
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    var frame_pool_exhausted_warned = false;
+    var cpu_frame_pool = try cpu_renderer.FramePool.init(
+        alloc,
+        1,
+        1,
+        1,
+        .bgra8_premul,
+        software_renderer_cpu_damage_rect_pool_capacity,
+    );
+    defer if (cpu_frame_pool.isIdle()) {
+        cpu_frame_pool.deinitIdle();
+    };
+
+    var in_flight = cpu_frame_pool.acquire() orelse return error.TestUnexpectedResult;
+
+    try std.testing.expect(acquireCpuFramePoolSlotWithDiagnostics(
+        &cpu_frame_pool,
+        &frame_pool_exhausted_warned,
+        &diagnostics,
+    ) == null);
+
+    var snapshot = diagnostics.snapshot();
+    try std.testing.expect(frame_pool_exhausted_warned);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_frame_pool_exhausted_warning_count);
+    try std.testing.expectEqualStrings(
+        "frame_pool_exhausted",
+        snapshot.last_cpu_frame_pool_warning_reason,
+    );
+
+    try std.testing.expect(acquireCpuFramePoolSlotWithDiagnostics(
+        &cpu_frame_pool,
+        &frame_pool_exhausted_warned,
+        &diagnostics,
+    ) == null);
+
+    snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_frame_pool_exhausted_warning_count);
+
+    const cleanup = cpu_frame_pool.publish(&in_flight, 0, &.{});
+    cleanup.release();
+
+    var reacquired = acquireCpuFramePoolSlotWithDiagnostics(
+        &cpu_frame_pool,
+        &frame_pool_exhausted_warned,
+        &diagnostics,
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!frame_pool_exhausted_warned);
+
+    const release_reacquired = cpu_frame_pool.publish(&reacquired, 1, &.{});
+    release_reacquired.release();
+
+    in_flight = cpu_frame_pool.acquire() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(acquireCpuFramePoolSlotWithDiagnostics(
+        &cpu_frame_pool,
+        &frame_pool_exhausted_warned,
+        &diagnostics,
+    ) == null);
+
+    snapshot = diagnostics.snapshot();
+    try std.testing.expect(frame_pool_exhausted_warned);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_frame_pool_exhausted_warning_count);
+
+    const final_cleanup = cpu_frame_pool.publish(&in_flight, 2, &.{});
+    final_cleanup.release();
 }

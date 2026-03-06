@@ -95,7 +95,7 @@ CPU 路由是否“构建生效”由编译参数决定，核心条件：
 - `custom-shader` 场景一定不回退；
 - `native` transport 或 `legacy-gl` presenter 场景下仍可强制走 CPU 路由。
 
-在 CI 入口脚本 `.github/scripts/software-renderer-cpu-path-ci.sh` 中，`allow_legacy_os` 会按 target 主版本自动推导（Linux `<5`、macOS `<11`），并可被 `SR_CI_FORCE_ALLOW_LEGACY_OS` 强制覆盖。
+在 CI 入口脚本 `.github/scripts/software-renderer-cpu-path-ci.sh` 中，`allow_legacy_os` 默认保守保持为 `false`；即使 target 是 Linux `<5` / macOS `<11` 的旧系统，也只有在显式设置 `SR_CI_FORCE_ALLOW_LEGACY_OS=true` 时才开启 legacy override。
 
 补充：CI 入口的 `SR_CI_OS` 也仅接受 `linux|macos`，与上面的平台边界一致。
 
@@ -119,6 +119,9 @@ CPU 路由是否“构建生效”由编译参数决定，核心条件：
 
 - `software renderer cpu shader capability kv ...` 是 capability probe 快照，只会在实际执行过 probe 后输出；当前实现里这条日志固定带 `observed=true`，描述“本次 probe 的可用性、reason 与 hint 来自哪里”。
 - `software renderer cpu route is disabled ... shader_capability_reason=...` 是路由决策结果，描述“为什么当前没有走 CPU 路由”。
+- `software renderer cpu damage kv ...` 是 damage metadata 退化/采样快照，当前重点看 `rect_count`、`overflow_count` 与 `damage_rect_cap`。
+- `software renderer cpu publish retry kv ...` 是发布重试事件快照，重点看 `reason` 与累计 `retry_count`。
+- `software renderer cpu publish warning kv ...` 是慢帧告警事件快照，重点看 `last_cpu_frame_ms`、`threshold_ms` 与 `warning_count`。
 
 这两类日志的 `reason` 不完全等价。例如：
 
@@ -247,6 +250,10 @@ macOS 额外必填：
 - CPU 发布告警阈值相关：
   - `SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS`
   - `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT`
+- 运行期 diagnostics 断言：
+  - `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW`
+  - `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`
+  - `SR_CI_EXPECT_CPU_PUBLISH_WARNING`
 - capability 断言：
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_STATUS`
   - `SR_CI_EXPECT_CPU_SHADER_CAPABILITY_REASON`
@@ -263,29 +270,58 @@ macOS 额外必填：
 
 | 环境变量 | 合法范围 | 非法输入示例 | 失败行为 |
 | --- | --- | --- | --- |
+| `SR_CI_FORCE_ALLOW_LEGACY_OS` | `true|false` | `maybe`、`1`、空格字符串 | 立即报错并退出 |
+| `SR_CI_CPU_FRAME_DAMAGE_MODE` | `off|rects` | `tiles`、`damage` | 立即报错并退出 |
 | `SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES` | `u16`，即 `0..65535` | `-1`、`abc`、`70000` | 立即报错并退出 |
 | `SR_CI_CPU_DAMAGE_RECT_CAP` | `u16`，即 `0..65535` | `-1`、`x10`、`70000` | 立即报错并退出 |
 | `SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS` | `u32`，即 `0..4294967295` | `-1`、`1.5`、`5000000000` | 立即报错并退出 |
 | `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT` | `u8`，即 `0..255` | `-1`、`abc`、`256` | 立即报错并退出 |
+| `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW` | 十进制非负整数文本（运行期 `u64` 断言，`0` 表示断言“没有 overflow 日志”） | `-1`、`1.5`、`one`、`18446744073709551616` | 立即报错并退出 |
+| `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON` | `invalid_surface`、`pool_retired_pressure`、`frame_pool_exhausted`、`mailbox_backpressure` | `pressure`、`retry` | 立即报错并退出 |
+| `SR_CI_EXPECT_CPU_PUBLISH_WARNING` | `true|false` | `maybe`、`1` | 立即报错并退出 |
 
 统一失败语义：
 
-- 仅接受十进制非负整数文本；出现非数字或越界值时，入口脚本输出 `invalid SR_CI_...` 错误并以 `exit 2` 结束。
+- 布尔/枚举型参数只接受脚本白名单字面值；数值型参数仅接受十进制非负整数文本。出现非法字面值、非数字或越界值时，入口脚本输出 `invalid SR_CI_...` 错误并以 `exit 2` 结束。
 - 失败发生在调用 `./.github/scripts/software-renderer-compat-check.sh` 之前，属于“启动前失败”，不会进入 compat-check 执行阶段。
 - 当参数合法且被设置时，入口脚本会同时透传 `--cpu-*` 与对应 `--expect-cpu-*` 断言参数到 compat-check，确保 `options.zig` 快照值和期望一致（防止“参数传入但未生效”）。
+- 运行期 diagnostics 断言类参数不会参与 `options.zig` 校验，而是直接透传到 compat-check，对 `zig build test` 输出中的结构化日志做运行期匹配。
+- 对会被构建侧归一化的值，入口脚本会先对齐“生效值”再组装 `--expect-*`：
+  - `SR_CI_CPU_FRAME_DAMAGE_MODE=rects` 且 `SR_CI_CPU_DAMAGE_RECT_CAP=0` 时，期望值归一化为 `1`；
+  - `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT=0` 时，期望值归一化为 `1`。
 
 ### 8.4 优先级（从高到低）
 
 1. Workflow 注入的 `SR_CI_*` 显式值（最高优先级）。
 2. `software-renderer-cpu-path-ci.sh` 的推导/兜底：
-   - `allow_legacy_os` 自动推导后可被 `SR_CI_FORCE_ALLOW_LEGACY_OS` 覆盖；
+   - `allow_legacy_os` 默认保守保持 `false`；只有显式设置 `SR_CI_FORCE_ALLOW_LEGACY_OS=true|false` 时才覆盖；
    - route backend 默认 Linux=`opengl`、macOS=`metal`；`SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND` 仅做一致性断言，不用于覆盖：值非法时 `exit 2`，与当前 `SR_CI_OS` 的期望后端不一致时 `exit 1`；
    - `cpu_shader_reprobe_interval_frames` 在 CI 入口日志默认展示 `120`，显式设置 `SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES` 时透传到 compat-check；
+   - `cpu_damage_rect_cap` 与 `cpu_publish_warning_consecutive_limit` 的 `--expect-*` 会按构建侧生效值归一化；
+   - `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW`、`SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`、`SR_CI_EXPECT_CPU_PUBLISH_WARNING` 直接透传为运行期日志断言；
    - 当设置 `SR_CI_CPU_SHADER_MODE` 且未设置 backend 时，会推导 `expect_cpu_shader_backend=vulkan_swiftshader`。
 3. 入口脚本组装 `software-renderer-compat-check.sh` 的 CLI 参数（仅非空值透传）。
 4. `software-renderer-compat-check.sh` 组装 `zig build -D...`（未传值时回落到构建默认值）。
 5. 运行时 Vulkan loader hint 环境变量优先级（仅 `vulkan_swiftshader` 路径相关）：
    - `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`
+
+`software-renderer-compat-check.sh` 额外支持 3 个运行期 diagnostics 断言参数，适合在已知测试场景下校验结构化日志：
+
+- `--expect-cpu-damage-overflow <u64>`
+- `--expect-cpu-publish-retry-reason <invalid_surface|pool_retired_pressure|frame_pool_exhausted|mailbox_backpressure>`
+- `--expect-cpu-publish-warning <true|false>`
+
+对应的 `cpu-path-ci` 环境变量分别是：
+
+- `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW`
+- `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`
+- `SR_CI_EXPECT_CPU_PUBLISH_WARNING`
+
+这些断言都基于 `zig build test` 输出中的结构化 `kv` 日志：
+
+- `--expect-cpu-damage-overflow 0` 是一个特殊语义：断言运行期没有出现 overflow 日志；非 `0` 时要求日志存在且 `overflow_count` 命中指定值。
+- 缺日志：`failure-class=assertion runtime-log-missing`
+- 有日志但值不匹配：`failure-class=assertion runtime-log-mismatch`
 
 fail-fast 一致性说明：`SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND` 的断言发生在 route backend 最终取值与 compat-check 参数组装之前；断言失败会立即终止，后续优先级链不再继续。
 

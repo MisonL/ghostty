@@ -3195,6 +3195,25 @@ test "runtimeSoftwareFrameCallbackPayload preserves valid damage metadata" {
     try std.testing.expectEqual(frame.damage_rects_len, payload.frame.damage_rects_len);
 }
 
+const TestSoftwareFrameCallbackCaptureState = struct {
+    calls: usize = 0,
+    generation: u64 = 0,
+    damage_rects_null: bool = false,
+    damage_rects_len: usize = 0,
+};
+
+fn testSoftwareFrameCallbackCaptureSanitized(
+    userdata: ?*anyopaque,
+    frame: *const CAPI.RuntimeSoftwareFrame,
+) callconv(.c) bool {
+    const state: *TestSoftwareFrameCallbackCaptureState = @ptrCast(@alignCast(userdata.?));
+    state.calls += 1;
+    state.generation = frame.generation;
+    state.damage_rects_null = frame.damage_rects == null;
+    state.damage_rects_len = frame.damage_rects_len;
+    return true;
+}
+
 fn testRuntimeWakeupNoop(_: ?*anyopaque) callconv(.c) void {}
 
 fn testRuntimeActionNoop(
@@ -3378,6 +3397,122 @@ fn testSoftwareFrameCallbackSuccess(
     _: *const CAPI.RuntimeSoftwareFrame,
 ) callconv(.c) bool {
     return true;
+}
+
+test "softwareFrameReady sanitizes invalid damage metadata without session fallback" {
+    var payload: [48]u8 = [_]u8{0} ** 48;
+    var callback_state: TestSoftwareFrameCallbackCaptureState = .{};
+
+    var app: App = .{
+        .core_app = undefined,
+        .opts = .{
+            .wakeup = &testRuntimeWakeupNoop,
+            .action = &testRuntimeActionNoop,
+            .read_clipboard = &testRuntimeReadClipboardNoop,
+            .confirm_read_clipboard = &testRuntimeConfirmReadClipboardNoop,
+            .write_clipboard = &testRuntimeWriteClipboardNoop,
+            .software_frame_storage_support = @intFromEnum(
+                CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+            ),
+            .software_frame_cb = &testSoftwareFrameCallbackCaptureSanitized,
+            .close_surface = &testRuntimeCloseSurfaceNoop,
+        },
+        .keymap = undefined,
+        .config = undefined,
+    };
+    var surface: Surface = .{
+        .app = &app,
+        .platform = undefined,
+        .userdata = &callback_state,
+        .core_surface = undefined,
+        .content_scale = .{ .x = 1, .y = 1 },
+        .size = .{ .width = 0, .height = 0 },
+        .cursor_pos = .{ .x = -1, .y = -1 },
+        .software_frame_publishing_enabled = true,
+        .software_frame_publishing_initialized = true,
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 7,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try surface.softwareFrameReady(frame);
+
+    try std.testing.expectEqual(@as(usize, 1), callback_state.calls);
+    try std.testing.expectEqual(frame.generation, callback_state.generation);
+    try std.testing.expect(callback_state.damage_rects_null);
+    try std.testing.expectEqual(@as(usize, 0), callback_state.damage_rects_len);
+    try std.testing.expect(!surface.software_snapshot_runtime_fallback);
+    try std.testing.expect(surface.software_frame_publishing_enabled);
+}
+
+test "softwareFrameReady preserves valid damage metadata for runtime callback" {
+    var damage_rects = [_]apprt.surface.SoftwareDamageRect{.{
+        .x_px = 1,
+        .y_px = 1,
+        .width_px = 2,
+        .height_px = 1,
+    }};
+    var payload: [48]u8 = [_]u8{0} ** 48;
+    var callback_state: TestSoftwareFrameCallbackCaptureState = .{};
+
+    var app: App = .{
+        .core_app = undefined,
+        .opts = .{
+            .wakeup = &testRuntimeWakeupNoop,
+            .action = &testRuntimeActionNoop,
+            .read_clipboard = &testRuntimeReadClipboardNoop,
+            .confirm_read_clipboard = &testRuntimeConfirmReadClipboardNoop,
+            .write_clipboard = &testRuntimeWriteClipboardNoop,
+            .software_frame_storage_support = @intFromEnum(
+                CAPI.RuntimeSoftwareFrameStorageSupport.shared_cpu_bytes,
+            ),
+            .software_frame_cb = &testSoftwareFrameCallbackCaptureSanitized,
+            .close_surface = &testRuntimeCloseSurfaceNoop,
+        },
+        .keymap = undefined,
+        .config = undefined,
+    };
+    var surface: Surface = .{
+        .app = &app,
+        .platform = undefined,
+        .userdata = &callback_state,
+        .core_surface = undefined,
+        .content_scale = .{ .x = 1, .y = 1 },
+        .size = .{ .width = 0, .height = 0 },
+        .cursor_pos = .{ .x = -1, .y = -1 },
+        .software_frame_publishing_enabled = true,
+        .software_frame_publishing_initialized = true,
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 8,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = &damage_rects,
+        .damage_rects_len = damage_rects.len,
+    };
+
+    try surface.softwareFrameReady(frame);
+
+    try std.testing.expectEqual(@as(usize, 1), callback_state.calls);
+    try std.testing.expectEqual(frame.generation, callback_state.generation);
+    try std.testing.expect(!callback_state.damage_rects_null);
+    try std.testing.expectEqual(damage_rects.len, callback_state.damage_rects_len);
+    try std.testing.expect(!surface.software_snapshot_runtime_fallback);
+    try std.testing.expect(surface.software_frame_publishing_enabled);
 }
 
 fn testRequiredStorageSupportMaskForMacos() u32 {

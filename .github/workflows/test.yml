@@ -1164,6 +1164,21 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Legacy target clamp coverage for damage/publish knobs under explicit override.
+          - target:
+              target_label: linux-4.19-legacy-rects-cap0-publish0
+              target: x86_64-linux.4.19.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_frame_damage_mode: rects
+              cpu_damage_rect_cap: "0"
+              cpu_publish_warning_threshold_ms: "55"
+              cpu_publish_warning_consecutive_limit: "0"
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # CPU shader backend off compatibility spot-check.
           - target:
               target_label: linux-5.0-backend-off
@@ -1195,6 +1210,9 @@ jobs:
               cpu_shader_reprobe_interval_frames: "0"
               cpu_publish_warning_threshold_ms: "55"
               cpu_publish_warning_consecutive_limit: "4"
+              expect_cpu_damage_overflow: "1"
+              expect_cpu_publish_retry_reason: mailbox_backpressure
+              expect_cpu_publish_warning: "true"
             transport:
               transport_label: auto
               transport_mode: auto
@@ -1230,12 +1248,15 @@ jobs:
         run: |
           bash -n ./.github/scripts/software-renderer-cpu-path-ci.sh
           bash -n ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+          bash -n ./.github/scripts/software-renderer-compat-check-selftest.sh
 
       - name: Selftest software renderer CPU path gate (once)
         if: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' }}
         run: |
           echo "software-renderer cpu-path selftest case total: $(grep -Ec '^case_[a-z0-9_]+\\(\\) \\{' ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh)"
           ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+          echo "software-renderer compat-check selftest case total: $(grep -Ec '^case_[a-z0-9_]+\\(\\) \\{' ./.github/scripts/software-renderer-compat-check-selftest.sh)"
+          ./.github/scripts/software-renderer-compat-check-selftest.sh
 
       - name: Test software renderer CPU path
         env:
@@ -1262,6 +1283,9 @@ jobs:
           SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE: ${{ matrix.target.expect_cpu_shader_capability_hint_readable }}
           SR_CI_CPU_FRAME_DAMAGE_MODE: ${{ matrix.target.cpu_frame_damage_mode }}
           SR_CI_CPU_DAMAGE_RECT_CAP: ${{ matrix.target.cpu_damage_rect_cap }}
+          SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.expect_cpu_damage_overflow }}
+          SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.expect_cpu_publish_retry_reason }}
+          SR_CI_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.expect_cpu_publish_warning }}
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 
   test-software-renderer-macos:
@@ -1437,6 +1461,21 @@ jobs:
             transport:
               transport_label: auto
               transport_mode: auto
+          # Legacy target clamp coverage for damage/publish knobs under explicit override.
+          - target:
+              target_label: macos-10.15-legacy-rects-cap0-publish0
+              target: x86_64-macos.10.15.0
+              force_allow_legacy_os: "true"
+              expect_cpu_effective: "true"
+              cpu_shader_mode: safe
+              cpu_shader_timeout_ms: "16"
+              cpu_frame_damage_mode: rects
+              cpu_damage_rect_cap: "0"
+              cpu_publish_warning_threshold_ms: "55"
+              cpu_publish_warning_consecutive_limit: "0"
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # CPU shader backend off compatibility spot-check.
           - target:
               target_label: macos-11.0-backend-off
@@ -1468,6 +1507,9 @@ jobs:
               cpu_shader_reprobe_interval_frames: "0"
               cpu_publish_warning_threshold_ms: "55"
               cpu_publish_warning_consecutive_limit: "4"
+              expect_cpu_damage_overflow: "1"
+              expect_cpu_publish_retry_reason: mailbox_backpressure
+              expect_cpu_publish_warning: "true"
             transport:
               transport_label: auto
               transport_mode: auto
@@ -1534,6 +1576,9 @@ jobs:
           SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE: ${{ matrix.target.expect_cpu_shader_capability_hint_readable }}
           SR_CI_CPU_FRAME_DAMAGE_MODE: ${{ matrix.target.cpu_frame_damage_mode }}
           SR_CI_CPU_DAMAGE_RECT_CAP: ${{ matrix.target.cpu_damage_rect_cap }}
+          SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.expect_cpu_damage_overflow }}
+          SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.expect_cpu_publish_retry_reason }}
+          SR_CI_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.expect_cpu_publish_warning }}
           SR_CI_SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 

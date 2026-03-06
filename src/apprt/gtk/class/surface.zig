@@ -769,6 +769,22 @@ pub const Surface = extern struct {
         pub var offset: c_int = 0;
     };
 
+    const SoftwareSnapshotDamageMetadataCounters = struct {
+        failure_streak: *u32,
+        failure_generation: *?u64,
+        failure_total: *u64,
+        warn_logged: *bool,
+
+        fn fromPrivate(priv: *Private) @This() {
+            return .{
+                .failure_streak = &priv.software_damage_metadata_failure_streak,
+                .failure_generation = &priv.software_damage_metadata_failure_generation,
+                .failure_total = &priv.software_damage_metadata_failure_total,
+                .warn_logged = &priv.software_damage_metadata_warn_logged,
+            };
+        }
+    };
+
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
     }
@@ -2427,12 +2443,6 @@ pub const Surface = extern struct {
         priv.software_snapshot_failure_generation = null;
     }
 
-    fn recordSoftwareSnapshotDamageMetadataSuccess(self: *Self) void {
-        const priv = self.private();
-        priv.software_damage_metadata_failure_streak = 0;
-        priv.software_damage_metadata_failure_generation = null;
-    }
-
     fn recordSoftwareSnapshotFailure(
         self: *Self,
         generation: u64,
@@ -2484,35 +2494,54 @@ pub const Surface = extern struct {
     }
 
     fn recordSoftwareSnapshotDamageMetadataFailure(
-        self: *Self,
+        counters: SoftwareSnapshotDamageMetadataCounters,
         generation: u64,
         err: anyerror,
     ) void {
-        const priv = self.private();
         const unique_generation = noteSoftwareSnapshotFailure(
-            &priv.software_damage_metadata_failure_streak,
-            &priv.software_damage_metadata_failure_total,
-            &priv.software_damage_metadata_failure_generation,
+            counters.failure_streak,
+            counters.failure_total,
+            counters.failure_generation,
             generation,
         );
 
-        const metadata_failure_total = priv.software_damage_metadata_failure_total;
+        const metadata_failure_total = counters.failure_total.*;
         const should_log = shouldLogSoftwareSnapshotDamageMetadataWarning(
             metadata_failure_total,
-            priv.software_damage_metadata_warn_logged,
+            counters.warn_logged.*,
         );
-        priv.software_damage_metadata_warn_logged = true;
+        counters.warn_logged.* = true;
         if (should_log and unique_generation) {
             log.warn(
                 "software snapshot frame damage metadata rejected generation={} streak={} total={} err={}",
                 .{
                     generation,
-                    priv.software_damage_metadata_failure_streak,
+                    counters.failure_streak.*,
                     metadata_failure_total,
                     err,
                 },
             );
         }
+    }
+
+    fn recordSoftwareSnapshotDamageMetadataSuccess(
+        counters: SoftwareSnapshotDamageMetadataCounters,
+    ) void {
+        counters.failure_streak.* = 0;
+        counters.failure_generation.* = null;
+    }
+
+    fn softwareSnapshotDamageMetadataValidForFrame(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+        counters: SoftwareSnapshotDamageMetadataCounters,
+    ) bool {
+        validateSoftwareFrameDamageMetadata(frame) catch |err| {
+            recordSoftwareSnapshotDamageMetadataFailure(counters, frame.generation, err);
+            return false;
+        };
+
+        recordSoftwareSnapshotDamageMetadataSuccess(counters);
+        return true;
     }
 
     pub fn softwareFrameReady(
@@ -2534,16 +2563,10 @@ pub const Surface = extern struct {
             return err;
         };
 
-        const damage_metadata_valid = damage_metadata_valid: {
-            validateSoftwareFrameDamageMetadata(frame) catch |err| {
-                self.recordSoftwareSnapshotDamageMetadataFailure(frame.generation, err);
-                break :damage_metadata_valid false;
-            };
-            break :damage_metadata_valid true;
-        };
-        if (damage_metadata_valid) {
-            self.recordSoftwareSnapshotDamageMetadataSuccess();
-        }
+        _ = softwareSnapshotDamageMetadataValidForFrame(
+            frame,
+            SoftwareSnapshotDamageMetadataCounters.fromPrivate(priv),
+        );
 
         switch (frame.storage) {
             .shared_cpu_bytes => {
@@ -4717,6 +4740,246 @@ test "shouldLogSoftwareSnapshotDamageMetadataWarning samples after first warning
         software_damage_metadata_warning_sample_modulus,
         true,
     ));
+}
+
+test "softwareSnapshotDamageMetadataValidForFrame only records metadata failure without changing presenter selection or snapshot publishing" {
+    const RuntimeState = struct {
+        presenter_selected: coreconfig.SoftwareRendererPresenter = .snapshot,
+        snapshot_enabled: bool = true,
+        runtime_fallback: bool = false,
+        frame_generation: u64 = 0,
+        failure_streak: u32 = 0,
+        failure_generation: ?u64 = null,
+        failure_total: u64 = 0,
+        warn_logged: bool = false,
+
+        fn counters(self: *@This()) Surface.SoftwareSnapshotDamageMetadataCounters {
+            return .{
+                .failure_streak = &self.failure_streak,
+                .failure_generation = &self.failure_generation,
+                .failure_total = &self.failure_total,
+                .warn_logged = &self.warn_logged,
+            };
+        }
+    };
+
+    var payload: [48]u8 = [_]u8{0} ** 48;
+    var state: RuntimeState = .{};
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try std.testing.expect(!Surface.softwareSnapshotDamageMetadataValidForFrame(
+        frame,
+        state.counters(),
+    ));
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.snapshot,
+        state.presenter_selected,
+    );
+    try std.testing.expect(state.snapshot_enabled);
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(@as(u64, 0), state.frame_generation);
+    try std.testing.expectEqual(@as(u32, 1), state.failure_streak);
+    try std.testing.expectEqual(@as(?u64, 1), state.failure_generation);
+    try std.testing.expectEqual(@as(u64, 1), state.failure_total);
+    try std.testing.expect(state.warn_logged);
+
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.snapshot,
+        selection.selected,
+    );
+    try std.testing.expect(selection.can_publish_software_frame);
+}
+
+test "damage metadata rejection stays separate from snapshot failure runtime fallback threshold" {
+    const MetadataState = struct {
+        failure_streak: u32 = 0,
+        failure_generation: ?u64 = null,
+        failure_total: u64 = 0,
+        warn_logged: bool = false,
+
+        fn counters(self: *@This()) Surface.SoftwareSnapshotDamageMetadataCounters {
+            return .{
+                .failure_streak = &self.failure_streak,
+                .failure_generation = &self.failure_generation,
+                .failure_total = &self.failure_total,
+                .warn_logged = &self.warn_logged,
+            };
+        }
+    };
+
+    var payload: [48]u8 = [_]u8{0} ** 48;
+    var damage_rects = [_]apprt.surface.SoftwareDamageRect{.{
+        .x_px = 0,
+        .y_px = 0,
+        .width_px = 2,
+        .height_px = 2,
+    }};
+    var metadata_state: MetadataState = .{};
+    const valid_frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = &damage_rects,
+        .damage_rects_len = damage_rects.len,
+    };
+    const invalid_frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 2,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try std.testing.expect(Surface.softwareSnapshotDamageMetadataValidForFrame(
+        valid_frame,
+        metadata_state.counters(),
+    ));
+    try std.testing.expectEqual(@as(u32, 0), metadata_state.failure_streak);
+    try std.testing.expectEqual(@as(u64, 0), metadata_state.failure_total);
+
+    try std.testing.expect(!Surface.softwareSnapshotDamageMetadataValidForFrame(
+        invalid_frame,
+        metadata_state.counters(),
+    ));
+    try std.testing.expectEqual(@as(u32, 1), metadata_state.failure_streak);
+    try std.testing.expectEqual(@as(?u64, invalid_frame.generation), metadata_state.failure_generation);
+    try std.testing.expectEqual(@as(u64, 1), metadata_state.failure_total);
+
+    var runtime_fallback = false;
+    var snapshot_failure_streak: u32 = 0;
+    var snapshot_failure_total: u64 = 0;
+    var snapshot_failure_generation: ?u64 = null;
+    for (0..software_snapshot_failure_threshold) |i| {
+        const generation = invalid_frame.generation + @as(u64, @intCast(i)) + 1;
+        const unique_generation = noteSoftwareSnapshotFailure(
+            &snapshot_failure_streak,
+            &snapshot_failure_total,
+            &snapshot_failure_generation,
+            generation,
+        );
+        if (shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
+            unique_generation,
+            runtime_fallback,
+            snapshot_failure_streak,
+            software_snapshot_failure_threshold,
+        )) {
+            runtime_fallback = true;
+        }
+    }
+
+    try std.testing.expect(runtime_fallback);
+    try std.testing.expectEqual(software_snapshot_failure_threshold, snapshot_failure_streak);
+    try std.testing.expectEqual(@as(u64, software_snapshot_failure_threshold), snapshot_failure_total);
+    try std.testing.expectEqual(@as(u64, 1), metadata_state.failure_total);
+
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        true,
+        runtime_fallback,
+    );
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.@"legacy-gl",
+        selection.selected,
+    );
+}
+
+test "damage metadata counters reset after a subsequent valid frame" {
+    const MetadataState = struct {
+        failure_streak: u32 = 0,
+        failure_generation: ?u64 = null,
+        failure_total: u64 = 0,
+        warn_logged: bool = false,
+
+        fn counters(self: *@This()) Surface.SoftwareSnapshotDamageMetadataCounters {
+            return .{
+                .failure_streak = &self.failure_streak,
+                .failure_generation = &self.failure_generation,
+                .failure_total = &self.failure_total,
+                .warn_logged = &self.warn_logged,
+            };
+        }
+    };
+
+    var payload: [48]u8 = [_]u8{0} ** 48;
+    var damage_rects = [_]apprt.surface.SoftwareDamageRect{.{
+        .x_px = 0,
+        .y_px = 0,
+        .width_px = 2,
+        .height_px = 2,
+    }};
+    var metadata_state: MetadataState = .{};
+    const invalid_frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+    const valid_frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 2,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = payload[0..].ptr,
+        .data_len = payload.len,
+        .damage_rects = &damage_rects,
+        .damage_rects_len = damage_rects.len,
+    };
+
+    try std.testing.expect(!Surface.softwareSnapshotDamageMetadataValidForFrame(
+        invalid_frame,
+        metadata_state.counters(),
+    ));
+    try std.testing.expectEqual(@as(u32, 1), metadata_state.failure_streak);
+    try std.testing.expectEqual(@as(?u64, invalid_frame.generation), metadata_state.failure_generation);
+    try std.testing.expectEqual(@as(u64, 1), metadata_state.failure_total);
+    try std.testing.expect(metadata_state.warn_logged);
+
+    try std.testing.expect(Surface.softwareSnapshotDamageMetadataValidForFrame(
+        valid_frame,
+        metadata_state.counters(),
+    ));
+    try std.testing.expectEqual(@as(u32, 0), metadata_state.failure_streak);
+    try std.testing.expectEqual(@as(?u64, null), metadata_state.failure_generation);
+    try std.testing.expectEqual(@as(u64, 1), metadata_state.failure_total);
+    try std.testing.expect(metadata_state.warn_logged);
 }
 
 test "validateSoftwareFrame accepts valid shared_cpu_bytes payload" {

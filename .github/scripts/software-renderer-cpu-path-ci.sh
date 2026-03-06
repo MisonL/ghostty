@@ -2,6 +2,20 @@
 
 set -euo pipefail
 
+decimal_exceeds_u64() {
+  local value="$1"
+  local max_u64="18446744073709551615"
+
+  if (( ${#value} < ${#max_u64} )); then
+    return 1
+  fi
+  if (( ${#value} > ${#max_u64} )); then
+    return 0
+  fi
+
+  [[ "$value" > "$max_u64" ]]
+}
+
 if [[ -z "${SR_CI_OS:-}" ]]; then
   echo "SR_CI_OS is required (linux|macos)" >&2
   exit 2
@@ -44,11 +58,18 @@ cpu_frame_damage_mode="${SR_CI_CPU_FRAME_DAMAGE_MODE:-}"
 cpu_damage_rect_cap="${SR_CI_CPU_DAMAGE_RECT_CAP:-}"
 cpu_publish_warning_threshold_ms="${SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS:-}"
 cpu_publish_warning_consecutive_limit="${SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT:-}"
+expect_cpu_publish_retry_reason="${SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
+expect_cpu_damage_overflow="${SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
+expect_cpu_publish_warning="${SR_CI_EXPECT_CPU_PUBLISH_WARNING:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
 dry_run="${SR_CI_DRY_RUN:-false}"
 
 if [[ "$dry_run" != "true" && "$dry_run" != "false" ]]; then
   echo "invalid SR_CI_DRY_RUN: $dry_run (expected: true|false)" >&2
+  exit 2
+fi
+if [[ -n "$force_allow_legacy_os" && "$force_allow_legacy_os" != "true" && "$force_allow_legacy_os" != "false" ]]; then
+  echo "invalid SR_CI_FORCE_ALLOW_LEGACY_OS: $force_allow_legacy_os (expected: true|false)" >&2
   exit 2
 fi
 if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "true" && "$expect_cpu_effective" != "false" ]]; then
@@ -57,6 +78,10 @@ if [[ -n "$expect_cpu_effective" && "$expect_cpu_effective" != "true" && "$expec
 fi
 if [[ -n "$expect_software_route_backend" && "$expect_software_route_backend" != "opengl" && "$expect_software_route_backend" != "metal" ]]; then
   echo "invalid SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: $expect_software_route_backend (expected: opengl|metal)" >&2
+  exit 2
+fi
+if [[ -n "$cpu_frame_damage_mode" && "$cpu_frame_damage_mode" != "off" && "$cpu_frame_damage_mode" != "rects" ]]; then
+  echo "invalid SR_CI_CPU_FRAME_DAMAGE_MODE: $cpu_frame_damage_mode (expected: off|rects)" >&2
   exit 2
 fi
 if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
@@ -107,10 +132,28 @@ if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
     exit 2
   fi
 fi
+if [[ -n "$expect_cpu_publish_retry_reason" && "$expect_cpu_publish_retry_reason" != "invalid_surface" && "$expect_cpu_publish_retry_reason" != "pool_retired_pressure" && "$expect_cpu_publish_retry_reason" != "frame_pool_exhausted" && "$expect_cpu_publish_retry_reason" != "mailbox_backpressure" ]]; then
+  echo "invalid SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: $expect_cpu_publish_retry_reason (expected: invalid_surface|pool_retired_pressure|frame_pool_exhausted|mailbox_backpressure)" >&2
+  exit 2
+fi
+if [[ -n "$expect_cpu_damage_overflow" && ! "$expect_cpu_damage_overflow" =~ ^[0-9]+$ ]]; then
+  echo "invalid SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: $expect_cpu_damage_overflow (expected: u64)" >&2
+  exit 2
+fi
+if [[ -n "$expect_cpu_damage_overflow" ]] && decimal_exceeds_u64 "$expect_cpu_damage_overflow"; then
+  echo "invalid SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: $expect_cpu_damage_overflow (expected: 0..18446744073709551615)" >&2
+  exit 2
+fi
+if [[ -n "$expect_cpu_publish_warning" && "$expect_cpu_publish_warning" != "true" && "$expect_cpu_publish_warning" != "false" ]]; then
+  echo "invalid SR_CI_EXPECT_CPU_PUBLISH_WARNING: $expect_cpu_publish_warning (expected: true|false)" >&2
+  exit 2
+fi
 
 allow_legacy_os=false
 target_os=""
 target_major=""
+target_is_legacy_os=false
+legacy_override_source=default
 app_runtime=none
 expected_route_backend_for_os=opengl
 if [[ "$SR_CI_OS" == "macos" ]]; then
@@ -137,7 +180,7 @@ if [[ -n "$target" ]]; then
     if [[ "$target" =~ ^[^-]+-linux\.([0-9]+)\.([0-9]+)(\..*)?$ ]]; then
       target_major="${BASH_REMATCH[1]}"
       if (( target_major < 5 )); then
-        allow_legacy_os=true
+        target_is_legacy_os=true
       fi
     else
       echo "Unrecognized linux target format: $target" >&2
@@ -147,7 +190,7 @@ if [[ -n "$target" ]]; then
     if [[ "$target" =~ ^[^-]+-macos\.([0-9]+)(\..*)?$ ]]; then
       target_major="${BASH_REMATCH[1]}"
       if (( target_major < 11 )); then
-        allow_legacy_os=true
+        target_is_legacy_os=true
       fi
     else
       echo "Unrecognized macOS target format: $target" >&2
@@ -158,6 +201,7 @@ fi
 
 if [[ -n "$force_allow_legacy_os" ]]; then
   allow_legacy_os="$force_allow_legacy_os"
+  legacy_override_source=SR_CI_FORCE_ALLOW_LEGACY_OS
 fi
 if [[ "$allow_legacy_os" != "true" && "$allow_legacy_os" != "false" ]]; then
   echo "Invalid computed allow_legacy_os value: $allow_legacy_os" >&2
@@ -194,12 +238,28 @@ resolved_cpu_shader_timeout_ms="$cpu_shader_timeout_ms"
 resolved_cpu_shader_reprobe_interval_frames="$cpu_shader_reprobe_interval_frames"
 resolved_cpu_shader_enable_minimal_runtime="$cpu_shader_enable_minimal_runtime"
 resolved_fake_swiftshader_hint="$inject_fake_swiftshader_hint"
+resolved_cpu_frame_damage_mode="$cpu_frame_damage_mode"
+resolved_cpu_damage_rect_cap="$cpu_damage_rect_cap"
+resolved_cpu_publish_warning_threshold_ms="$cpu_publish_warning_threshold_ms"
+resolved_cpu_publish_warning_consecutive_limit="$cpu_publish_warning_consecutive_limit"
 if [[ -z "$resolved_fake_swiftshader_hint" ]]; then resolved_fake_swiftshader_hint=false; fi
 if [[ -z "$resolved_cpu_shader_mode" ]]; then resolved_cpu_shader_mode=full; fi
 if [[ -z "$resolved_cpu_shader_backend" ]]; then resolved_cpu_shader_backend=vulkan_swiftshader; fi
 if [[ -z "$resolved_cpu_shader_timeout_ms" ]]; then resolved_cpu_shader_timeout_ms=16; fi
 if [[ -z "$resolved_cpu_shader_reprobe_interval_frames" ]]; then resolved_cpu_shader_reprobe_interval_frames=120; fi
 if [[ -z "$resolved_cpu_shader_enable_minimal_runtime" ]]; then resolved_cpu_shader_enable_minimal_runtime=false; fi
+if [[ -z "$resolved_cpu_frame_damage_mode" ]]; then resolved_cpu_frame_damage_mode=rects; fi
+if [[ -z "$resolved_cpu_damage_rect_cap" ]]; then resolved_cpu_damage_rect_cap=64; fi
+if [[ -z "$resolved_cpu_publish_warning_threshold_ms" ]]; then resolved_cpu_publish_warning_threshold_ms=40; fi
+if [[ -z "$resolved_cpu_publish_warning_consecutive_limit" ]]; then resolved_cpu_publish_warning_consecutive_limit=3; fi
+effective_cpu_damage_rect_cap="$resolved_cpu_damage_rect_cap"
+if [[ "$resolved_cpu_frame_damage_mode" == "rects" && "$effective_cpu_damage_rect_cap" == "0" ]]; then
+  effective_cpu_damage_rect_cap=1
+fi
+effective_cpu_publish_warning_consecutive_limit="$resolved_cpu_publish_warning_consecutive_limit"
+if [[ "$effective_cpu_publish_warning_consecutive_limit" == "0" ]]; then
+  effective_cpu_publish_warning_consecutive_limit=1
+fi
 if [[ -z "$expect_cpu_shader_backend" ]]; then
   if [[ "$cpu_shader_backend_is_set" == "true" && -n "$cpu_shader_backend" ]]; then
     expect_cpu_shader_backend="$cpu_shader_backend"
@@ -209,10 +269,14 @@ if [[ -z "$expect_cpu_shader_backend" ]]; then
 fi
 if [[ -z "$expect_cpu_effective" ]]; then expect_cpu_effective="<unset>"; fi
 
-echo "[software-renderer-ci] $SR_CI_OS target-label=$target_label transport-label=$transport_label target=${target:-default} allow-legacy-os=$allow_legacy_os gate-expected-cpu-effective=$target_gate_expected_cpu_effective matrix-expect-cpu-effective=$expect_cpu_effective app-runtime=$app_runtime"
+echo "[software-renderer-ci] $SR_CI_OS target-label=$target_label transport-label=$transport_label target=${target:-default} legacy-target=$target_is_legacy_os allow-legacy-os=$allow_legacy_os legacy-override-source=$legacy_override_source gate-expected-cpu-effective=$target_gate_expected_cpu_effective matrix-expect-cpu-effective=$expect_cpu_effective app-runtime=$app_runtime"
 echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-shader mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms reprobe-interval-frames=$resolved_cpu_shader_reprobe_interval_frames enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime fake-swiftshader-hint=$resolved_fake_swiftshader_hint expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
+echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-route frame-damage-mode=$resolved_cpu_frame_damage_mode damage-rect-cap=$resolved_cpu_damage_rect_cap effective-damage-rect-cap=$effective_cpu_damage_rect_cap publish-warning-threshold-ms=$resolved_cpu_publish_warning_threshold_ms publish-warning-consecutive-limit=$resolved_cpu_publish_warning_consecutive_limit effective-publish-warning-consecutive-limit=$effective_cpu_publish_warning_consecutive_limit"
+echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflow=${expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${expect_cpu_publish_warning:-<unset>}"
 if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
+elif [[ "$target_is_legacy_os" == "true" ]]; then
+  echo "[software-renderer-ci] $SR_CI_OS note: legacy target detected but keep allow-legacy-os=false by default; set SR_CI_FORCE_ALLOW_LEGACY_OS=true to opt into build-time bring-up."
 fi
 
 if [[ -n "$expect_software_route_backend" && "$expect_software_route_backend" != "$expected_route_backend_for_os" ]]; then
@@ -282,7 +346,7 @@ if [[ -n "$cpu_frame_damage_mode" ]]; then
 fi
 if [[ -n "$cpu_damage_rect_cap" ]]; then
   compat_args+=(--cpu-damage-rect-cap "$cpu_damage_rect_cap")
-  compat_args+=(--expect-cpu-damage-rect-cap "$cpu_damage_rect_cap")
+  compat_args+=(--expect-cpu-damage-rect-cap "$effective_cpu_damage_rect_cap")
 fi
 if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
   compat_args+=(--cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
@@ -290,7 +354,16 @@ if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
 fi
 if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
   compat_args+=(--cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
-  compat_args+=(--expect-cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
+  compat_args+=(--expect-cpu-publish-warning-consecutive-limit "$effective_cpu_publish_warning_consecutive_limit")
+fi
+if [[ -n "$expect_cpu_publish_retry_reason" ]]; then
+  compat_args+=(--expect-cpu-publish-retry-reason "$expect_cpu_publish_retry_reason")
+fi
+if [[ -n "$expect_cpu_damage_overflow" ]]; then
+  compat_args+=(--expect-cpu-damage-overflow "$expect_cpu_damage_overflow")
+fi
+if [[ -n "$expect_cpu_publish_warning" ]]; then
+  compat_args+=(--expect-cpu-publish-warning "$expect_cpu_publish_warning")
 fi
 if [[ -n "$target" ]]; then
   compat_args+=(--target "$target")
