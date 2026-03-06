@@ -24,14 +24,11 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Run Linux core test suite
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          nix develop -c zig build test -Dskip-macos-ui-tests=true |& tee ci-logs/linux-core-tests.log
+          nix --accept-flake-config develop -c zig build test -Dskip-macos-ui-tests=true 2>&1 | tee ci-logs/linux-core-tests.log
 
       - name: Upload Linux core logs
         if: always()
@@ -52,9 +49,6 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Syntax check software renderer scripts
         run: |
           bash -n ./.github/scripts/software-renderer-cpu-path-ci.sh
@@ -65,8 +59,8 @@ jobs:
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh |& tee ci-logs/software-renderer-cpu-path-ci-selftest.log
-          ./.github/scripts/software-renderer-compat-check-selftest.sh |& tee ci-logs/software-renderer-compat-check-selftest.log
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh 2>&1 | tee ci-logs/software-renderer-cpu-path-ci-selftest.log
+          ./.github/scripts/software-renderer-compat-check-selftest.sh 2>&1 | tee ci-logs/software-renderer-compat-check-selftest.log
 
       - name: Run Linux software renderer validation
         env:
@@ -109,7 +103,7 @@ jobs:
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          ./.github/scripts/software-renderer-cpu-path-ci.sh |& tee ci-logs/software-renderer-linux.log
+          nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-linux.log
 
       - name: Upload Linux software renderer logs
         if: always()
@@ -130,23 +124,19 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Xcode Version
         run: xcodebuild -version
 
       - name: Build macOS deps
-        id: deps
         run: |
-          nix build -L .#deps
-          echo "deps=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_OUTPUT"
+          nix --accept-flake-config build -L .#deps
+          echo "SYSTEM_PATH=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_ENV"
 
       - name: Run macOS core test suite
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          nix develop -c zig build test --system "${{ steps.deps.outputs.deps }}" |& tee ci-logs/macos-core-tests.log
+          nix --accept-flake-config develop -c zig build test --system "$SYSTEM_PATH" 2>&1 | tee ci-logs/macos-core-tests.log
 
       - name: Upload macOS core logs
         if: always()
@@ -167,24 +157,20 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Xcode Version
         run: xcodebuild -version
 
       - name: Build macOS deps
-        id: deps
         run: |
-          nix build -L .#deps
-          echo "deps=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_OUTPUT"
+          nix --accept-flake-config build -L .#deps
+          echo "SYSTEM_PATH=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_ENV"
 
       - name: Run software renderer selftests
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh |& tee ci-logs/software-renderer-cpu-path-ci-selftest.log
-          ./.github/scripts/software-renderer-compat-check-selftest.sh |& tee ci-logs/software-renderer-compat-check-selftest.log
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh 2>&1 | tee ci-logs/software-renderer-cpu-path-ci-selftest.log
+          ./.github/scripts/software-renderer-compat-check-selftest.sh 2>&1 | tee ci-logs/software-renderer-compat-check-selftest.log
 
       - name: Run macOS software renderer validation
         env:
@@ -224,11 +210,11 @@ jobs:
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING: "true"
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER: drawFrame software cpu smoke published frame clears pending state and finalizes unloading background
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS: "true"
-          SR_CI_SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
+          SR_CI_SYSTEM_PATH: ${{ env.SYSTEM_PATH }}
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          ./.github/scripts/software-renderer-cpu-path-ci.sh |& tee ci-logs/software-renderer-macos.log
+          nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
 
       - name: Upload macOS software renderer logs
         if: always()
