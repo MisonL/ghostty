@@ -222,6 +222,96 @@ fn shouldResetSoftwareSnapshotRuntimeFallback(
     return !experimental or requested == .@"legacy-gl";
 }
 
+const EmbeddedSoftwarePresenterState = struct {
+    experimental: bool = false,
+    requested: Config.SoftwareRendererPresenter = .auto,
+    selected: Config.SoftwareRendererPresenter = .@"legacy-gl",
+    reason: software_presenter.Reason = .not_software_build,
+    runtime_fallback: bool = false,
+    publishing_enabled: bool = false,
+    publishing_initialized: bool = false,
+
+    fn fromSurface(surface: *const Surface) @This() {
+        return .{
+            .experimental = surface.software_presenter_experimental,
+            .requested = surface.software_presenter_requested,
+            .selected = surface.software_presenter_selected,
+            .reason = surface.software_presenter_reason,
+            .runtime_fallback = surface.software_snapshot_runtime_fallback,
+            .publishing_enabled = surface.software_frame_publishing_enabled,
+            .publishing_initialized = surface.software_frame_publishing_initialized,
+        };
+    }
+
+    fn apply(self: @This(), surface: *Surface) void {
+        surface.software_presenter_experimental = self.experimental;
+        surface.software_presenter_requested = self.requested;
+        surface.software_presenter_selected = self.selected;
+        surface.software_presenter_reason = self.reason;
+        surface.software_snapshot_runtime_fallback = self.runtime_fallback;
+        surface.software_frame_publishing_enabled = self.publishing_enabled;
+        surface.software_frame_publishing_initialized = self.publishing_initialized;
+    }
+};
+
+const EmbeddedSoftwarePresenterRefresh = struct {
+    decision: software_presenter.Decision,
+    changed: bool,
+    publish_changed: bool,
+    runtime_fallback_reset: bool,
+};
+
+fn refreshEmbeddedSoftwarePresenterState(
+    state: *EmbeddedSoftwarePresenterState,
+    is_software_build: bool,
+    experimental: bool,
+    requested: Config.SoftwareRendererPresenter,
+    platform_tag: PlatformTag,
+    software_frame_cb: ?App.SoftwareFrameCallback,
+    software_frame_storage_support: u32,
+) EmbeddedSoftwarePresenterRefresh {
+    const runtime_fallback_reset = shouldResetSoftwareSnapshotRuntimeFallback(
+        state.runtime_fallback,
+        experimental,
+        requested,
+    );
+    if (runtime_fallback_reset) {
+        state.runtime_fallback = false;
+    }
+
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        is_software_build,
+        experimental,
+        requested,
+        platform_tag,
+        software_frame_cb,
+        software_frame_storage_support,
+        state.runtime_fallback,
+    );
+    const changed =
+        state.experimental != experimental or
+        state.requested != decision.requested or
+        state.selected != decision.selected or
+        state.reason != decision.reason;
+    const publish_changed =
+        !state.publishing_initialized or
+        state.publishing_enabled != decision.can_publish_software_frame;
+
+    state.experimental = experimental;
+    state.requested = decision.requested;
+    state.selected = decision.selected;
+    state.reason = decision.reason;
+    state.publishing_enabled = decision.can_publish_software_frame;
+    if (publish_changed) state.publishing_initialized = true;
+
+    return .{
+        .decision = decision,
+        .changed = changed,
+        .publish_changed = publish_changed,
+        .runtime_fallback_reset = runtime_fallback_reset,
+    };
+}
+
 pub const App = struct {
     pub const runtime_config_version: u32 = 2;
 
@@ -842,44 +932,23 @@ pub const Surface = struct {
             .ios => .ios,
         };
 
-        if (shouldResetSoftwareSnapshotRuntimeFallback(
-            self.software_snapshot_runtime_fallback,
-            experimental,
-            requested,
-        )) {
-            self.software_snapshot_runtime_fallback = false;
-        }
-
-        const decision = softwarePresenterDecisionForEmbeddedConfig(
+        var state = EmbeddedSoftwarePresenterState.fromSurface(self);
+        const refresh_state = refreshEmbeddedSoftwarePresenterState(
+            &state,
             true,
             experimental,
             requested,
             platform_tag,
             self.app.opts.software_frame_cb,
             self.app.opts.software_frame_storage_support,
-            self.software_snapshot_runtime_fallback,
         );
-
-        const changed =
-            self.software_presenter_experimental != experimental or
-            self.software_presenter_requested != decision.requested or
-            self.software_presenter_selected != decision.selected or
-            self.software_presenter_reason != decision.reason;
-        const publish_changed =
-            !self.software_frame_publishing_initialized or
-            self.software_frame_publishing_enabled != decision.can_publish_software_frame;
-
-        self.software_presenter_experimental = experimental;
-        self.software_presenter_requested = decision.requested;
-        self.software_presenter_selected = decision.selected;
-        self.software_presenter_reason = decision.reason;
-        self.software_frame_publishing_enabled = decision.can_publish_software_frame;
-        if (publish_changed) {
-            self.software_frame_publishing_initialized = true;
+        const decision = refresh_state.decision;
+        state.apply(self);
+        if (refresh_state.publish_changed) {
             self.core_surface.setSoftwareFramePublishingEnabled(decision.can_publish_software_frame);
         }
 
-        if (!changed and !publish_changed) return;
+        if (!refresh_state.changed and !refresh_state.publish_changed) return;
 
         log.info(
             "software presenter runtime=embedded experimental={} requested={s} selected={s} reason={s} runtime_fallback={} can_publish={}",
@@ -3937,4 +4006,122 @@ test "shouldResetSoftwareSnapshotRuntimeFallback for embedded keeps session fall
         true,
         .snapshot,
     ));
+}
+
+test "embedded software presenter state resets session fallback after experimental toggle and re-enables publishing" {
+    var state: EmbeddedSoftwarePresenterState = .{
+        .experimental = true,
+        .requested = .snapshot,
+        .selected = .@"legacy-gl",
+        .reason = .runtime_failed_session_fallback,
+        .runtime_fallback = true,
+        .publishing_enabled = false,
+        .publishing_initialized = true,
+    };
+
+    const disabled_refresh = refreshEmbeddedSoftwarePresenterState(
+        &state,
+        true,
+        false,
+        .snapshot,
+        .macos,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForMacos(),
+    );
+    try std.testing.expect(disabled_refresh.runtime_fallback_reset);
+    try std.testing.expect(disabled_refresh.changed);
+    try std.testing.expect(!disabled_refresh.publish_changed);
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(
+        software_presenter.Reason.experimental_disabled,
+        state.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        state.selected,
+    );
+    try std.testing.expect(!state.publishing_enabled);
+    try std.testing.expect(state.publishing_initialized);
+
+    const recovered_refresh = refreshEmbeddedSoftwarePresenterState(
+        &state,
+        true,
+        true,
+        .snapshot,
+        .macos,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForMacos(),
+    );
+    try std.testing.expect(!recovered_refresh.runtime_fallback_reset);
+    try std.testing.expect(recovered_refresh.changed);
+    try std.testing.expect(recovered_refresh.publish_changed);
+    try std.testing.expectEqual(
+        software_presenter.Reason.snapshot_selected,
+        state.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.snapshot,
+        state.selected,
+    );
+    try std.testing.expect(state.publishing_enabled);
+}
+
+test "embedded software presenter state resets session fallback before honoring legacy request" {
+    var state: EmbeddedSoftwarePresenterState = .{
+        .experimental = true,
+        .requested = .snapshot,
+        .selected = .@"legacy-gl",
+        .reason = .runtime_failed_session_fallback,
+        .runtime_fallback = true,
+        .publishing_enabled = false,
+        .publishing_initialized = true,
+    };
+
+    const legacy_refresh = refreshEmbeddedSoftwarePresenterState(
+        &state,
+        true,
+        true,
+        .@"legacy-gl",
+        .ios,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForIos(),
+    );
+    try std.testing.expect(legacy_refresh.runtime_fallback_reset);
+    try std.testing.expect(legacy_refresh.changed);
+    try std.testing.expect(!legacy_refresh.publish_changed);
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        state.requested,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        state.selected,
+    );
+    try std.testing.expectEqual(
+        software_presenter.Reason.forced_legacy_gl,
+        state.reason,
+    );
+    try std.testing.expect(!state.publishing_enabled);
+
+    const recovered_refresh = refreshEmbeddedSoftwarePresenterState(
+        &state,
+        true,
+        true,
+        .snapshot,
+        .ios,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForIos(),
+    );
+    try std.testing.expect(!recovered_refresh.runtime_fallback_reset);
+    try std.testing.expect(recovered_refresh.publish_changed);
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.snapshot,
+        state.selected,
+    );
+    try std.testing.expectEqual(
+        software_presenter.Reason.snapshot_selected,
+        state.reason,
+    );
+    try std.testing.expect(state.publishing_enabled);
 }

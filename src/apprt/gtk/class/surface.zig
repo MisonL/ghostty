@@ -785,6 +785,112 @@ pub const Surface = extern struct {
         }
     };
 
+    const SoftwareSnapshotPresenterState = struct {
+        presenter_requested: coreconfig.SoftwareRendererPresenter = .auto,
+        presenter_selected: coreconfig.SoftwareRendererPresenter = .@"legacy-gl",
+        presenter_reason: SoftwarePresenterReason = .not_software_build,
+        snapshot_enabled: bool = false,
+        runtime_fallback: bool = false,
+        snapshot_failure_streak: u32 = 0,
+        snapshot_failure_total: u64 = 0,
+        snapshot_failure_generation: ?u64 = null,
+        damage_failure_streak: u32 = 0,
+        damage_failure_generation: ?u64 = null,
+        damage_failure_total: u64 = 0,
+        damage_warn_logged: bool = false,
+        native_handle_unsupported_logged: bool = false,
+        frame_generation: u64 = 0,
+        frame_generation_rendered: u64 = 0,
+
+        fn fromPrivate(priv: *const Private) @This() {
+            return .{
+                .presenter_requested = priv.software_presenter_requested,
+                .presenter_selected = priv.software_presenter_selected,
+                .presenter_reason = priv.software_presenter_reason,
+                .snapshot_enabled = priv.software_snapshot_enabled,
+                .runtime_fallback = priv.software_snapshot_runtime_fallback,
+                .snapshot_failure_streak = priv.software_snapshot_failure_streak,
+                .snapshot_failure_total = priv.software_snapshot_failure_total,
+                .snapshot_failure_generation = priv.software_snapshot_failure_generation,
+                .damage_failure_streak = priv.software_damage_metadata_failure_streak,
+                .damage_failure_generation = priv.software_damage_metadata_failure_generation,
+                .damage_failure_total = priv.software_damage_metadata_failure_total,
+                .damage_warn_logged = priv.software_damage_metadata_warn_logged,
+                .native_handle_unsupported_logged = priv.software_native_handle_unsupported_logged,
+                .frame_generation = priv.software_frame_generation,
+                .frame_generation_rendered = priv.software_frame_generation_rendered,
+            };
+        }
+
+        fn apply(self: @This(), priv: *Private) void {
+            priv.software_presenter_requested = self.presenter_requested;
+            priv.software_presenter_selected = self.presenter_selected;
+            priv.software_presenter_reason = self.presenter_reason;
+            priv.software_snapshot_enabled = self.snapshot_enabled;
+            priv.software_snapshot_runtime_fallback = self.runtime_fallback;
+            priv.software_snapshot_failure_streak = self.snapshot_failure_streak;
+            priv.software_snapshot_failure_total = self.snapshot_failure_total;
+            priv.software_snapshot_failure_generation = self.snapshot_failure_generation;
+            priv.software_damage_metadata_failure_streak = self.damage_failure_streak;
+            priv.software_damage_metadata_failure_generation = self.damage_failure_generation;
+            priv.software_damage_metadata_failure_total = self.damage_failure_total;
+            priv.software_damage_metadata_warn_logged = self.damage_warn_logged;
+            priv.software_native_handle_unsupported_logged = self.native_handle_unsupported_logged;
+            priv.software_frame_generation = self.frame_generation;
+            priv.software_frame_generation_rendered = self.frame_generation_rendered;
+        }
+    };
+
+    fn setSoftwareSnapshotEnabledState(
+        state: *SoftwareSnapshotPresenterState,
+        enabled: bool,
+    ) void {
+        state.snapshot_enabled = enabled;
+        if (enabled) return;
+
+        state.frame_generation = 0;
+        state.frame_generation_rendered = 0;
+        state.snapshot_failure_generation = null;
+        state.damage_failure_generation = null;
+        state.damage_failure_streak = 0;
+        state.damage_failure_total = 0;
+        state.damage_warn_logged = false;
+        state.native_handle_unsupported_logged = false;
+        if (!state.runtime_fallback) {
+            state.snapshot_failure_streak = 0;
+        }
+    }
+
+    fn resetSoftwareSnapshotRuntimeFallbackState(
+        state: *SoftwareSnapshotPresenterState,
+    ) bool {
+        if (!state.runtime_fallback) return false;
+
+        state.runtime_fallback = false;
+        state.snapshot_failure_streak = 0;
+        state.snapshot_failure_generation = null;
+        state.damage_failure_streak = 0;
+        state.damage_failure_generation = null;
+        state.native_handle_unsupported_logged = false;
+        return true;
+    }
+
+    fn applySoftwarePresenterSelectionState(
+        state: *SoftwareSnapshotPresenterState,
+        selection: SoftwarePresenterSelection,
+    ) bool {
+        const changed =
+            state.presenter_requested != selection.requested or
+            state.presenter_selected != selection.selected or
+            state.presenter_reason != selection.reason;
+
+        state.presenter_requested = selection.requested;
+        state.presenter_selected = selection.selected;
+        state.presenter_reason = selection.reason;
+        setSoftwareSnapshotEnabledState(state, selection.selected == .snapshot);
+        return changed;
+    }
+
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
     }
@@ -2374,23 +2480,10 @@ pub const Surface = extern struct {
         core_surface.setSoftwareFramePublishingEnabled(self.private().software_snapshot_enabled);
     }
 
-    fn setSoftwareSnapshotEnabled(self: *Self, enabled: bool) void {
+    fn syncSoftwareSnapshotEnabledSideEffects(self: *Self) void {
         const priv = self.private();
-        priv.software_snapshot_enabled = enabled;
-
-        if (!enabled) {
+        if (!priv.software_snapshot_enabled) {
             self.clearSoftwareSnapshotTexture();
-            priv.software_frame_generation = 0;
-            priv.software_frame_generation_rendered = 0;
-            priv.software_snapshot_failure_generation = null;
-            priv.software_damage_metadata_failure_generation = null;
-            priv.software_damage_metadata_failure_streak = 0;
-            priv.software_damage_metadata_failure_total = 0;
-            priv.software_damage_metadata_warn_logged = false;
-            priv.software_native_handle_unsupported_logged = false;
-            if (!priv.software_snapshot_runtime_fallback) {
-                priv.software_snapshot_failure_streak = 0;
-            }
             self.syncSoftwareFramePublishing();
             return;
         }
@@ -2399,21 +2492,24 @@ pub const Surface = extern struct {
         self.syncSoftwareFramePublishing();
     }
 
+    fn setSoftwareSnapshotEnabled(self: *Self, enabled: bool) void {
+        const priv = self.private();
+        var state = SoftwareSnapshotPresenterState.fromPrivate(priv);
+        setSoftwareSnapshotEnabledState(&state, enabled);
+        state.apply(priv);
+        self.syncSoftwareSnapshotEnabledSideEffects();
+    }
+
     fn resetSoftwareSnapshotRuntimeFallback(self: *Self, reason: []const u8) void {
         const priv = self.private();
-        if (!priv.software_snapshot_runtime_fallback) return;
-
-        priv.software_snapshot_runtime_fallback = false;
-        priv.software_snapshot_failure_streak = 0;
-        priv.software_snapshot_failure_generation = null;
-        priv.software_damage_metadata_failure_streak = 0;
-        priv.software_damage_metadata_failure_generation = null;
-        priv.software_native_handle_unsupported_logged = false;
+        var state = SoftwareSnapshotPresenterState.fromPrivate(priv);
+        if (!resetSoftwareSnapshotRuntimeFallbackState(&state)) return;
+        state.apply(priv);
         log.info(
             "software snapshot runtime fallback reset reason={s} failure_total={}",
             .{
                 reason,
-                priv.software_snapshot_failure_total,
+                state.snapshot_failure_total,
             },
         );
     }
@@ -2687,32 +2783,23 @@ pub const Surface = extern struct {
         if (comptime build_config.renderer != .software) return;
 
         const priv = self.private();
+        var state = SoftwareSnapshotPresenterState.fromPrivate(priv);
         var selection = self.softwarePresenterSelection();
         if (shouldResetSoftwareSnapshotRuntimeFallback(
-            priv.software_snapshot_runtime_fallback,
+            state.runtime_fallback,
             selection,
         )) {
             self.resetSoftwareSnapshotRuntimeFallback(
                 if (selection.experimental) "requested_legacy_gl" else "experimental_disabled",
             );
+            state = SoftwareSnapshotPresenterState.fromPrivate(priv);
             selection = self.softwarePresenterSelection();
         }
 
-        const changed =
-            priv.software_presenter_requested != selection.requested or
-            priv.software_presenter_selected != selection.selected or
-            priv.software_presenter_reason != selection.reason;
-
-        const snapshot_enabled = selection.selected == .snapshot;
-        if (!changed) {
-            self.setSoftwareSnapshotEnabled(snapshot_enabled);
-            return;
-        }
-
-        priv.software_presenter_requested = selection.requested;
-        priv.software_presenter_selected = selection.selected;
-        priv.software_presenter_reason = selection.reason;
-        self.setSoftwareSnapshotEnabled(snapshot_enabled);
+        const changed = applySoftwarePresenterSelectionState(&state, selection);
+        state.apply(priv);
+        self.syncSoftwareSnapshotEnabledSideEffects();
+        if (!changed) return;
 
         log.info(
             "software presenter experimental={} requested={s} selected={s} reason={s} runtime_fallback={} failure_streak={} failure_total={} metadata_failure_streak={} metadata_failure_total={}",
@@ -5359,4 +5446,167 @@ test "shouldResetSoftwareSnapshotRuntimeFallback keeps fallback when auto presen
     );
 
     try std.testing.expect(!Surface.shouldResetSoftwareSnapshotRuntimeFallback(true, selection));
+}
+
+test "software snapshot presenter state resets runtime fallback after experimental toggle and re-enables snapshot" {
+    var state: Surface.SoftwareSnapshotPresenterState = .{
+        .presenter_requested = .snapshot,
+        .presenter_selected = .@"legacy-gl",
+        .presenter_reason = .runtime_failed_session_fallback,
+        .snapshot_enabled = false,
+        .runtime_fallback = true,
+        .snapshot_failure_streak = software_snapshot_failure_threshold,
+        .snapshot_failure_total = software_snapshot_failure_threshold,
+        .snapshot_failure_generation = 41,
+        .damage_failure_streak = 2,
+        .damage_failure_generation = 41,
+        .damage_failure_total = 2,
+        .damage_warn_logged = true,
+        .native_handle_unsupported_logged = true,
+        .frame_generation = 9,
+        .frame_generation_rendered = 8,
+    };
+
+    var disabled_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        false,
+        .snapshot,
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.shouldResetSoftwareSnapshotRuntimeFallback(
+        state.runtime_fallback,
+        disabled_selection,
+    ));
+    try std.testing.expect(Surface.resetSoftwareSnapshotRuntimeFallbackState(&state));
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(@as(u32, 0), state.snapshot_failure_streak);
+    try std.testing.expectEqual(@as(?u64, null), state.snapshot_failure_generation);
+    try std.testing.expectEqual(@as(u32, 0), state.damage_failure_streak);
+    try std.testing.expectEqual(@as(?u64, null), state.damage_failure_generation);
+    try std.testing.expect(!state.native_handle_unsupported_logged);
+
+    disabled_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        false,
+        .snapshot,
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.applySoftwarePresenterSelectionState(
+        &state,
+        disabled_selection,
+    ));
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.@"legacy-gl",
+        state.presenter_selected,
+    );
+    try std.testing.expectEqual(
+        Surface.SoftwarePresenterReason.experimental_disabled,
+        state.presenter_reason,
+    );
+    try std.testing.expect(!state.snapshot_enabled);
+    try std.testing.expectEqual(@as(u64, 0), state.frame_generation);
+    try std.testing.expectEqual(@as(u64, 0), state.frame_generation_rendered);
+    try std.testing.expectEqual(@as(u64, 0), state.damage_failure_total);
+    try std.testing.expect(!state.damage_warn_logged);
+
+    const enabled_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.applySoftwarePresenterSelectionState(
+        &state,
+        enabled_selection,
+    ));
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.snapshot,
+        state.presenter_selected,
+    );
+    try std.testing.expectEqual(
+        Surface.SoftwarePresenterReason.snapshot_selected,
+        state.presenter_reason,
+    );
+    try std.testing.expect(state.snapshot_enabled);
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(@as(u32, 0), state.snapshot_failure_streak);
+}
+
+test "software snapshot presenter state resets runtime fallback before honoring legacy request" {
+    var state: Surface.SoftwareSnapshotPresenterState = .{
+        .presenter_requested = .snapshot,
+        .presenter_selected = .@"legacy-gl",
+        .presenter_reason = .runtime_failed_session_fallback,
+        .snapshot_enabled = false,
+        .runtime_fallback = true,
+        .snapshot_failure_streak = 3,
+        .snapshot_failure_total = 7,
+        .snapshot_failure_generation = 19,
+        .damage_failure_streak = 1,
+        .damage_failure_generation = 19,
+        .damage_failure_total = 4,
+        .damage_warn_logged = true,
+        .native_handle_unsupported_logged = true,
+    };
+
+    var legacy_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .@"legacy-gl",
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.shouldResetSoftwareSnapshotRuntimeFallback(
+        state.runtime_fallback,
+        legacy_selection,
+    ));
+    try std.testing.expect(Surface.resetSoftwareSnapshotRuntimeFallbackState(&state));
+
+    legacy_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .@"legacy-gl",
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.applySoftwarePresenterSelectionState(
+        &state,
+        legacy_selection,
+    ));
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.@"legacy-gl",
+        state.presenter_requested,
+    );
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.@"legacy-gl",
+        state.presenter_selected,
+    );
+    try std.testing.expectEqual(
+        Surface.SoftwarePresenterReason.forced_legacy_gl,
+        state.presenter_reason,
+    );
+    try std.testing.expect(!state.snapshot_enabled);
+    try std.testing.expect(!state.runtime_fallback);
+    try std.testing.expectEqual(@as(u32, 0), state.snapshot_failure_streak);
+    try std.testing.expectEqual(@as(u64, 0), state.damage_failure_total);
+
+    const recovered_selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .auto,
+        true,
+        state.runtime_fallback,
+    );
+    try std.testing.expect(Surface.applySoftwarePresenterSelectionState(
+        &state,
+        recovered_selection,
+    ));
+    try std.testing.expectEqual(
+        coreconfig.SoftwareRendererPresenter.snapshot,
+        state.presenter_selected,
+    );
+    try std.testing.expect(state.snapshot_enabled);
 }

@@ -214,6 +214,38 @@ fn discardStaleUnloadingBackgroundImageAfterPrepareFailure(
     return finalizeUnloadingBgImage(alloc, bg_image);
 }
 
+fn clearCpuRouteTransientStateForPlatformRoute(
+    cpu_publish_pending: *bool,
+    cpu_frame_publish_warning: *CpuFramePublishWarningState,
+) void {
+    cpu_publish_pending.* = false;
+    cpu_frame_publish_warning.* = .{};
+}
+
+fn applyCpuPublishResultState(
+    alloc: Allocator,
+    bg_image: *?imagepkg.Image,
+    config_has_bg_image: bool,
+    cpu_publish_pending: *bool,
+    cells_rebuilt: *bool,
+    result: CpuPublishResult,
+) bool {
+    switch (result) {
+        .retry => {
+            cpu_publish_pending.* = true;
+            cells_rebuilt.* = true;
+            return false;
+        },
+        .published => {
+            cpu_publish_pending.* = false;
+            if (!config_has_bg_image) {
+                return finalizeUnloadingBgImage(alloc, bg_image);
+            }
+            return false;
+        },
+    }
+}
+
 const CpuImagePixels = struct {
     width: u32,
     height: u32,
@@ -3761,8 +3793,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // don't need to since the previous frame should be identical.
             const use_software_cpu_path = self.shouldUseSoftwareCpuFramePath();
             if (!use_software_cpu_path) {
-                self.cpu_publish_pending = false;
-                self.cpu_frame_publish_warning = .{};
+                clearCpuRouteTransientStateForPlatformRoute(
+                    &self.cpu_publish_pending,
+                    &self.cpu_frame_publish_warning,
+                );
             }
             const has_animations = self.hasAnimations();
 
@@ -3826,19 +3860,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 );
                 switch (publish_result) {
                     .retry => |reason| {
+                        _ = applyCpuPublishResultState(
+                            self.alloc,
+                            &self.bg_image,
+                            self.config.bg_image != null,
+                            &self.cpu_publish_pending,
+                            &self.cells_rebuilt,
+                            .{ .retry = reason },
+                        );
                         self.cpu_route_diagnostics.recordPublishRetryReason(reason);
-                        self.cpu_publish_pending = true;
                         logCpuPublishRetryKv(
                             self.cpu_route_diagnostics.snapshot(),
                             self.cpu_publish_pending,
                         );
-                        self.cells_rebuilt = true;
                     },
                     .published => {
-                        self.cpu_publish_pending = false;
-                        if (self.config.bg_image == null) {
-                            _ = finalizeUnloadingBgImage(self.alloc, &self.bg_image);
-                        }
+                        _ = applyCpuPublishResultState(
+                            self.alloc,
+                            &self.bg_image,
+                            self.config.bg_image != null,
+                            &self.cpu_publish_pending,
+                            &self.cells_rebuilt,
+                            .published,
+                        );
                         if (publish_start) |start| {
                             const publish_end = std.time.Instant.now() catch null;
                             if (publish_end) |end| {
@@ -6159,6 +6203,134 @@ test "background image prepare failure clears stale unload slot" {
         &bg_image,
     ));
     try std.testing.expect(bg_image == null);
+}
+
+test "clear cpu route transient state resets stale pending publish and warnings" {
+    var cpu_publish_pending = true;
+    var cpu_frame_publish_warning: CpuFramePublishWarningState = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+
+    clearCpuRouteTransientStateForPlatformRoute(
+        &cpu_publish_pending,
+        &cpu_frame_publish_warning,
+    );
+
+    try std.testing.expect(!cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!cpu_frame_publish_warning.warned);
+}
+
+test "cpu publish retry keeps redraw pending without clearing unloading background image" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+    defer if (bg_image) |*image| image.deinit(alloc);
+
+    clearConfiguredBackgroundImage(&bg_image);
+    var cpu_publish_pending = false;
+    var cells_rebuilt = false;
+
+    try std.testing.expect(!applyCpuPublishResultState(
+        alloc,
+        &bg_image,
+        false,
+        &cpu_publish_pending,
+        &cells_rebuilt,
+        .{ .retry = .mailbox_backpressure },
+    ));
+    try std.testing.expect(cpu_publish_pending);
+    try std.testing.expect(cells_rebuilt);
+    try std.testing.expect(bg_image != null);
+    try std.testing.expect(bg_image.?.isUnloading());
+}
+
+test "published cpu frame finalizes unloading background only after config is cleared" {
+    const alloc = std.testing.allocator;
+
+    var bg_image_gone: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+    clearConfiguredBackgroundImage(&bg_image_gone);
+    var cpu_publish_pending = true;
+    var cells_rebuilt = false;
+    try std.testing.expect(applyCpuPublishResultState(
+        alloc,
+        &bg_image_gone,
+        false,
+        &cpu_publish_pending,
+        &cells_rebuilt,
+        .published,
+    ));
+    try std.testing.expect(!cpu_publish_pending);
+    try std.testing.expect(!cells_rebuilt);
+    try std.testing.expect(bg_image_gone == null);
+
+    var bg_image_recovering: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 5, 6, 7, 8 },
+    );
+    defer if (bg_image_recovering) |*image| image.deinit(alloc);
+    clearConfiguredBackgroundImage(&bg_image_recovering);
+    cpu_publish_pending = true;
+    cells_rebuilt = false;
+    try std.testing.expect(!applyCpuPublishResultState(
+        alloc,
+        &bg_image_recovering,
+        true,
+        &cpu_publish_pending,
+        &cells_rebuilt,
+        .published,
+    ));
+    try std.testing.expect(!cpu_publish_pending);
+    try std.testing.expect(bg_image_recovering != null);
+    try std.testing.expect(bg_image_recovering.?.isUnloading());
+}
+
+test "applyPreparedBackgroundImage replaces unloading slot with new pending image" {
+    const alloc = std.testing.allocator;
+    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 4 },
+    );
+    defer if (bg_image) |*image| image.deinit(alloc);
+
+    clearConfiguredBackgroundImage(&bg_image);
+    try std.testing.expect(bg_image.?.isUnloading());
+
+    applyPreparedBackgroundImage(
+        alloc,
+        &bg_image,
+        try makeOwnedPendingRgbaImage(
+            alloc,
+            2,
+            1,
+            &.{ 5, 6, 7, 8, 9, 10, 11, 12 },
+        ),
+    );
+
+    try std.testing.expect(bg_image != null);
+    try std.testing.expect(bg_image.?.isPending());
+    try std.testing.expect(!bg_image.?.isUnloading());
+    switch (bg_image.?) {
+        .pending => |pending| {
+            try std.testing.expectEqual(@as(u32, 2), pending.width);
+            try std.testing.expectEqual(@as(u32, 1), pending.height);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "build cpu route availability source classifies build-side causes" {
