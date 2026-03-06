@@ -3930,3 +3930,11 @@ test "shouldResetSoftwareSnapshotRuntimeFallback for embedded keeps session fall
         .auto,
     ));
 }
+
+test "shouldResetSoftwareSnapshotRuntimeFallback for embedded keeps session fallback for snapshot presenter" {
+    try std.testing.expect(!shouldResetSoftwareSnapshotRuntimeFallback(
+        true,
+        true,
+        .snapshot,
+    ));
+}

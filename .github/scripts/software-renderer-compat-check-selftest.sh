@@ -272,6 +272,19 @@ case_runtime_damage_overflow_zero_succeeds_without_log() {
   pass "runtime damage overflow zero expectation passes"
 }
 
+case_runtime_damage_overflow_zero_detects_unexpected_log() {
+  local output
+  if run_with_fake_zig output \
+    success \
+    --mode build \
+    --expect-cpu-damage-overflow 0; then
+    fail "runtime damage overflow zero should fail when overflow log exists"
+  fi
+
+  assert_contains "$output" "failure-class=assertion runtime-log-mismatch" "runtime damage overflow zero mismatch"
+  pass "runtime damage overflow zero detects unexpected log"
+}
+
 case_runtime_publish_retry_mismatch_detected() {
   local output
   if run_with_fake_zig output \
@@ -296,6 +309,32 @@ case_runtime_publish_warning_missing_detected() {
 
   assert_contains "$output" "failure-class=assertion runtime-log-missing" "runtime publish warning missing"
   pass "runtime publish warning missing classified correctly"
+}
+
+case_runtime_publish_warning_false_succeeds_without_log() {
+  local output
+  if ! run_with_fake_zig output \
+    runtime-publish-warning-missing \
+    --mode build \
+    --expect-cpu-publish-warning false; then
+    fail "runtime publish warning false expectation should pass without warning log"
+  fi
+
+  assert_contains "$output" "[software-compat] cpu-publish-warning assertion matched" "runtime publish warning false"
+  pass "runtime publish warning false expectation passes"
+}
+
+case_runtime_publish_warning_false_detects_unexpected_log() {
+  local output
+  if run_with_fake_zig output \
+    success \
+    --mode build \
+    --expect-cpu-publish-warning false; then
+    fail "runtime publish warning false should fail when warning log exists"
+  fi
+
+  assert_contains "$output" "failure-class=assertion runtime-log-mismatch" "runtime publish warning false mismatch"
+  pass "runtime publish warning false detects unexpected log"
 }
 
 case_expect_cpu_publish_retry_reason_invalid_fails_fast() {
@@ -344,8 +383,11 @@ test_cases=(
   case_runtime_log_mismatch_detected
   case_runtime_damage_overflow_mismatch_detected
   case_runtime_damage_overflow_zero_succeeds_without_log
+  case_runtime_damage_overflow_zero_detects_unexpected_log
   case_runtime_publish_retry_mismatch_detected
   case_runtime_publish_warning_missing_detected
+  case_runtime_publish_warning_false_succeeds_without_log
+  case_runtime_publish_warning_false_detects_unexpected_log
   case_expect_cpu_publish_retry_reason_invalid_fails_fast
   case_expect_cpu_publish_warning_invalid_fails_fast
   case_expect_cpu_damage_overflow_too_large_fails_fast

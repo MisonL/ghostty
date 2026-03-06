@@ -1551,6 +1551,21 @@ jobs:
         id: deps
         run: nix build -L .#deps && echo "deps=$(readlink ./result)" >> $GITHUB_OUTPUT
 
+      - name: Syntax check software renderer CPU path scripts (once)
+        if: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' }}
+        run: |
+          bash -n ./.github/scripts/software-renderer-cpu-path-ci.sh
+          bash -n ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+          bash -n ./.github/scripts/software-renderer-compat-check-selftest.sh
+
+      - name: Selftest software renderer CPU path gate (once)
+        if: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' }}
+        run: |
+          echo "software-renderer cpu-path selftest case total: $(grep -Ec '^case_[a-z0-9_]+\\(\\) \\{' ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh)"
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+          echo "software-renderer compat-check selftest case total: $(grep -Ec '^case_[a-z0-9_]+\\(\\) \\{' ./.github/scripts/software-renderer-compat-check-selftest.sh)"
+          ./.github/scripts/software-renderer-compat-check-selftest.sh
+
       - name: Test software renderer CPU path
         env:
           SR_CI_OS: macos

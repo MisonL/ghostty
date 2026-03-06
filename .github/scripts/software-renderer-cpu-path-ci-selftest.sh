@@ -379,6 +379,23 @@ case_dry_run_runtime_diagnostics_expectations_passthrough() {
   pass "dry-run passes runtime diagnostics expectations"
 }
 
+case_dry_run_runtime_diagnostics_zero_and_false_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW=0 \
+    SR_CI_EXPECT_CPU_PUBLISH_WARNING=false; then
+    fail "dry-run with runtime diagnostics zero/false expectations should succeed"
+  fi
+
+  assert_contains "$output" "runtime-diagnostics expect-damage-overflow=0 expect-publish-retry-reason=<unset> expect-publish-warning=false" "dry-run runtime diagnostics zero/false summary"
+  assert_contains "$output" "--expect-cpu-damage-overflow 0" "dry-run cpu damage overflow zero expect arg"
+  assert_contains "$output" "--expect-cpu-publish-warning false" "dry-run cpu publish warning false expect arg"
+  pass "dry-run passes runtime diagnostics zero/false expectations"
+}
+
 case_dry_run_cpu_frame_damage_mode_passthrough() {
   local output
   if ! run_with_env output \
@@ -618,6 +635,7 @@ test_cases=(
   case_dry_run_cpu_publish_warning_knobs_passthrough
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
   case_dry_run_runtime_diagnostics_expectations_passthrough
+  case_dry_run_runtime_diagnostics_zero_and_false_passthrough
   case_dry_run_cpu_frame_damage_mode_passthrough
   case_dry_run_cpu_damage_rect_cap_passthrough
   case_cpu_damage_rect_cap_invalid_fails
