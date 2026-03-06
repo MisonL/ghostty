@@ -1097,6 +1097,13 @@ pub const StraightRgbaCompose = struct {
     opacity: f32 = 1.0,
 };
 
+fn floatRectIsFinite(rect: FloatRect) bool {
+    return std.math.isFinite(rect.x) and
+        std.math.isFinite(rect.y) and
+        std.math.isFinite(rect.width) and
+        std.math.isFinite(rect.height);
+}
+
 /// CPU-owned framebuffer primitive for staging software-rendered output.
 pub const FrameBuffer = struct {
     width_px: u32,
@@ -1442,8 +1449,11 @@ pub const FrameBuffer = struct {
         image_rgba: []const u8,
         compose: StraightRgbaCompose,
     ) void {
-        if (!(compose.src_rect.width > 0) or !(compose.src_rect.height > 0)) return;
-        if (!(compose.dst_rect.width > 0) or !(compose.dst_rect.height > 0)) return;
+        const src_rect = compose.src_rect;
+        const dst_rect = compose.dst_rect;
+        if (!floatRectIsFinite(src_rect) or !floatRectIsFinite(dst_rect)) return;
+        if (!(src_rect.width > 0) or !(src_rect.height > 0)) return;
+        if (!(dst_rect.width > 0) or !(dst_rect.height > 0)) return;
 
         if (image_width == 0 or image_height == 0) return;
         const min_stride_u64 = std.math.mul(u64, image_width, 4) catch return;
@@ -1463,26 +1473,21 @@ pub const FrameBuffer = struct {
         const fb_width_i64 = @as(i64, @intCast(self.width_px));
         const fb_height_i64 = @as(i64, @intCast(self.height_px));
         if (fb_width_i64 <= 0 or fb_height_i64 <= 0) return;
+        const fb_width_f = @as(f32, @floatFromInt(self.width_px));
+        const fb_height_f = @as(f32, @floatFromInt(self.height_px));
 
-        const dst_x0 = compose.dst_rect.x;
-        const dst_y0 = compose.dst_rect.y;
-        const dst_x1 = dst_x0 + compose.dst_rect.width;
-        const dst_y1 = dst_y0 + compose.dst_rect.height;
+        const dst_x0 = dst_rect.x;
+        const dst_y0 = dst_rect.y;
+        const dst_x1 = dst_x0 + dst_rect.width;
+        const dst_y1 = dst_y0 + dst_rect.height;
         if (!(dst_x1 > dst_x0) or !(dst_y1 > dst_y0)) return;
 
-        var start_x = @as(i64, @intFromFloat(@floor(dst_x0)));
-        var start_y = @as(i64, @intFromFloat(@floor(dst_y0)));
-        var end_x = @as(i64, @intFromFloat(@ceil(dst_x1)));
-        var end_y = @as(i64, @intFromFloat(@ceil(dst_y1)));
-
-        start_x = std.math.clamp(start_x, 0, fb_width_i64);
-        start_y = std.math.clamp(start_y, 0, fb_height_i64);
-        end_x = std.math.clamp(end_x, 0, fb_width_i64);
-        end_y = std.math.clamp(end_y, 0, fb_height_i64);
+        const start_x = @as(i64, @intFromFloat(std.math.clamp(@floor(dst_x0), @as(f32, 0), fb_width_f)));
+        const start_y = @as(i64, @intFromFloat(std.math.clamp(@floor(dst_y0), @as(f32, 0), fb_height_f)));
+        const end_x = @as(i64, @intFromFloat(std.math.clamp(@ceil(dst_x1), @as(f32, 0), fb_width_f)));
+        const end_y = @as(i64, @intFromFloat(std.math.clamp(@ceil(dst_y1), @as(f32, 0), fb_height_f)));
         if (start_x >= end_x or start_y >= end_y) return;
 
-        const src_rect = compose.src_rect;
-        const dst_rect = compose.dst_rect;
         const dst_stride = @as(usize, @intCast(self.stride_bytes));
         const src_width = @as(usize, @intCast(image_width));
         const src_height = @as(usize, @intCast(image_height));
@@ -1494,12 +1499,14 @@ pub const FrameBuffer = struct {
             const dst_center_y = @as(f32, @floatFromInt(y)) + 0.5;
             const ty = (dst_center_y - dst_rect.y) / dst_rect.height;
             const src_y = src_rect.y + ty * src_rect.height - 0.5;
+            if (!std.math.isFinite(src_y)) continue;
 
             var x = start_x;
             while (x < end_x) : (x += 1) {
                 const dst_center_x = @as(f32, @floatFromInt(x)) + 0.5;
                 const tx = (dst_center_x - dst_rect.x) / dst_rect.width;
                 const src_x = src_rect.x + tx * src_rect.width - 0.5;
+                if (!std.math.isFinite(src_x)) continue;
 
                 const sample = sampleStraightRgbaBilinear(
                     src_width,
@@ -1660,8 +1667,18 @@ fn sampleStraightRgbaBilinear(
     src_y: f32,
     boundary: ImageBoundaryMode,
 ) [4]f32 {
+    const max_i32_usize = @as(usize, @intCast(std.math.maxInt(i32)));
+    if (image_width > max_i32_usize or image_height > max_i32_usize) {
+        return .{ 0, 0, 0, 0 };
+    }
+
     const x0f = @floor(src_x);
     const y0f = @floor(src_y);
+    const min_i32_f = @as(f32, @floatFromInt(std.math.minInt(i32)));
+    const max_bilinear_i32_f = @as(f32, @floatFromInt(std.math.maxInt(i32) - 1));
+    if (x0f < min_i32_f or x0f > max_bilinear_i32_f) return .{ 0, 0, 0, 0 };
+    if (y0f < min_i32_f or y0f > max_bilinear_i32_f) return .{ 0, 0, 0, 0 };
+
     const x0 = @as(i32, @intFromFloat(x0f));
     const y0 = @as(i32, @intFromFloat(y0f));
     const x1 = x0 + 1;
@@ -2164,7 +2181,8 @@ fn drawCellBackgrounds(
     const cols = @as(usize, @intCast(layout.grid_columns));
     const rows = @as(usize, @intCast(layout.grid_rows));
     if (cols == 0 or rows == 0) return;
-    if (bg_cells_rgba.len < cols * rows) return;
+    const cell_count = std.math.mul(usize, cols, rows) catch return;
+    if (bg_cells_rgba.len < cell_count) return;
 
     const cell_w = layout.cell_width_px;
     const cell_h = layout.cell_height_px;
@@ -2296,11 +2314,15 @@ fn drawGrayscaleGlyph(
 ) void {
     if (atlas.size == 0) return;
     const atlas_size = @as(usize, @intCast(atlas.size));
-    if (atlas.data.len < atlas_size * atlas_size) return;
+    const atlas_area = std.math.mul(usize, atlas_size, atlas_size) catch return;
+    if (atlas.data.len < atlas_area) return;
     if (atlas_x >= atlas_size or atlas_y >= atlas_size) return;
+    const atlas_src_x = std.math.add(usize, atlas_x, src_x) catch return;
+    const atlas_src_y = std.math.add(usize, atlas_y, src_y) catch return;
+    if (atlas_src_x >= atlas_size or atlas_src_y >= atlas_size) return;
 
-    const max_w = atlas_size - (atlas_x + src_x);
-    const max_h = atlas_size - (atlas_y + src_y);
+    const max_w = atlas_size - atlas_src_x;
+    const max_h = atlas_size - atlas_src_y;
     const draw_w = @min(width, max_w);
     const draw_h = @min(height, max_h);
     if (draw_w == 0 or draw_h == 0) return;
@@ -2310,7 +2332,7 @@ fn drawGrayscaleGlyph(
 
     const stride = @as(usize, @intCast(framebuffer.stride_bytes));
     for (0..draw_h) |row| {
-        const src_row = (atlas_y + src_y + row) * atlas_size + atlas_x + src_x;
+        const src_row = (atlas_src_y + row) * atlas_size + atlas_src_x;
         const dst_row = (dst_y + row) * stride + dst_x * 4;
         for (0..draw_w) |col| {
             const mask = atlas.data[src_row + col];
@@ -2347,18 +2369,23 @@ fn drawColorGlyph(
 ) void {
     if (atlas.size == 0) return;
     const atlas_size = @as(usize, @intCast(atlas.size));
-    if (atlas.data.len < atlas_size * atlas_size * 4) return;
+    const atlas_area = std.math.mul(usize, atlas_size, atlas_size) catch return;
+    const atlas_len = std.math.mul(usize, atlas_area, 4) catch return;
+    if (atlas.data.len < atlas_len) return;
     if (atlas_x >= atlas_size or atlas_y >= atlas_size) return;
+    const atlas_src_x = std.math.add(usize, atlas_x, src_x) catch return;
+    const atlas_src_y = std.math.add(usize, atlas_y, src_y) catch return;
+    if (atlas_src_x >= atlas_size or atlas_src_y >= atlas_size) return;
 
-    const max_w = atlas_size - (atlas_x + src_x);
-    const max_h = atlas_size - (atlas_y + src_y);
+    const max_w = atlas_size - atlas_src_x;
+    const max_h = atlas_size - atlas_src_y;
     const draw_w = @min(width, max_w);
     const draw_h = @min(height, max_h);
     if (draw_w == 0 or draw_h == 0) return;
 
     const stride = @as(usize, @intCast(framebuffer.stride_bytes));
     for (0..draw_h) |row| {
-        const src_row = (atlas_y + src_y + row) * atlas_size + atlas_x + src_x;
+        const src_row = (atlas_src_y + row) * atlas_size + atlas_src_x;
         const dst_row = (dst_y + row) * stride + dst_x * 4;
         for (0..draw_w) |col| {
             const src_off = (src_row + col) * 4;
@@ -3962,6 +3989,146 @@ test "composeSoftwareFrame clips glyph with negative bearing and samples correct
     );
 }
 
+test "composeSoftwareFrame ignores grayscale glyph when clipped atlas source exceeds bounds" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 1, 0 },
+        .glyph_size = .{ 3, 1 },
+        .bearings = .{ -2, 1 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 255, 0, 0, 255 },
+        .atlas = .grayscale,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const atlas_gray = [_]u8{
+        255, 255,
+        255, 255,
+    };
+    const empty_color: [0]u8 = .{};
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 1,
+            .cell_height_px = 1,
+            .grid_columns = 1,
+            .grid_rows = 1,
+        },
+        .{ 7, 8, 9, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = atlas_gray[0..], .size = 2 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 9, 8, 7, 255 },
+        fb.bytes,
+    );
+}
+
+test "composeSoftwareFrame ignores color glyph when clipped atlas source exceeds bounds" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    var rows: [1]ArrayList(TestCellText) = .{.{}};
+    defer rows[0].deinit(alloc);
+    try rows[0].append(alloc, .{
+        .glyph_pos = .{ 1, 0 },
+        .glyph_size = .{ 3, 1 },
+        .bearings = .{ -2, 1 },
+        .grid_pos = .{ 0, 0 },
+        .color = .{ 255, 255, 255, 255 },
+        .atlas = .color,
+    });
+
+    const bg_cells = [_][4]u8{
+        .{ 0, 0, 0, 0 },
+    };
+    const empty_gray: [0]u8 = .{};
+    const atlas_color = [_]u8{
+        0,   0,   255, 255,
+        0,   255, 0,   255,
+        255, 0,   0,   255,
+        255, 255, 255, 255,
+    };
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 1,
+            .cell_height_px = 1,
+            .grid_columns = 1,
+            .grid_rows = 1,
+        },
+        .{ 11, 12, 13, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = empty_gray[0..], .size = 0 },
+        .{ .data = atlas_color[0..], .size = 2 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 13, 12, 11, 255 },
+        fb.bytes,
+    );
+}
+
+test "composeSoftwareFrame ignores absurd background grid dimensions with undersized cell buffer" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const rows: [0]ArrayList(TestCellText) = .{};
+    const bg_cells: [0][4]u8 = .{};
+    const empty_gray: [0]u8 = .{};
+    const empty_color: [0]u8 = .{};
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = 1,
+            .cell_height_px = 1,
+            .grid_columns = std.math.maxInt(u32),
+            .grid_rows = std.math.maxInt(u32),
+        },
+        .{ 3, 4, 5, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = empty_gray[0..], .size = 0 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 5, 4, 3, 255 },
+        fb.bytes,
+    );
+}
+
 test "FrameBuffer blendStraightRgbaImage clamp-to-zero drops out-of-range samples" {
     const alloc = std.testing.allocator;
     var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
@@ -4032,6 +4199,119 @@ test "FrameBuffer blendStraightRgbaImage clamp-to-edge samples border texel" {
     try std.testing.expectEqualSlices(
         u8,
         &[_]u8{ 0, 0, 255, 255 },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendStraightRgbaImage ignores non-finite rect input" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 9, 8, 7, 6 });
+    const src = [_]u8{ 255, 0, 0, 255 };
+
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = std.math.inf(f32),
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .boundary = .clamp_to_edge,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 9, 8, 7, 6 },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendStraightRgbaImage ignores non-finite derived source coordinate" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 6, 7, 8, 9 });
+    const src = [_]u8{ 255, 0, 0, 255 };
+    const max_f32 = std.math.floatMax(f32);
+
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = max_f32,
+                .y = 0,
+                .width = max_f32,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 0.25,
+                .height = 1,
+            },
+            .boundary = .clamp_to_edge,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 6, 7, 8, 9 },
+        fb.bytes,
+    );
+}
+
+test "FrameBuffer blendStraightRgbaImage ignores finite source coordinate outside bilinear i32 range" {
+    const alloc = std.testing.allocator;
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    fb.clear(.{ 5, 6, 7, 8 });
+    const src = [_]u8{ 255, 0, 0, 255 };
+    const max_f32 = std.math.floatMax(f32);
+
+    fb.blendStraightRgbaImage(
+        1,
+        1,
+        4,
+        src[0..],
+        .{
+            .src_rect = .{
+                .x = max_f32,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .dst_rect = .{
+                .x = 0,
+                .y = 0,
+                .width = 1,
+                .height = 1,
+            },
+            .boundary = .clamp_to_edge,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 5, 6, 7, 8 },
         fb.bytes,
     );
 }
