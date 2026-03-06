@@ -1,0 +1,239 @@
+name: Project CI
+
+on:
+  push: {}
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-core-tests:
+    name: Linux Core Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run Linux core test suite
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          nix develop -c zig build test -Dskip-macos-ui-tests=true |& tee ci-logs/linux-core-tests.log
+
+      - name: Upload Linux core logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: linux-core-tests-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  linux-software-renderer:
+    name: Linux Software Renderer Validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Syntax check software renderer scripts
+        run: |
+          bash -n ./.github/scripts/software-renderer-cpu-path-ci.sh
+          bash -n ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh
+          bash -n ./.github/scripts/software-renderer-compat-check-selftest.sh
+
+      - name: Run software renderer selftests
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh |& tee ci-logs/software-renderer-cpu-path-ci-selftest.log
+          ./.github/scripts/software-renderer-compat-check-selftest.sh |& tee ci-logs/software-renderer-compat-check-selftest.log
+
+      - name: Run Linux software renderer validation
+        env:
+          SR_CI_OS: linux
+          SR_CI_TARGET_LABEL: default-target
+          SR_CI_TARGET: ""
+          SR_CI_TRANSPORT_LABEL: auto
+          SR_CI_TRANSPORT_MODE: auto
+          SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: opengl
+          SR_CI_EXPECT_CPU_EFFECTIVE: ""
+          SR_CI_CPU_SHADER_MODE: ""
+          SR_CI_CPU_SHADER_BACKEND: ""
+          SR_CI_CPU_SHADER_TIMEOUT_MS: ""
+          SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES: ""
+          SR_CI_CPU_SHADER_ENABLE_MINIMAL_RUNTIME: ""
+          SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS: ""
+          SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT: ""
+          SR_CI_INJECT_FAKE_SWIFTSHADER_HINT: ""
+          SR_CI_EXPECT_CPU_SHADER_BACKEND: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_STATUS: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_REASON: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_SOURCE: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE: ""
+          SR_CI_CPU_FRAME_DAMAGE_MODE: ""
+          SR_CI_CPU_DAMAGE_RECT_CAP: ""
+          SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ""
+          SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ""
+          SR_CI_EXPECT_CPU_PUBLISH_WARNING: ""
+          SR_CI_EXPECT_CPU_PUBLISH_SUCCESS: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER: drawFrame software cpu smoke retries exhausted pool and clears platform transient state
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_DAMAGE_OVERFLOW: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON: frame_pool_exhausted
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_WARNING: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER: cpu route diagnostics kv helpers emit structured logs
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW: "1"
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON: mailbox_backpressure
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING: "true"
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER: drawFrame software cpu smoke published frame clears pending state and finalizes unloading background
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS: "true"
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./.github/scripts/software-renderer-cpu-path-ci.sh |& tee ci-logs/software-renderer-linux.log
+
+      - name: Upload Linux software renderer logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: linux-software-renderer-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  macos-core-tests:
+    name: macOS Core Tests
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Xcode Version
+        run: xcodebuild -version
+
+      - name: Build macOS deps
+        id: deps
+        run: |
+          nix build -L .#deps
+          echo "deps=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Run macOS core test suite
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          nix develop -c zig build test --system "${{ steps.deps.outputs.deps }}" |& tee ci-logs/macos-core-tests.log
+
+      - name: Upload macOS core logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-core-tests-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  macos-software-renderer:
+    name: macOS Software Renderer Validation
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Xcode Version
+        run: xcodebuild -version
+
+      - name: Build macOS deps
+        id: deps
+        run: |
+          nix build -L .#deps
+          echo "deps=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Run software renderer selftests
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./.github/scripts/software-renderer-cpu-path-ci-selftest.sh |& tee ci-logs/software-renderer-cpu-path-ci-selftest.log
+          ./.github/scripts/software-renderer-compat-check-selftest.sh |& tee ci-logs/software-renderer-compat-check-selftest.log
+
+      - name: Run macOS software renderer validation
+        env:
+          SR_CI_OS: macos
+          SR_CI_TARGET_LABEL: default-target
+          SR_CI_TARGET: ""
+          SR_CI_TRANSPORT_LABEL: auto
+          SR_CI_TRANSPORT_MODE: auto
+          SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND: metal
+          SR_CI_EXPECT_CPU_EFFECTIVE: ""
+          SR_CI_CPU_SHADER_MODE: ""
+          SR_CI_CPU_SHADER_BACKEND: ""
+          SR_CI_CPU_SHADER_TIMEOUT_MS: ""
+          SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES: ""
+          SR_CI_CPU_SHADER_ENABLE_MINIMAL_RUNTIME: ""
+          SR_CI_CPU_PUBLISH_WARNING_THRESHOLD_MS: ""
+          SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT: ""
+          SR_CI_INJECT_FAKE_SWIFTSHADER_HINT: ""
+          SR_CI_EXPECT_CPU_SHADER_BACKEND: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_STATUS: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_REASON: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_SOURCE: ""
+          SR_CI_EXPECT_CPU_SHADER_CAPABILITY_HINT_READABLE: ""
+          SR_CI_CPU_FRAME_DAMAGE_MODE: ""
+          SR_CI_CPU_DAMAGE_RECT_CAP: ""
+          SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ""
+          SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ""
+          SR_CI_EXPECT_CPU_PUBLISH_WARNING: ""
+          SR_CI_EXPECT_CPU_PUBLISH_SUCCESS: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER: drawFrame software cpu smoke retries exhausted pool and clears platform transient state
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_DAMAGE_OVERFLOW: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON: frame_pool_exhausted
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_WARNING: ""
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER: cpu route diagnostics kv helpers emit structured logs
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW: "1"
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON: mailbox_backpressure
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING: "true"
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER: drawFrame software cpu smoke published frame clears pending state and finalizes unloading background
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS: "true"
+          SR_CI_SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./.github/scripts/software-renderer-cpu-path-ci.sh |& tee ci-logs/software-renderer-macos.log
+
+      - name: Upload macOS software renderer logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-software-renderer-logs
+          path: ci-logs/
+          if-no-files-found: error
