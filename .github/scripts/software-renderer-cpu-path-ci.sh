@@ -564,6 +564,12 @@ if [[ "$dry_run" == "true" ]]; then
     "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow" \
     "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason" \
     "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+  run_runtime_diagnostics_smoke_slot \
+    "published" \
+    "$resolved_runtime_diagnostics_smoke_published_test_filter" \
+    "" \
+    "" \
+    ""
   exit 0
 fi
 

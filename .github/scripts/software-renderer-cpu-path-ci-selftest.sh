@@ -446,7 +446,7 @@ case_dry_run_runtime_diagnostics_published_smoke_passthrough() {
 
   assert_contains "$output" "runtime-diagnostics-smoke-published filter=drawFrame software cpu smoke published frame clears pending state and finalizes unloading background expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset>" "dry-run published runtime diagnostics smoke summary"
   assert_contains "$output" "dry-run compat-check published smoke command" "dry-run published runtime diagnostics smoke command"
-  assert_contains "$output" "--test-filter drawFrame software cpu smoke published frame clears pending state and finalizes unloading background" "dry-run published runtime diagnostics smoke filter arg"
+  assert_contains "$output" "--test-filter drawFrame\\ software\\ cpu\\ smoke\\ published\\ frame\\ clears\\ pending\\ state\\ and\\ finalizes\\ unloading\\ background" "dry-run published runtime diagnostics smoke filter arg"
   pass "dry-run passes published runtime diagnostics smoke filter"
 }
 
@@ -765,6 +765,7 @@ test_cases=(
   case_dry_run_runtime_diagnostics_zero_and_false_passthrough
   case_dry_run_runtime_diagnostics_primary_smoke_passthrough
   case_dry_run_runtime_diagnostics_secondary_smoke_passthrough
+  case_dry_run_runtime_diagnostics_published_smoke_passthrough
   case_dry_run_runtime_diagnostics_legacy_smoke_aliases_map_to_primary
   case_runtime_diagnostics_legacy_smoke_expectations_require_filter
   case_runtime_diagnostics_primary_smoke_expectations_require_filter
