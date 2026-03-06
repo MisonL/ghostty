@@ -66,6 +66,14 @@ pub const software_renderer_cpu_publish_warning_threshold_ms: u32 =
     config.software_renderer_cpu_publish_warning_threshold_ms;
 pub const software_renderer_cpu_publish_warning_consecutive_limit: u8 =
     config.software_renderer_cpu_publish_warning_consecutive_limit;
+pub const software_renderer_cpu_min_macos_major: u32 =
+    options.software_renderer_cpu_min_macos_major;
+pub const software_renderer_cpu_min_macos_minor: u32 =
+    options.software_renderer_cpu_min_macos_minor;
+pub const software_renderer_cpu_min_linux_major: u32 =
+    options.software_renderer_cpu_min_linux_major;
+pub const software_renderer_cpu_min_linux_minor: u32 =
+    options.software_renderer_cpu_min_linux_minor;
 pub const i18n: bool = config.i18n;
 
 /// The bundle ID for the app. This is used in many places and is currently
@@ -128,3 +136,22 @@ pub const is_debug = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
 };
+
+test "softwareRendererCpuMinVersion re-export stays in sync with build options" {
+    try std.testing.expectEqual(
+        options.software_renderer_cpu_min_macos_major,
+        software_renderer_cpu_min_macos_major,
+    );
+    try std.testing.expectEqual(
+        options.software_renderer_cpu_min_macos_minor,
+        software_renderer_cpu_min_macos_minor,
+    );
+    try std.testing.expectEqual(
+        options.software_renderer_cpu_min_linux_major,
+        software_renderer_cpu_min_linux_major,
+    );
+    try std.testing.expectEqual(
+        options.software_renderer_cpu_min_linux_minor,
+        software_renderer_cpu_min_linux_minor,
+    );
+}

@@ -52,6 +52,56 @@ case_target_gate_mismatch_fails() {
   pass "target gate mismatch fails"
 }
 
+case_missing_os_fails_fast() {
+  local output
+  if run_with_env output \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true; then
+    fail "missing SR_CI_OS should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_OS is required (linux|macos)" "missing SR_CI_OS"
+  pass "missing SR_CI_OS fails fast"
+}
+
+case_missing_transport_mode_fails_fast() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_DRY_RUN=true; then
+    fail "missing SR_CI_TRANSPORT_MODE should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_TRANSPORT_MODE is required (auto|shared|native)" "missing SR_CI_TRANSPORT_MODE"
+  pass "missing SR_CI_TRANSPORT_MODE fails fast"
+}
+
+case_invalid_os_fails_fast() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=windows \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true; then
+    fail "invalid SR_CI_OS should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_OS: windows" "invalid SR_CI_OS"
+  pass "invalid SR_CI_OS fails fast"
+}
+
+case_invalid_transport_mode_fails_fast() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=udp \
+    SR_CI_DRY_RUN=true; then
+    fail "invalid SR_CI_TRANSPORT_MODE should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_TRANSPORT_MODE: udp (expected: auto|shared|native)" "invalid SR_CI_TRANSPORT_MODE"
+  pass "invalid SR_CI_TRANSPORT_MODE fails fast"
+}
+
 case_macos_missing_system_path_fails() {
   local output
   if run_with_env output \
@@ -106,6 +156,22 @@ case_dry_run_route_backend_flag_present() {
   assert_contains "$output" "dry-run compat-check command" "dry-run command print"
   assert_contains "$output" "--expect-software-route-backend opengl" "dry-run route backend arg"
   pass "dry-run keeps explicit route backend argument"
+}
+
+case_dry_run_route_backend_flag_present_macos() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=macos \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND=metal \
+    SR_CI_SYSTEM_PATH=/nix/store/fake-system-path \
+    SR_CI_DRY_RUN=true; then
+    fail "macOS dry-run with explicit route backend should succeed"
+  fi
+
+  assert_contains "$output" "dry-run compat-check command" "macOS dry-run command print"
+  assert_contains "$output" "--expect-software-route-backend metal" "macOS dry-run route backend arg"
+  pass "dry-run keeps explicit macOS route backend argument"
 }
 
 case_linux_legacy_auto_transport_uses_gtk_runtime() {
@@ -218,6 +284,20 @@ case_cpu_damage_rect_cap_invalid_fails() {
   pass "invalid cpu damage rect cap fails fast"
 }
 
+case_cpu_damage_rect_cap_non_numeric_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_CPU_DAMAGE_RECT_CAP=abc; then
+    fail "non-numeric cpu damage rect cap should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_CPU_DAMAGE_RECT_CAP: abc (expected: u16)" "non-numeric cpu damage rect cap"
+  pass "non-numeric cpu damage rect cap fails fast"
+}
+
 case_cpu_publish_warning_threshold_invalid_fails() {
   local output
   if run_with_env output \
@@ -294,10 +374,15 @@ case_cpu_shader_reprobe_interval_invalid_fails() {
 
 test_cases=(
   case_target_gate_mismatch_fails
+  case_missing_os_fails_fast
+  case_missing_transport_mode_fails_fast
+  case_invalid_os_fails_fast
+  case_invalid_transport_mode_fails_fast
   case_macos_missing_system_path_fails
   case_target_os_mismatch_fails
   case_route_backend_os_mismatch_fails
   case_dry_run_route_backend_flag_present
+  case_dry_run_route_backend_flag_present_macos
   case_linux_legacy_auto_transport_uses_gtk_runtime
   case_linux_non_legacy_auto_transport_uses_none_runtime
   case_macos_default_route_backend_is_metal
@@ -305,6 +390,7 @@ test_cases=(
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
   case_dry_run_cpu_damage_rect_cap_passthrough
   case_cpu_damage_rect_cap_invalid_fails
+  case_cpu_damage_rect_cap_non_numeric_fails
   case_cpu_publish_warning_threshold_invalid_fails
   case_cpu_publish_warning_consecutive_limit_invalid_fails
   case_dry_run_cpu_shader_reprobe_interval_frames_passthrough

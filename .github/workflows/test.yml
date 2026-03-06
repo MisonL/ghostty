@@ -1299,6 +1299,16 @@ jobs:
           - transport_label: native-forced
             transport_mode: native
         include:
+          # Explicit aarch64 target-string path spot-check (keep matrix growth minimal).
+          - target:
+              target_label: macos-14.0-aarch64
+              target: aarch64-macos.14.0.0
+              expect_cpu_effective: "true"
+              cpu_shader_mode: full
+              cpu_shader_timeout_ms: ""
+            transport:
+              transport_label: auto
+              transport_mode: auto
           # Minimum-target full-mode compatibility spot-check.
           - target:
               target_label: macos-11.0-full

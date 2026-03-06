@@ -219,13 +219,15 @@ macOS 额外必填：
 1. Workflow 注入的 `SR_CI_*` 显式值（最高优先级）。
 2. `software-renderer-cpu-path-ci.sh` 的推导/兜底：
    - `allow_legacy_os` 自动推导后可被 `SR_CI_FORCE_ALLOW_LEGACY_OS` 覆盖；
-   - route backend 默认 Linux=`opengl`、macOS=`metal`，可被 `SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND` 覆盖；
+   - route backend 默认 Linux=`opengl`、macOS=`metal`；`SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND` 仅做一致性断言，不用于覆盖：值非法时 `exit 2`，与当前 `SR_CI_OS` 的期望后端不一致时 `exit 1`；
    - `cpu_shader_reprobe_interval_frames` 在 CI 入口日志默认展示 `120`，显式设置 `SR_CI_CPU_SHADER_REPROBE_INTERVAL_FRAMES` 时透传到 compat-check；
    - 当设置 `SR_CI_CPU_SHADER_MODE` 且未设置 backend 时，会推导 `expect_cpu_shader_backend=vulkan_swiftshader`。
 3. 入口脚本组装 `software-renderer-compat-check.sh` 的 CLI 参数（仅非空值透传）。
 4. `software-renderer-compat-check.sh` 组装 `zig build -D...`（未传值时回落到构建默认值）。
 5. 运行时 Vulkan loader hint 环境变量优先级（仅 `vulkan_swiftshader` 路径相关）：
    - `VK_DRIVER_FILES` > `VK_ICD_FILENAMES` > `VK_ADD_DRIVER_FILES`
+
+fail-fast 一致性说明：`SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND` 的断言发生在 route backend 最终取值与 compat-check 参数组装之前；断言失败会立即终止，后续优先级链不再继续。
 
 补充：当 `SR_CI_INJECT_FAKE_SWIFTSHADER_HINT=true` 时，compat-check 会临时设置 `VK_DRIVER_FILES` 指向伪造清单，并在退出时恢复原值。
 

@@ -251,11 +251,16 @@ const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
     custom_shader_bypass_count: u64,
     cpu_shader_capability_reprobe_count: u64,
+    cpu_shader_reprobe_interval_frames: u32,
     publish_retry_count: u64,
     cpu_damage_rect_count: u64,
     cpu_damage_rect_overflow_count: u64,
+    cpu_frame_damage_mode: []const u8,
+    cpu_damage_rect_cap: u16,
     cpu_publish_skipped_no_damage_count: u64,
     cpu_publish_latency_warning_count: u64,
+    cpu_publish_warning_threshold_ms: u64,
+    cpu_publish_warning_consecutive_limit: u8,
     cpu_publish_retry_invalid_surface_count: u64,
     cpu_publish_retry_pool_pressure_count: u64,
     cpu_publish_retry_pool_exhausted_count: u64,
@@ -399,11 +404,16 @@ const CpuRouteDiagnosticsState = struct {
             .custom_shader_fallback_count = self.custom_shader_fallback_count,
             .custom_shader_bypass_count = self.custom_shader_bypass_count,
             .cpu_shader_capability_reprobe_count = self.cpu_shader_capability_reprobe_count,
+            .cpu_shader_reprobe_interval_frames = cpu_custom_shader_capability_reprobe_interval_frames,
             .publish_retry_count = self.publish_retry_count,
             .cpu_damage_rect_count = self.cpu_damage_rect_count,
             .cpu_damage_rect_overflow_count = self.cpu_damage_rect_overflow_count,
+            .cpu_frame_damage_mode = @tagName(software_renderer_cpu_frame_damage_mode),
+            .cpu_damage_rect_cap = software_renderer_cpu_damage_rect_cap,
             .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
             .cpu_publish_latency_warning_count = self.cpu_publish_latency_warning_count,
+            .cpu_publish_warning_threshold_ms = cpu_frame_publish_warning_threshold_ms,
+            .cpu_publish_warning_consecutive_limit = cpu_frame_publish_warning_consecutive_limit,
             .cpu_publish_retry_invalid_surface_count = self.cpu_publish_retry_invalid_surface_count,
             .cpu_publish_retry_pool_pressure_count = self.cpu_publish_retry_pool_pressure_count,
             .cpu_publish_retry_pool_exhausted_count = self.cpu_publish_retry_pool_exhausted_count,
@@ -5558,11 +5568,16 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
         .custom_shader_fallback_count = 0,
         .custom_shader_bypass_count = 0,
         .cpu_shader_capability_reprobe_count = 0,
+        .cpu_shader_reprobe_interval_frames = cpu_custom_shader_capability_reprobe_interval_frames,
         .publish_retry_count = 0,
         .cpu_damage_rect_count = 0,
         .cpu_damage_rect_overflow_count = 0,
+        .cpu_frame_damage_mode = @tagName(software_renderer_cpu_frame_damage_mode),
+        .cpu_damage_rect_cap = software_renderer_cpu_damage_rect_cap,
         .cpu_publish_skipped_no_damage_count = 0,
         .cpu_publish_latency_warning_count = 0,
+        .cpu_publish_warning_threshold_ms = cpu_frame_publish_warning_threshold_ms,
+        .cpu_publish_warning_consecutive_limit = cpu_frame_publish_warning_consecutive_limit,
         .cpu_publish_retry_invalid_surface_count = 0,
         .cpu_publish_retry_pool_pressure_count = 0,
         .cpu_publish_retry_pool_exhausted_count = 0,
@@ -6023,10 +6038,30 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 3), snapshot.custom_shader_fallback_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.custom_shader_bypass_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(
+        cpu_custom_shader_capability_reprobe_interval_frames,
+        snapshot.cpu_shader_reprobe_interval_frames,
+    );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_damage_rect_overflow_count);
+    try std.testing.expectEqualStrings(
+        @tagName(software_renderer_cpu_frame_damage_mode),
+        snapshot.cpu_frame_damage_mode,
+    );
+    try std.testing.expectEqual(
+        software_renderer_cpu_damage_rect_cap,
+        snapshot.cpu_damage_rect_cap,
+    );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_threshold_ms,
+        snapshot.cpu_publish_warning_threshold_ms,
+    );
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_consecutive_limit,
+        snapshot.cpu_publish_warning_consecutive_limit,
+    );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
@@ -6119,6 +6154,26 @@ test "cpu route diagnostics increments custom shader bypass only for enabled cus
 test "cpu route diagnostics snapshot defaults include capability reprobe count" {
     const snapshot = cpuRouteDiagnosticsSnapshotDefaults();
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_shader_capability_reprobe_count);
+    try std.testing.expectEqual(
+        cpu_custom_shader_capability_reprobe_interval_frames,
+        snapshot.cpu_shader_reprobe_interval_frames,
+    );
+    try std.testing.expectEqualStrings(
+        @tagName(software_renderer_cpu_frame_damage_mode),
+        snapshot.cpu_frame_damage_mode,
+    );
+    try std.testing.expectEqual(
+        software_renderer_cpu_damage_rect_cap,
+        snapshot.cpu_damage_rect_cap,
+    );
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_threshold_ms,
+        snapshot.cpu_publish_warning_threshold_ms,
+    );
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_consecutive_limit,
+        snapshot.cpu_publish_warning_consecutive_limit,
+    );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);

@@ -26,6 +26,10 @@ force_allow_legacy_os="${SR_CI_FORCE_ALLOW_LEGACY_OS:-}"
 expect_cpu_effective="${SR_CI_EXPECT_CPU_EFFECTIVE:-}"
 expect_software_route_backend="${SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND:-}"
 cpu_shader_mode="${SR_CI_CPU_SHADER_MODE:-}"
+cpu_shader_backend_is_set=false
+if [[ "${SR_CI_CPU_SHADER_BACKEND+x}" == "x" ]]; then
+  cpu_shader_backend_is_set=true
+fi
 cpu_shader_backend="${SR_CI_CPU_SHADER_BACKEND:-}"
 expect_cpu_shader_backend="${SR_CI_EXPECT_CPU_SHADER_BACKEND:-}"
 cpu_shader_timeout_ms="${SR_CI_CPU_SHADER_TIMEOUT_MS:-}"
@@ -196,8 +200,12 @@ if [[ -z "$resolved_cpu_shader_backend" ]]; then resolved_cpu_shader_backend=vul
 if [[ -z "$resolved_cpu_shader_timeout_ms" ]]; then resolved_cpu_shader_timeout_ms=16; fi
 if [[ -z "$resolved_cpu_shader_reprobe_interval_frames" ]]; then resolved_cpu_shader_reprobe_interval_frames=120; fi
 if [[ -z "$resolved_cpu_shader_enable_minimal_runtime" ]]; then resolved_cpu_shader_enable_minimal_runtime=false; fi
-if [[ -z "$expect_cpu_shader_backend" && -n "$cpu_shader_mode" && -z "$cpu_shader_backend" ]]; then
-  expect_cpu_shader_backend=vulkan_swiftshader
+if [[ -z "$expect_cpu_shader_backend" ]]; then
+  if [[ "$cpu_shader_backend_is_set" == "true" && -n "$cpu_shader_backend" ]]; then
+    expect_cpu_shader_backend="$cpu_shader_backend"
+  elif [[ -n "$cpu_shader_mode" && -z "$cpu_shader_backend" ]]; then
+    expect_cpu_shader_backend=vulkan_swiftshader
+  fi
 fi
 if [[ -z "$expect_cpu_effective" ]]; then expect_cpu_effective="<unset>"; fi
 

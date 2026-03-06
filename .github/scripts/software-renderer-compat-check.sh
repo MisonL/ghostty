@@ -64,6 +64,29 @@ Notes:
 EOF
 }
 
+option_requires_value() {
+  case "$1" in
+    --mode|--transport|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+require_option_value() {
+  local option="$1"
+  local argc="$2"
+  local next_value="${3-}"
+
+  if (( argc < 2 )) || [[ "$next_value" == --* ]]; then
+    echo "invalid $option: missing value" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
 normalize_target_for_zig() {
   local raw_target="$1"
 
@@ -188,6 +211,10 @@ expected_host_os=""
 mismatch_policy="skip"
 
 while (($# > 0)); do
+  if option_requires_value "$1"; then
+    require_option_value "$1" "$#" "${2-}"
+  fi
+
   case "$1" in
     --mode=*)
       mode="${1#*=}"
@@ -490,7 +517,7 @@ if [[ -n "$cpu_shader_timeout_ms" ]]; then
     exit 2
   fi
   if (( ${#cpu_shader_timeout_ms} > 10 )) || {
-    (( ${#cpu_shader_timeout_ms} == 10 )) && (( cpu_shader_timeout_ms > 4294967295 ))
+    (( ${#cpu_shader_timeout_ms} == 10 )) && (( 10#$cpu_shader_timeout_ms > 4294967295 ))
   }; then
     echo "invalid --cpu-shader-timeout-ms: $cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
     exit 2
@@ -503,7 +530,7 @@ if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
     exit 2
   fi
   if (( ${#cpu_shader_reprobe_interval_frames} > 5 )) || {
-    (( ${#cpu_shader_reprobe_interval_frames} == 5 )) && (( cpu_shader_reprobe_interval_frames > 65535 ))
+    (( ${#cpu_shader_reprobe_interval_frames} == 5 )) && (( 10#$cpu_shader_reprobe_interval_frames > 65535 ))
   }; then
     echo "invalid --cpu-shader-reprobe-interval-frames: $cpu_shader_reprobe_interval_frames (expected: 0..65535)" >&2
     exit 2
@@ -531,7 +558,7 @@ if [[ -n "$cpu_damage_rect_cap" ]]; then
     exit 2
   fi
   if (( ${#cpu_damage_rect_cap} > 5 )) || {
-    (( ${#cpu_damage_rect_cap} == 5 )) && (( cpu_damage_rect_cap > 65535 ))
+    (( ${#cpu_damage_rect_cap} == 5 )) && (( 10#$cpu_damage_rect_cap > 65535 ))
   }; then
     echo "invalid --cpu-damage-rect-cap: $cpu_damage_rect_cap (expected: 0..65535)" >&2
     exit 2
@@ -544,7 +571,7 @@ if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
     exit 2
   fi
   if (( ${#cpu_publish_warning_threshold_ms} > 10 )) || {
-    (( ${#cpu_publish_warning_threshold_ms} == 10 )) && (( cpu_publish_warning_threshold_ms > 4294967295 ))
+    (( ${#cpu_publish_warning_threshold_ms} == 10 )) && (( 10#$cpu_publish_warning_threshold_ms > 4294967295 ))
   }; then
     echo "invalid --cpu-publish-warning-threshold-ms: $cpu_publish_warning_threshold_ms (expected: 0..4294967295)" >&2
     exit 2
@@ -557,7 +584,7 @@ if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
     exit 2
   fi
   if (( ${#cpu_publish_warning_consecutive_limit} > 3 )) || {
-    (( ${#cpu_publish_warning_consecutive_limit} == 3 )) && (( cpu_publish_warning_consecutive_limit > 255 ))
+    (( ${#cpu_publish_warning_consecutive_limit} == 3 )) && (( 10#$cpu_publish_warning_consecutive_limit > 255 ))
   }; then
     echo "invalid --cpu-publish-warning-consecutive-limit: $cpu_publish_warning_consecutive_limit (expected: 0..255)" >&2
     exit 2
@@ -584,7 +611,7 @@ if [[ -n "$expect_cpu_shader_timeout_ms" ]]; then
     exit 2
   fi
   if (( ${#expect_cpu_shader_timeout_ms} > 10 )) || {
-    (( ${#expect_cpu_shader_timeout_ms} == 10 )) && (( expect_cpu_shader_timeout_ms > 4294967295 ))
+    (( ${#expect_cpu_shader_timeout_ms} == 10 )) && (( 10#$expect_cpu_shader_timeout_ms > 4294967295 ))
   }; then
     echo "invalid --expect-cpu-shader-timeout-ms: $expect_cpu_shader_timeout_ms (expected: 0..4294967295)" >&2
     exit 2
@@ -597,7 +624,7 @@ if [[ -n "$expect_cpu_shader_reprobe_interval_frames" ]]; then
     exit 2
   fi
   if (( ${#expect_cpu_shader_reprobe_interval_frames} > 5 )) || {
-    (( ${#expect_cpu_shader_reprobe_interval_frames} == 5 )) && (( expect_cpu_shader_reprobe_interval_frames > 65535 ))
+    (( ${#expect_cpu_shader_reprobe_interval_frames} == 5 )) && (( 10#$expect_cpu_shader_reprobe_interval_frames > 65535 ))
   }; then
     echo "invalid --expect-cpu-shader-reprobe-interval-frames: $expect_cpu_shader_reprobe_interval_frames (expected: 0..65535)" >&2
     exit 2
@@ -640,7 +667,7 @@ if [[ -n "$expect_cpu_damage_rect_cap" ]]; then
     exit 2
   fi
   if (( ${#expect_cpu_damage_rect_cap} > 5 )) || {
-    (( ${#expect_cpu_damage_rect_cap} == 5 )) && (( expect_cpu_damage_rect_cap > 65535 ))
+    (( ${#expect_cpu_damage_rect_cap} == 5 )) && (( 10#$expect_cpu_damage_rect_cap > 65535 ))
   }; then
     echo "invalid --expect-cpu-damage-rect-cap: $expect_cpu_damage_rect_cap (expected: 0..65535)" >&2
     exit 2
@@ -653,7 +680,7 @@ if [[ -n "$expect_cpu_publish_warning_threshold_ms" ]]; then
     exit 2
   fi
   if (( ${#expect_cpu_publish_warning_threshold_ms} > 10 )) || {
-    (( ${#expect_cpu_publish_warning_threshold_ms} == 10 )) && (( expect_cpu_publish_warning_threshold_ms > 4294967295 ))
+    (( ${#expect_cpu_publish_warning_threshold_ms} == 10 )) && (( 10#$expect_cpu_publish_warning_threshold_ms > 4294967295 ))
   }; then
     echo "invalid --expect-cpu-publish-warning-threshold-ms: $expect_cpu_publish_warning_threshold_ms (expected: 0..4294967295)" >&2
     exit 2
@@ -666,7 +693,7 @@ if [[ -n "$expect_cpu_publish_warning_consecutive_limit" ]]; then
     exit 2
   fi
   if (( ${#expect_cpu_publish_warning_consecutive_limit} > 3 )) || {
-    (( ${#expect_cpu_publish_warning_consecutive_limit} == 3 )) && (( expect_cpu_publish_warning_consecutive_limit > 255 ))
+    (( ${#expect_cpu_publish_warning_consecutive_limit} == 3 )) && (( 10#$expect_cpu_publish_warning_consecutive_limit > 255 ))
   }; then
     echo "invalid --expect-cpu-publish-warning-consecutive-limit: $expect_cpu_publish_warning_consecutive_limit (expected: 0..255)" >&2
     exit 2
@@ -691,6 +718,10 @@ fi
 if [[ -n "$expected_host_os" && "$expected_host_os" != "linux" && "$expected_host_os" != "macos" ]]; then
   echo "invalid --expected-host-os: $expected_host_os" >&2
   exit 2
+fi
+
+if [[ "$mismatch_policy" == "skip" ]] && [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_reprobe_interval_frames" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_cpu_publish_warning_threshold_ms" || -n "$expect_cpu_publish_warning_consecutive_limit" || -n "$expect_software_route_backend" ]]; then
+  echo "[software-compat] warning: mismatch-policy=skip with --expect-* may bypass assertions on host/target mismatch."
 fi
 
 host_os="unknown"
