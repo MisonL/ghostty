@@ -402,18 +402,14 @@ case_dry_run_runtime_diagnostics_smoke_passthrough() {
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="cpu route diagnostics kv helpers emit structured logs" \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW=1 \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON=mailbox_backpressure \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING=true; then
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON=frame_pool_exhausted; then
     fail "dry-run with runtime diagnostics smoke should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics-smoke filter=cpu route diagnostics kv helpers emit structured logs expect-damage-overflow=1 expect-publish-retry-reason=mailbox_backpressure expect-publish-warning=true" "dry-run runtime diagnostics smoke summary"
+  assert_contains "$output" "runtime-diagnostics-smoke filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "dry-run runtime diagnostics smoke summary"
   assert_contains "$output" "dry-run compat-check smoke command" "dry-run runtime diagnostics smoke command"
-  assert_contains "$output" "--expect-cpu-damage-overflow 1" "dry-run runtime diagnostics smoke overflow arg"
-  assert_contains "$output" "--expect-cpu-publish-retry-reason mailbox_backpressure" "dry-run runtime diagnostics smoke retry arg"
-  assert_contains "$output" "--expect-cpu-publish-warning true" "dry-run runtime diagnostics smoke warning arg"
+  assert_contains "$output" "--expect-cpu-publish-retry-reason frame_pool_exhausted" "dry-run runtime diagnostics smoke retry arg"
   pass "dry-run passes runtime diagnostics smoke expectations"
 }
 

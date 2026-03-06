@@ -251,12 +251,12 @@ case_test_filter_passthrough_in_cmd() {
   if ! run_with_fake_zig output \
     success \
     --mode test \
-    --test-filter "cpu route diagnostics kv helpers emit structured logs"; then
+    --test-filter "drawFrame software cpu smoke"; then
     fail "test-filter passthrough should succeed"
   fi
 
-  assert_contains "$output" "test-filter=cpu route diagnostics kv helpers emit structured logs" "test-filter summary"
-  assert_contains "$output" "-Dtest-filter=cpu route diagnostics kv helpers emit structured logs" "test-filter cmd passthrough"
+  assert_contains "$output" "test-filter=drawFrame software cpu smoke" "test-filter summary"
+  assert_contains "$output" "-Dtest-filter=drawFrame software cpu smoke" "test-filter cmd passthrough"
   pass "test-filter passthrough is preserved"
 }
 

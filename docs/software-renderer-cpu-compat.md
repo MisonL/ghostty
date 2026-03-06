@@ -329,7 +329,9 @@ macOS 额外必填：
 默认 CI 还可以额外跑一条“真实 smoke”：
 
 - 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER` 把 compat-check 限定到单个 `zig build test -Dtest-filter=...` 场景；
-- 当前默认 smoke 用例是 `cpu route diagnostics kv helpers emit structured logs`；
+- 当前默认 smoke 用例是 `drawFrame software cpu smoke`；
+- 这条默认 smoke 直接走 `drawFrame -> publishCpuSoftwareFrame -> retry(frame_pool_exhausted)` 的真实链路，并在下一帧切回平台路由时验证瞬态状态被清理；
+- 默认只断言 `frame_pool_exhausted` retry reason，不再强制要求 damage overflow / publish warning 日志；
 - 这条 smoke 直接消费真实 Zig 测试输出，不依赖 fake log 夹具；
 - fake selftest 仍然保留，职责是验证脚本 parser/断言契约，而不是替代真实日志链路。
 

@@ -14,14 +14,12 @@ const cpu_renderer = @import("CPU.zig");
 const math = @import("../math.zig");
 const Surface = @import("../Surface.zig");
 const link = @import("link.zig");
-const cellpkg = @import("cell.zig");
-const noMinContrast = cellpkg.noMinContrast;
-const constraintWidth = cellpkg.constraintWidth;
-const isCovering = cellpkg.isCovering;
+const cellmod = @import("cell.zig");
+const noMinContrast = cellmod.noMinContrast;
+const constraintWidth = cellmod.constraintWidth;
+const isCovering = cellmod.isCovering;
 const rowNeverExtendBg = @import("row.zig").neverExtendBg;
-const Overlay = @import("Overlay.zig");
-const imagepkg = @import("image.zig");
-const ImageState = imagepkg.State;
+const Overlay = @import("Overlay.zig").Overlay;
 const shadertoy = @import("shadertoy.zig");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
@@ -159,7 +157,7 @@ fn cpuCellPixelOrigin(base_px: u32, cell_px: u32, index: usize) ?u32 {
     return std.math.add(u32, base_px, offset_px) catch return null;
 }
 
-fn needsFrameBgImageBuffer(bg_image: ?imagepkg.Image) bool {
+fn needsFrameBgImageBuffer(bg_image: anytype) bool {
     const image = bg_image orelse return false;
     return switch (image) {
         .ready => true,
@@ -169,8 +167,8 @@ fn needsFrameBgImageBuffer(bg_image: ?imagepkg.Image) bool {
 
 fn applyPreparedBackgroundImage(
     alloc: Allocator,
-    bg_image: *?imagepkg.Image,
-    image: imagepkg.Image,
+    bg_image: anytype,
+    image: anytype,
 ) void {
     if (bg_image.*) |*current| {
         current.markForReplace(alloc, image);
@@ -179,12 +177,12 @@ fn applyPreparedBackgroundImage(
     }
 }
 
-fn clearConfiguredBackgroundImage(bg_image: *?imagepkg.Image) void {
+fn clearConfiguredBackgroundImage(bg_image: anytype) void {
     if (bg_image.*) |*image| image.markForUnload();
 }
 
 fn bgImageRequiresConservativeFullCpuDamage(
-    bg_image: ?imagepkg.Image,
+    bg_image: anytype,
     config_has_bg_image: bool,
 ) bool {
     const image = bg_image orelse return false;
@@ -193,7 +191,7 @@ fn bgImageRequiresConservativeFullCpuDamage(
 
 fn finalizeUnloadingBgImage(
     alloc: Allocator,
-    bg_image: *?imagepkg.Image,
+    bg_image: anytype,
 ) bool {
     if (bg_image.*) |*image| {
         if (!image.isUnloading()) return false;
@@ -207,7 +205,7 @@ fn finalizeUnloadingBgImage(
 
 fn discardStaleUnloadingBackgroundImageAfterPrepareFailure(
     alloc: Allocator,
-    bg_image: *?imagepkg.Image,
+    bg_image: anytype,
 ) bool {
     // A config flip from "no background" to a broken path can leave the old
     // slot parked in unload_* forever unless we clear it explicitly.
@@ -224,7 +222,7 @@ fn clearCpuRouteTransientStateForPlatformRoute(
 
 fn applyCpuPublishResultState(
     alloc: Allocator,
-    bg_image: *?imagepkg.Image,
+    bg_image: anytype,
     config_has_bg_image: bool,
     cpu_publish_pending: *bool,
     cells_rebuilt: *bool,
@@ -1307,6 +1305,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         const shaderpkg = GraphicsAPI.shaders;
         const Shaders = shaderpkg.Shaders;
+        const cellpkg = cellmod.CellModule(shaderpkg);
+        const imagepkg = @import("image.zig").ImageModule(GraphicsAPI);
+
+        pub const ImageState = imagepkg.State;
+        pub const Image = imagepkg.Image;
 
         /// Allocator that can be used
         alloc: std.mem.Allocator,
@@ -6065,18 +6068,21 @@ test "cpuCellPixelOrigin rejects offset and base overflow" {
 }
 
 test "needsFrameBgImageBuffer only enables for ready image" {
-    try std.testing.expect(!needsFrameBgImageBuffer(null));
-    try std.testing.expect(!needsFrameBgImageBuffer(.{ .pending = undefined }));
-    try std.testing.expect(!needsFrameBgImageBuffer(.{ .unload_ready = undefined }));
-    try std.testing.expect(needsFrameBgImageBuffer(.{ .ready = undefined }));
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+
+    try std.testing.expect(!needsFrameBgImageBuffer(@as(?TestImage, null)));
+    try std.testing.expect(!needsFrameBgImageBuffer(TestImage{ .pending = undefined }));
+    try std.testing.expect(!needsFrameBgImageBuffer(TestImage{ .unload_ready = undefined }));
+    try std.testing.expect(needsFrameBgImageBuffer(TestImage{ .ready = undefined }));
 }
 
 fn makeOwnedPendingRgbaImage(
+    comptime ImageType: type,
     alloc: Allocator,
     width: u32,
     height: u32,
     rgba: []const u8,
-) !imagepkg.Image {
+) !ImageType {
     try std.testing.expectEqual(
         @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * 4,
         rgba.len,
@@ -6093,13 +6099,14 @@ fn makeOwnedPendingRgbaImage(
 
 test "applyPreparedBackgroundImage stores first pending image" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = null;
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = null;
     defer if (bg_image) |*image| image.deinit(alloc);
 
     applyPreparedBackgroundImage(
         alloc,
         &bg_image,
-        try makeOwnedPendingRgbaImage(alloc, 1, 1, &.{ 1, 2, 3, 4 }),
+        try makeOwnedPendingRgbaImage(TestImage, alloc, 1, 1, &.{ 1, 2, 3, 4 }),
     );
 
     try std.testing.expect(bg_image != null);
@@ -6113,7 +6120,9 @@ test "applyPreparedBackgroundImage stores first pending image" {
 
 test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBackgroundImage marks unload" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6125,6 +6134,7 @@ test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBac
         alloc,
         &bg_image,
         try makeOwnedPendingRgbaImage(
+            TestImage,
             alloc,
             2,
             1,
@@ -6148,7 +6158,9 @@ test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBac
 
 test "bg image unload boundary still forces full cpu damage" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6171,7 +6183,9 @@ test "bg image unload boundary still forces full cpu damage" {
 
 test "partial cpu row damage resumes after bg image slot is cleared" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6189,7 +6203,9 @@ test "partial cpu row damage resumes after bg image slot is cleared" {
 
 test "background image prepare failure clears stale unload slot" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6224,7 +6240,9 @@ test "clear cpu route transient state resets stale pending publish and warnings"
 
 test "cpu publish retry keeps redraw pending without clearing unloading background image" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6252,8 +6270,10 @@ test "cpu publish retry keeps redraw pending without clearing unloading backgrou
 
 test "published cpu frame finalizes unloading background only after config is cleared" {
     const alloc = std.testing.allocator;
+    const TestImage = Renderer(renderer.Renderer.API).Image;
 
-    var bg_image_gone: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    var bg_image_gone: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6274,7 +6294,8 @@ test "published cpu frame finalizes unloading background only after config is cl
     try std.testing.expect(!cells_rebuilt);
     try std.testing.expect(bg_image_gone == null);
 
-    var bg_image_recovering: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    var bg_image_recovering: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6299,7 +6320,9 @@ test "published cpu frame finalizes unloading background only after config is cl
 
 test "applyPreparedBackgroundImage replaces unloading slot with new pending image" {
     const alloc = std.testing.allocator;
-    var bg_image: ?imagepkg.Image = try makeOwnedPendingRgbaImage(
+    const TestImage = Renderer(renderer.Renderer.API).Image;
+    var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
+        TestImage,
         alloc,
         1,
         1,
@@ -6314,6 +6337,7 @@ test "applyPreparedBackgroundImage replaces unloading slot with new pending imag
         alloc,
         &bg_image,
         try makeOwnedPendingRgbaImage(
+            TestImage,
             alloc,
             2,
             1,
@@ -7148,6 +7172,435 @@ test "cpu route diagnostics kv helpers emit structured logs" {
     logCpuDamageOverflowKv(snapshot);
     logCpuPublishRetryKv(snapshot, true);
     logCpuPublishWarningKv(snapshot);
+}
+
+const DrawFrameSmokePipeline = struct {};
+
+const DrawFrameSmokeShaderPkg = struct {
+    const OpenGLShaders = @import("opengl/shaders.zig");
+
+    pub const Uniforms = OpenGLShaders.Uniforms;
+    pub const CellText = OpenGLShaders.CellText;
+    pub const CellBg = OpenGLShaders.CellBg;
+    pub const Image = OpenGLShaders.Image;
+    pub const BgImage = OpenGLShaders.BgImage;
+
+    pub const Shaders = struct {
+        pipelines: struct {
+            bg_color: DrawFrameSmokePipeline = .{},
+            cell_bg: DrawFrameSmokePipeline = .{},
+            cell_text: DrawFrameSmokePipeline = .{},
+            image: DrawFrameSmokePipeline = .{},
+            bg_image: DrawFrameSmokePipeline = .{},
+        } = .{},
+        post_pipelines: []const DrawFrameSmokePipeline = &.{},
+        defunct: bool = false,
+
+        pub fn deinit(self: *@This(), alloc: Allocator) void {
+            _ = self;
+            _ = alloc;
+        }
+    };
+};
+
+const DrawFrameSmokeGraphicsAPI = struct {
+    const Self = @This();
+
+    pub const Pipeline = DrawFrameSmokePipeline;
+    pub const swap_chain_count = 1;
+    pub const custom_shader_target: shadertoy.Target = .glsl;
+    pub const custom_shader_y_is_down = false;
+    pub const softwareFramePublicationOnCompletion = false;
+    pub const shaders = DrawFrameSmokeShaderPkg;
+
+    pub const Target = struct {
+        width: u32 = 0,
+        height: u32 = 0,
+
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    pub const Texture = struct {
+        width: u32 = 0,
+        height: u32 = 0,
+
+        pub fn init(
+            _: anytype,
+            width: u32,
+            height: u32,
+            _: anytype,
+        ) !@This() {
+            return .{
+                .width = width,
+                .height = height,
+            };
+        }
+
+        pub fn deinit(self: @This()) void {
+            _ = self;
+        }
+
+        pub fn replaceRegion(
+            self: @This(),
+            x: usize,
+            y: usize,
+            width: usize,
+            height: usize,
+            data: []const u8,
+        ) !void {
+            _ = self;
+            _ = x;
+            _ = y;
+            _ = width;
+            _ = height;
+            _ = data;
+        }
+    };
+
+    pub const Sampler = struct {
+        pub fn init(_: anytype) !@This() {
+            return .{};
+        }
+
+        pub fn deinit(self: @This()) void {
+            _ = self;
+        }
+    };
+
+    pub fn Buffer(comptime T: type) type {
+        return struct {
+            buffer: ?usize = null,
+            len: usize = 0,
+
+            pub fn init(_: anytype, len: usize) !@This() {
+                _ = T;
+                return .{ .len = len };
+            }
+
+            pub fn initFill(_: anytype, items: anytype) !@This() {
+                _ = T;
+                return .{
+                    .len = switch (@typeInfo(@TypeOf(items))) {
+                        .pointer => items.len,
+                        else => 0,
+                    },
+                };
+            }
+
+            pub fn sync(self: *@This(), items: anytype) !void {
+                self.len = switch (@typeInfo(@TypeOf(items))) {
+                    .pointer => items.len,
+                    else => self.len,
+                };
+            }
+
+            pub fn syncFromArrayLists(self: *@This(), lists: anytype) !u32 {
+                _ = self;
+                _ = lists;
+                return 0;
+            }
+
+            pub fn deinit(self: *@This()) void {
+                _ = self;
+            }
+        };
+    }
+
+    pub const RenderPass = struct {
+        pub const Options = struct {
+            pub const Attachment = struct {
+                target: union(enum) {
+                    texture: Texture,
+                    target: Target,
+                },
+                clear_color: ?[4]f32 = null,
+            };
+        };
+
+        pub fn step(self: *@This(), _: anytype) void {
+            _ = self;
+        }
+
+        pub fn complete(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    pub const FrameContext = struct {
+        pub fn renderPass(
+            self: *@This(),
+            _: []const RenderPass.Options.Attachment,
+        ) RenderPass {
+            _ = self;
+            return .{};
+        }
+
+        pub fn complete(self: *@This(), _: bool) void {
+            _ = self;
+        }
+    };
+
+    surface_size: renderer.ScreenSize,
+    draw_frame_start_count: u32 = 0,
+    draw_frame_end_count: u32 = 0,
+    present_last_target_count: u32 = 0,
+    blending: configpkg.Config.AlphaBlending = .native,
+
+    pub fn init(_: Allocator, options: renderer.Options) !Self {
+        return .{
+            .surface_size = options.size.screen,
+            .blending = options.config.blending,
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        _ = self;
+    }
+
+    pub fn initShaders(
+        self: *@This(),
+        alloc: Allocator,
+        post_shaders: []const [:0]const u8,
+    ) !shaders.Shaders {
+        _ = self;
+        _ = alloc;
+        _ = post_shaders;
+        return .{};
+    }
+
+    pub fn initAtlasTexture(self: *const @This(), atlas: anytype) !Texture {
+        _ = self;
+        _ = atlas;
+        return .{};
+    }
+
+    pub fn initTarget(self: *const @This(), width: usize, height: usize) !Target {
+        _ = self;
+        return .{
+            .width = @intCast(width),
+            .height = @intCast(height),
+        };
+    }
+
+    pub fn uniformBufferOptions(_: *const Self) void {}
+    pub fn fgBufferOptions(_: *const Self) void {}
+    pub fn bgBufferOptions(_: *const Self) void {}
+    pub fn imageBufferOptions(_: *const Self) void {}
+    pub fn bgImageBufferOptions(_: *const Self) void {}
+    pub fn textureOptions(_: *const Self) void {}
+    pub fn samplerOptions(_: *const Self) void {}
+    pub fn imageTextureOptions(_: *const Self, _: anytype, _: bool) void {}
+
+    pub fn surfaceInit(_: anytype) !void {}
+    pub fn finalizeSurfaceInit(_: *@This(), _: anytype) !void {}
+    pub fn threadEnter(_: *@This(), _: anytype) !void {}
+    pub fn threadExit(_: *@This()) void {}
+    pub fn loopEnter(_: *@This()) void {}
+    pub fn loopExit(_: *@This()) void {}
+    pub fn displayRealized(_: *@This()) void {}
+    pub fn displayUnrealized(_: *@This()) void {}
+
+    pub fn drawFrameStart(self: *@This()) void {
+        self.draw_frame_start_count += 1;
+    }
+
+    pub fn drawFrameEnd(self: *@This()) void {
+        self.draw_frame_end_count += 1;
+    }
+
+    pub fn surfaceSize(self: *const Self) !renderer.ScreenSize {
+        return self.surface_size;
+    }
+
+    pub fn presentLastTarget(self: *@This()) !void {
+        self.present_last_target_count += 1;
+    }
+
+    pub fn beginFrame(
+        self: *@This(),
+        _: anytype,
+        _: *Target,
+        _: bool,
+        _: u32,
+        _: u32,
+    ) !FrameContext {
+        _ = self;
+        return .{};
+    }
+
+    pub fn publishSoftwareFrame(
+        self: *@This(),
+        _: *const Target,
+        _: renderer.ScreenSize,
+    ) !?apprt.surface.Message.SoftwareFrameReady {
+        _ = self;
+        return null;
+    }
+};
+
+const DrawFrameSmokeRenderer = Renderer(DrawFrameSmokeGraphicsAPI);
+
+fn makeDrawFrameSmokeRenderer(
+    alloc: Allocator,
+    surface_size: renderer.ScreenSize,
+) !DrawFrameSmokeRenderer {
+    var raw_config = try configpkg.Config.default(alloc);
+    defer raw_config.deinit();
+    raw_config.@"software-renderer-experimental" = true;
+    raw_config.@"software-renderer-presenter" = .auto;
+
+    var result: DrawFrameSmokeRenderer = undefined;
+    result.alloc = alloc;
+    result.draw_mutex = .{};
+    result.config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, &raw_config);
+    result.surface_mailbox = undefined;
+    result.grid_metrics = undefined;
+    result.size = .{
+        .screen = surface_size,
+        .cell = .{
+            .width = 1,
+            .height = 1,
+        },
+        .padding = .{},
+    };
+    result.focused = false;
+    result.software_frame_publishing = true;
+    result.cpu_frame_pool = null;
+    result.cpu_text_layer = null;
+    result.retired_cpu_frame_pools = .{};
+    result.cpu_frame_generation = 0;
+    result.cpu_native_transport_warned = false;
+    result.cpu_custom_shader_mode_off_warned = false;
+    result.cpu_custom_shader_capability_unobserved_warned = false;
+    result.cpu_custom_shader_unsupported_warned = false;
+    result.cpu_custom_shader_safe_timeout_warned = false;
+    result.cpu_runtime_publishing_warned = false;
+    result.cpu_config_experimental_warned = false;
+    result.cpu_legacy_presenter_warned = false;
+    result.cpu_frame_pool_exhausted_warned = false;
+    result.cpu_retired_pool_pressure_warned = false;
+    result.cpu_frame_publish_warning = .{};
+    result.cpu_publish_pending = false;
+    result.cpu_route_diagnostics = .{};
+    result.cpu_custom_shader_probe = null;
+    result.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
+    result.cpu_damage_tracker =
+        cpu_renderer.DamageTracker.init(software_renderer_cpu_damage_rect_cap);
+    result.cpu_rebuild_damage_full = true;
+    result.cpu_rebuild_damage_row_min = null;
+    result.cpu_rebuild_damage_row_max_exclusive = 0;
+    result.custom_shader_focused_changed = false;
+    result.scrollbar = .{
+        .total = 0,
+        .offset = 0,
+        .len = 0,
+    };
+    result.scrollbar_dirty = false;
+    result.last_bottom_node = null;
+    result.last_bottom_y = 0;
+    result.search_matches = null;
+    result.search_selected_match = null;
+    result.search_matches_dirty = false;
+    result.cells = undefined;
+    result.cells_rebuilt = false;
+    result.uniforms = undefined;
+    result.custom_shader_uniforms = undefined;
+    result.first_frame_time = null;
+    result.last_frame_time = null;
+    result.font_grid = undefined;
+    result.font_shaper = undefined;
+    result.font_shaper_cache = undefined;
+    result.images = .empty;
+    result.bg_image = null;
+    result.bg_image_changed = false;
+    result.bg_image_buffer = std.mem.zeroes(DrawFrameSmokeShaderPkg.BgImage);
+    result.bg_image_buffer_modified = 0;
+    result.api = .{
+        .surface_size = surface_size,
+    };
+    result.display_link = null;
+    result.health = .{ .raw = .healthy };
+    result.swap_chain = undefined;
+    result.target_config_modified = 0;
+    result.reinitialize_shaders = false;
+    result.has_custom_shaders = false;
+    result.shaders = .{};
+    result.terminal_state = .empty;
+    result.terminal_state_frame_count = 0;
+    result.overlay = null;
+
+    return result;
+}
+
+test "drawFrame software cpu smoke retries exhausted pool and clears platform transient state" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke = try makeDrawFrameSmokeRenderer(alloc, surface_size);
+    defer smoke.config.deinit();
+    defer smoke.cpu_damage_tracker.deinit(alloc);
+
+    smoke.cpu_frame_pool = try cpu_renderer.FramePool.init(
+        alloc,
+        3,
+        surface_size.width,
+        surface_size.height,
+        .bgra8_premul,
+        software_renderer_cpu_damage_rect_pool_capacity,
+    );
+    defer if (smoke.cpu_frame_pool) |*pool| {
+        if (pool.isIdle()) pool.deinitIdle();
+    };
+
+    var acquired: [3]cpu_renderer.FramePool.Acquired = undefined;
+    for (&acquired) |*slot| {
+        slot.* = smoke.cpu_frame_pool.?.acquire() orelse return error.TestUnexpectedResult;
+    }
+
+    smoke.cpu_frame_publish_warning = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+
+    try smoke.drawFrame(true);
+
+    const retry_snapshot = smoke.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(smoke.cpu_publish_pending);
+    try std.testing.expect(smoke.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 1), retry_snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "frame_pool_exhausted",
+        retry_snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expectEqual(@as(u64, 1), retry_snapshot.cpu_publish_retry_pool_exhausted_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.api.draw_frame_end_count);
+
+    smoke.config.software_renderer_experimental = false;
+    smoke.cells_rebuilt = false;
+
+    try smoke.drawFrame(false);
+
+    try std.testing.expect(!smoke.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), smoke.cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!smoke.cpu_frame_publish_warning.warned);
+    try std.testing.expectEqual(@as(u32, 1), smoke.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.api.draw_frame_end_count);
+
+    for (&acquired, 0..) |*slot, i| {
+        const frame = smoke.cpu_frame_pool.?.publish(slot, @intCast(i), &.{});
+        frame.release();
+    }
 }
 
 const GenericRendererTestPool = struct {

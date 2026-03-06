@@ -15,5 +15,7 @@ pub const App = struct {
     ) !bool {
         return false;
     }
+
+    pub fn wakeup(_: *const App) void {}
 };
 pub const Surface = struct {};
