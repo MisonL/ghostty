@@ -71,6 +71,19 @@ pub fn decide(input: Input) Decision {
         };
     }
 
+    // Runtime fallback is session-scoped: once a snapshot/publish path fails,
+    // keep the compatibility route pinned until the caller explicitly resets it.
+    if (input.runtime_fallback) {
+        return .{
+            .requested = input.requested,
+            .selected = .@"legacy-gl",
+            .reason = .runtime_failed_session_fallback,
+            .experimental = true,
+            .can_publish_software_frame = false,
+            .degraded = true,
+        };
+    }
+
     if (input.availability != .available) {
         const reason: Reason = switch (input.availability) {
             .available => unreachable,
@@ -82,17 +95,6 @@ pub fn decide(input: Input) Decision {
             .requested = input.requested,
             .selected = .@"legacy-gl",
             .reason = reason,
-            .experimental = true,
-            .can_publish_software_frame = false,
-            .degraded = true,
-        };
-    }
-
-    if (input.runtime_fallback) {
-        return .{
-            .requested = input.requested,
-            .selected = .@"legacy-gl",
-            .reason = .runtime_failed_session_fallback,
             .experimental = true,
             .can_publish_software_frame = false,
             .degraded = true,
@@ -178,6 +180,22 @@ test "decide returns runtime_failed_session_fallback when runtime fallback is ac
     });
 
     try std.testing.expectEqual(Reason.runtime_failed_session_fallback, decision.reason);
+    try std.testing.expect(decision.degraded);
+}
+
+test "decide keeps runtime_failed_session_fallback sticky when availability later degrades" {
+    const std = @import("std");
+    const decision = decide(.{
+        .is_software_build = true,
+        .experimental = true,
+        .requested = .snapshot,
+        .availability = .runtime_capability_missing,
+        .runtime_fallback = true,
+    });
+
+    try std.testing.expectEqual(Reason.runtime_failed_session_fallback, decision.reason);
+    try std.testing.expectEqual(RequestedPresenter.@"legacy-gl", decision.selected);
+    try std.testing.expect(!decision.can_publish_software_frame);
     try std.testing.expect(decision.degraded);
 }
 

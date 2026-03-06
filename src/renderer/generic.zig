@@ -149,6 +149,16 @@ fn cpuDamageRectForRowSpan(
     };
 }
 
+fn cpuCellGridCount(cols: usize, rows: usize) ?usize {
+    return std.math.mul(usize, cols, rows) catch null;
+}
+
+fn cpuCellPixelOrigin(base_px: u32, cell_px: u32, index: usize) ?u32 {
+    const index_px = std.math.cast(u32, index) orelse return null;
+    const offset_px = std.math.mul(u32, index_px, cell_px) catch return null;
+    return std.math.add(u32, base_px, offset_px) catch return null;
+}
+
 fn needsFrameBgImageBuffer(bg_image: ?imagepkg.Image) bool {
     const image = bg_image orelse return false;
     return switch (image) {
@@ -247,6 +257,11 @@ const CpuPublishResult = union(enum) {
     retry: CpuPublishRetryReason,
 };
 
+const CpuFramePoolWarningReason = enum {
+    retired_pool_pressure,
+    frame_pool_exhausted,
+};
+
 const CpuRouteDiagnosticsSnapshot = struct {
     custom_shader_fallback_count: u64,
     custom_shader_bypass_count: u64,
@@ -259,13 +274,18 @@ const CpuRouteDiagnosticsSnapshot = struct {
     cpu_damage_rect_cap: u16,
     cpu_publish_skipped_no_damage_count: u64,
     cpu_publish_latency_warning_count: u64,
+    last_cpu_publish_latency_warning_frame_ms: ?u64,
+    last_cpu_publish_latency_warning_consecutive_count: u8,
     cpu_publish_warning_threshold_ms: u64,
     cpu_publish_warning_consecutive_limit: u8,
     cpu_publish_retry_invalid_surface_count: u64,
     cpu_publish_retry_pool_pressure_count: u64,
     cpu_publish_retry_pool_exhausted_count: u64,
     cpu_publish_retry_mailbox_backpressure_count: u64,
+    cpu_retired_pool_pressure_warning_count: u64,
+    cpu_frame_pool_exhausted_warning_count: u64,
     last_cpu_publish_retry_reason: []const u8,
+    last_cpu_frame_pool_warning_reason: []const u8,
     last_cpu_frame_ms: ?u64,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason,
     last_fallback_scope: []const u8,
@@ -293,11 +313,16 @@ const CpuRouteDiagnosticsState = struct {
     cpu_damage_rect_overflow_count: u64 = 0,
     cpu_publish_skipped_no_damage_count: u64 = 0,
     cpu_publish_latency_warning_count: u64 = 0,
+    last_cpu_publish_latency_warning_frame_ms: ?u64 = null,
+    last_cpu_publish_latency_warning_consecutive_count: u8 = 0,
     cpu_publish_retry_invalid_surface_count: u64 = 0,
     cpu_publish_retry_pool_pressure_count: u64 = 0,
     cpu_publish_retry_pool_exhausted_count: u64 = 0,
     cpu_publish_retry_mailbox_backpressure_count: u64 = 0,
+    cpu_retired_pool_pressure_warning_count: u64 = 0,
+    cpu_frame_pool_exhausted_warning_count: u64 = 0,
     last_cpu_publish_retry_reason: ?CpuPublishRetryReason = null,
+    last_cpu_frame_pool_warning_reason: ?CpuFramePoolWarningReason = null,
     last_cpu_frame_ms: ?u64 = null,
     last_fallback_reason: ?SoftwareCpuRouteDisableReason = null,
     last_shader_capability_observed: bool = false,
@@ -390,8 +415,25 @@ const CpuRouteDiagnosticsState = struct {
         self.cpu_publish_skipped_no_damage_count +%= 1;
     }
 
-    fn recordCpuPublishLatencyWarning(self: *CpuRouteDiagnosticsState) void {
+    fn recordCpuPublishLatencyWarning(
+        self: *CpuRouteDiagnosticsState,
+        frame_ms: u64,
+        consecutive_count: u8,
+    ) void {
         self.cpu_publish_latency_warning_count +%= 1;
+        self.last_cpu_publish_latency_warning_frame_ms = frame_ms;
+        self.last_cpu_publish_latency_warning_consecutive_count = consecutive_count;
+    }
+
+    fn recordFramePoolWarning(
+        self: *CpuRouteDiagnosticsState,
+        reason: CpuFramePoolWarningReason,
+    ) void {
+        self.last_cpu_frame_pool_warning_reason = reason;
+        switch (reason) {
+            .retired_pool_pressure => self.cpu_retired_pool_pressure_warning_count +%= 1,
+            .frame_pool_exhausted => self.cpu_frame_pool_exhausted_warning_count +%= 1,
+        }
     }
 
     fn recordCpuShaderCapabilityReprobe(self: *CpuRouteDiagnosticsState) void {
@@ -412,13 +454,21 @@ const CpuRouteDiagnosticsState = struct {
             .cpu_damage_rect_cap = software_renderer_cpu_damage_rect_cap,
             .cpu_publish_skipped_no_damage_count = self.cpu_publish_skipped_no_damage_count,
             .cpu_publish_latency_warning_count = self.cpu_publish_latency_warning_count,
+            .last_cpu_publish_latency_warning_frame_ms = self.last_cpu_publish_latency_warning_frame_ms,
+            .last_cpu_publish_latency_warning_consecutive_count = self.last_cpu_publish_latency_warning_consecutive_count,
             .cpu_publish_warning_threshold_ms = cpu_frame_publish_warning_threshold_ms,
             .cpu_publish_warning_consecutive_limit = cpu_frame_publish_warning_consecutive_limit,
             .cpu_publish_retry_invalid_surface_count = self.cpu_publish_retry_invalid_surface_count,
             .cpu_publish_retry_pool_pressure_count = self.cpu_publish_retry_pool_pressure_count,
             .cpu_publish_retry_pool_exhausted_count = self.cpu_publish_retry_pool_exhausted_count,
             .cpu_publish_retry_mailbox_backpressure_count = self.cpu_publish_retry_mailbox_backpressure_count,
+            .cpu_retired_pool_pressure_warning_count = self.cpu_retired_pool_pressure_warning_count,
+            .cpu_frame_pool_exhausted_warning_count = self.cpu_frame_pool_exhausted_warning_count,
             .last_cpu_publish_retry_reason = if (self.last_cpu_publish_retry_reason) |reason|
+                @tagName(reason)
+            else
+                "n/a",
+            .last_cpu_frame_pool_warning_reason = if (self.last_cpu_frame_pool_warning_reason) |reason|
                 @tagName(reason)
             else
                 "n/a",
@@ -2291,9 +2341,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (self.retired_cpu_frame_pools.items.len >= max_retired_cpu_frame_pools) {
                 if (!self.cpu_retired_pool_pressure_warned) {
                     self.cpu_retired_pool_pressure_warned = true;
+                    self.cpu_route_diagnostics.recordFramePoolWarning(.retired_pool_pressure);
+                    const diagnostics = self.cpu_route_diagnostics.snapshot();
                     log.warn(
-                        "software renderer cpu retired pool pressure; delaying resize until in-flight frames retire count={}",
-                        .{self.retired_cpu_frame_pools.items.len},
+                        "software renderer cpu retired pool pressure; delaying resize until in-flight frames retire count={} warning_count={} last_reason={s}",
+                        .{
+                            self.retired_cpu_frame_pools.items.len,
+                            diagnostics.cpu_retired_pool_pressure_warning_count,
+                            diagnostics.last_cpu_frame_pool_warning_reason,
+                        },
                     );
                 }
                 return error.CpuFramePoolRetiredPressure;
@@ -2458,12 +2514,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 return;
             }
 
-            const row_stride = std.math.mul(u32, framebuffer.width_px, 4) catch {
+            const row_stride = std.math.mul(
+                u32,
+                framebuffer.width_px,
+                4,
+            ) catch {
                 framebuffer.clear(bg_color);
                 return;
             };
-            const row_len: usize = @intCast(row_stride);
-            var row_rgba = self.alloc.alloc(u8, row_len) catch {
+            const row_rgba = self.alloc.alloc(
+                u8,
+                @as(usize, @intCast(row_stride)),
+            ) catch {
                 framebuffer.clear(bg_color);
                 return;
             };
@@ -2642,30 +2704,31 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const cols = @as(usize, @intCast(self.cells.size.columns));
             const rows = @as(usize, @intCast(self.cells.size.rows));
             if (cols == 0 or rows == 0) return;
-            if (self.cells.bg_cells.len < cols * rows) return;
+            const cell_count = cpuCellGridCount(cols, rows) orelse return;
+            if (self.cells.bg_cells.len < cell_count) return;
             if (self.size.cell.width == 0 or self.size.cell.height == 0) return;
 
             for (0..rows) |y| {
+                const dst_y = cpuCellPixelOrigin(
+                    self.size.padding.top,
+                    self.size.cell.height,
+                    y,
+                ) orelse break;
                 for (0..cols) |x| {
                     const idx = y * cols + x;
                     const bg = self.cells.bg_cells[idx];
                     if (bg[3] == 0) continue;
 
-                    const x_offset = std.math.mul(
-                        u32,
-                        @as(u32, @intCast(x)),
+                    const dst_x = cpuCellPixelOrigin(
+                        self.size.padding.left,
                         self.size.cell.width,
-                    ) catch continue;
-                    const y_offset = std.math.mul(
-                        u32,
-                        @as(u32, @intCast(y)),
-                        self.size.cell.height,
-                    ) catch continue;
+                        x,
+                    ) orelse break;
 
                     framebuffer.fillRect(
                         .{
-                            .x = self.size.padding.left + x_offset,
-                            .y = self.size.padding.top + y_offset,
+                            .x = dst_x,
+                            .y = dst_y,
                             .width = self.size.cell.width,
                             .height = self.size.cell.height,
                         },
@@ -2932,9 +2995,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             var acquired = pool.acquire() orelse {
                 if (!self.cpu_frame_pool_exhausted_warned) {
                     self.cpu_frame_pool_exhausted_warned = true;
+                    self.cpu_route_diagnostics.recordFramePoolWarning(.frame_pool_exhausted);
+                    const diagnostics = self.cpu_route_diagnostics.snapshot();
                     log.warn(
-                        "software renderer cpu frame pool exhausted; dropping frame",
-                        .{},
+                        "software renderer cpu frame pool exhausted; dropping frame warning_count={} last_reason={s}",
+                        .{
+                            diagnostics.cpu_frame_pool_exhausted_warning_count,
+                            diagnostics.last_cpu_frame_pool_warning_reason,
+                        },
                     );
                 }
                 return .{ .retry = .frame_pool_exhausted };
@@ -3555,13 +3623,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                                     &self.cpu_frame_publish_warning,
                                     snapshot,
                                 )) {
-                                    self.cpu_route_diagnostics.recordCpuPublishLatencyWarning();
+                                    self.cpu_route_diagnostics.recordCpuPublishLatencyWarning(
+                                        snapshot.last_cpu_frame_ms.?,
+                                        self.cpu_frame_publish_warning.consecutive_over_threshold,
+                                    );
+                                    const warning_snapshot = self.cpu_route_diagnostics.snapshot();
                                     log.warn(
-                                        "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
+                                        "software renderer cpu publish latency warning last_cpu_frame_ms={} threshold_ms={} consecutive={} warning_count={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
                                         .{
-                                            snapshot.last_cpu_frame_ms.?,
+                                            warning_snapshot.last_cpu_publish_latency_warning_frame_ms.?,
                                             cpu_frame_publish_warning_threshold_ms,
-                                            self.cpu_frame_publish_warning.consecutive_over_threshold,
+                                            warning_snapshot.last_cpu_publish_latency_warning_consecutive_count,
+                                            warning_snapshot.cpu_publish_latency_warning_count,
                                             snapshot.shader_capability_observed,
                                             snapshot.shader_capability_available,
                                             snapshot.shader_minimal_runtime_enabled,
@@ -5576,13 +5649,18 @@ fn cpuRouteDiagnosticsSnapshotDefaults() CpuRouteDiagnosticsSnapshot {
         .cpu_damage_rect_cap = software_renderer_cpu_damage_rect_cap,
         .cpu_publish_skipped_no_damage_count = 0,
         .cpu_publish_latency_warning_count = 0,
+        .last_cpu_publish_latency_warning_frame_ms = null,
+        .last_cpu_publish_latency_warning_consecutive_count = 0,
         .cpu_publish_warning_threshold_ms = cpu_frame_publish_warning_threshold_ms,
         .cpu_publish_warning_consecutive_limit = cpu_frame_publish_warning_consecutive_limit,
         .cpu_publish_retry_invalid_surface_count = 0,
         .cpu_publish_retry_pool_pressure_count = 0,
         .cpu_publish_retry_pool_exhausted_count = 0,
         .cpu_publish_retry_mailbox_backpressure_count = 0,
+        .cpu_retired_pool_pressure_warning_count = 0,
+        .cpu_frame_pool_exhausted_warning_count = 0,
         .last_cpu_publish_retry_reason = "n/a",
+        .last_cpu_frame_pool_warning_reason = "n/a",
         .last_cpu_frame_ms = null,
         .last_fallback_reason = null,
         .last_fallback_scope = "none",
@@ -5703,6 +5781,16 @@ test "cpu damage rect for row span includes bottom spill for last row" {
         .width = 200,
         .height = 50,
     }, rect);
+}
+
+test "cpuCellGridCount rejects overflow" {
+    try std.testing.expect(cpuCellGridCount(std.math.maxInt(usize), 2) == null);
+}
+
+test "cpuCellPixelOrigin rejects offset and base overflow" {
+    try std.testing.expectEqual(@as(?u32, 12), cpuCellPixelOrigin(2, 5, 2));
+    try std.testing.expect(cpuCellPixelOrigin(0, std.math.maxInt(u32), 2) == null);
+    try std.testing.expect(cpuCellPixelOrigin(std.math.maxInt(u32), 1, 1) == null);
 }
 
 test "needsFrameBgImageBuffer only enables for ready image" {
@@ -6054,6 +6142,8 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_publish_latency_warning_frame_ms);
+    try std.testing.expectEqual(@as(u8, 0), snapshot.last_cpu_publish_latency_warning_consecutive_count);
     try std.testing.expectEqual(
         cpu_frame_publish_warning_threshold_ms,
         snapshot.cpu_publish_warning_threshold_ms,
@@ -6066,7 +6156,10 @@ test "cpu route diagnostics tracks custom shader fallback count and reason" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_frame_pool_exhausted_warning_count);
     try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_publish_retry_reason);
+    try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_frame_pool_warning_reason);
     try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -6178,7 +6271,12 @@ test "cpu route diagnostics snapshot defaults include capability reprobe count" 
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_pressure_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_frame_pool_exhausted_warning_count);
     try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_publish_retry_reason);
+    try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_frame_pool_warning_reason);
+    try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_publish_latency_warning_frame_ms);
+    try std.testing.expectEqual(@as(u8, 0), snapshot.last_cpu_publish_latency_warning_consecutive_count);
 }
 
 test "cpu route diagnostics tracks cpu shader capability reprobe count" {
@@ -6203,7 +6301,7 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     diagnostics.recordDamageStats(3, 1);
     diagnostics.recordPublishSkippedNoDamage();
     diagnostics.recordPublishSkippedNoDamage();
-    diagnostics.recordCpuPublishLatencyWarning();
+    diagnostics.recordCpuPublishLatencyWarning(17, cpu_frame_publish_warning_consecutive_limit);
     diagnostics.recordCpuFramePublished((17 * std.time.ns_per_ms) + (500 * std.time.ns_per_us));
 
     const snapshot = diagnostics.snapshot();
@@ -6214,11 +6312,19 @@ test "cpu route diagnostics tracks publish retry and cpu frame publish duration"
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_damage_rect_overflow_count);
     try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_publish_skipped_no_damage_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_publish_latency_warning_frame_ms);
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_consecutive_limit,
+        snapshot.last_cpu_publish_latency_warning_consecutive_count,
+    );
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_pressure_count);
     try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_pool_exhausted_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_mailbox_backpressure_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_frame_pool_exhausted_warning_count);
     try std.testing.expectEqualStrings("mailbox_backpressure", snapshot.last_cpu_publish_retry_reason);
+    try std.testing.expectEqualStrings("n/a", snapshot.last_cpu_frame_pool_warning_reason);
     try std.testing.expectEqual(@as(?u64, 17), snapshot.last_cpu_frame_ms);
     try std.testing.expectEqual(@as(?SoftwareCpuRouteDisableReason, null), snapshot.last_fallback_reason);
     try std.testing.expectEqualStrings("none", snapshot.last_fallback_scope);
@@ -6249,6 +6355,19 @@ test "cpu route diagnostics tracks publish retry reason buckets" {
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_exhausted_count);
     try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_mailbox_backpressure_count);
     try std.testing.expectEqualStrings("mailbox_backpressure", snapshot.last_cpu_publish_retry_reason);
+}
+
+test "cpu route diagnostics tracks frame pool warning counts and last reason" {
+    var diagnostics: CpuRouteDiagnosticsState = .{};
+    diagnostics.recordFramePoolWarning(.retired_pool_pressure);
+    diagnostics.recordFramePoolWarning(.frame_pool_exhausted);
+    diagnostics.recordFramePoolWarning(.frame_pool_exhausted);
+
+    const snapshot = diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.cpu_frame_pool_exhausted_warning_count);
+    try std.testing.expectEqualStrings("frame_pool_exhausted", snapshot.last_cpu_frame_pool_warning_reason);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
 }
 
 test "cpu route diagnostics capability snapshot clears when observation is unavailable" {
@@ -6450,13 +6569,27 @@ test "cpu publish latency warning count increments only when warning is emitted"
     var i: u8 = 0;
     while (i < cpu_frame_publish_warning_consecutive_limit) : (i += 1) {
         if (updateCpuFramePublishWarningState(&state, snapshot)) {
-            diagnostics.recordCpuPublishLatencyWarning();
+            diagnostics.recordCpuPublishLatencyWarning(
+                snapshot.last_cpu_frame_ms.?,
+                state.consecutive_over_threshold,
+            );
         }
     }
     if (updateCpuFramePublishWarningState(&state, snapshot)) {
-        diagnostics.recordCpuPublishLatencyWarning();
+        diagnostics.recordCpuPublishLatencyWarning(
+            snapshot.last_cpu_frame_ms.?,
+            state.consecutive_over_threshold,
+        );
     }
 
     const diagnostics_snapshot = diagnostics.snapshot();
     try std.testing.expectEqual(@as(u64, 1), diagnostics_snapshot.cpu_publish_latency_warning_count);
+    try std.testing.expectEqual(
+        @as(?u64, cpu_frame_publish_warning_threshold_ms + 1),
+        diagnostics_snapshot.last_cpu_publish_latency_warning_frame_ms,
+    );
+    try std.testing.expectEqual(
+        cpu_frame_publish_warning_consecutive_limit,
+        diagnostics_snapshot.last_cpu_publish_latency_warning_consecutive_count,
+    );
 }

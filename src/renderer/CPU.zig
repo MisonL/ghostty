@@ -1812,6 +1812,12 @@ fn repeatStart(origin: f32, step: f32) f32 {
     return start;
 }
 
+fn cellPixelOrigin(base_px: u32, cell_px: u32, index: usize) ?u32 {
+    const index_px = std.math.cast(u32, index) orelse return null;
+    const offset_px = std.math.mul(u32, index_px, cell_px) catch return null;
+    return std.math.add(u32, base_px, offset_px) catch return null;
+}
+
 /// A fixed-size reusable pool of shared CPU frame buffers.
 ///
 /// Each acquired slot is released through `SoftwareFrameReady.release_fn`,
@@ -2189,15 +2195,17 @@ fn drawCellBackgrounds(
     if (cell_w == 0 or cell_h == 0) return;
 
     for (0..rows) |y| {
+        const dst_y = cellPixelOrigin(layout.padding_top_px, cell_h, y) orelse break;
         for (0..cols) |x| {
             const idx = y * cols + x;
             const cell = bg_cells_rgba[idx];
             if (cell[3] == 0) continue;
+            const dst_x = cellPixelOrigin(layout.padding_left_px, cell_w, x) orelse break;
 
             framebuffer.fillRect(
                 .{
-                    .x = layout.padding_left_px + @as(u32, @intCast(x)) * cell_w,
-                    .y = layout.padding_top_px + @as(u32, @intCast(y)) * cell_h,
+                    .x = dst_x,
+                    .y = dst_y,
                     .width = cell_w,
                     .height = cell_h,
                 },
@@ -4125,6 +4133,45 @@ test "composeSoftwareFrame ignores absurd background grid dimensions with unders
     try std.testing.expectEqualSlices(
         u8,
         &[_]u8{ 5, 4, 3, 255 },
+        fb.bytes,
+    );
+}
+
+test "composeSoftwareFrame skips background cells whose origin overflows u32" {
+    const alloc = std.testing.allocator;
+
+    var fb = try FrameBuffer.init(alloc, 1, 1, .bgra8_premul);
+    defer fb.deinit(alloc);
+
+    const rows: [0]ArrayList(TestCellText) = .{};
+    const bg_cells = [_][4]u8{
+        .{ 1, 2, 3, 255 },
+        .{ 200, 201, 202, 255 },
+    };
+    const empty_gray: [0]u8 = .{};
+    const empty_color: [0]u8 = .{};
+
+    composeSoftwareFrame(
+        TestCellText,
+        &fb,
+        .{
+            .padding_left_px = 0,
+            .padding_top_px = 0,
+            .cell_width_px = std.math.maxInt(u32),
+            .cell_height_px = 1,
+            .grid_columns = 2,
+            .grid_rows = 1,
+        },
+        .{ 9, 8, 7, 255 },
+        bg_cells[0..],
+        rows[0..],
+        .{ .data = empty_gray[0..], .size = 0 },
+        .{ .data = empty_color[0..], .size = 0 },
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 3, 2, 1, 255 },
         fb.bytes,
     );
 }

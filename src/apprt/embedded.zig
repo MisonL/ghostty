@@ -1136,19 +1136,79 @@ pub const Surface = struct {
     fn validateSoftwareFramePayload(
         frame: apprt.surface.Message.SoftwareFrameReady,
     ) error{InvalidSoftwareFrame}!void {
+        const required_len = try softwareFrameRequiredLen(frame);
         switch (frame.storage) {
             .shared_cpu_bytes => {
-                if (frame.data == null or frame.data_len == 0) {
-                    return error.InvalidSoftwareFrame;
-                }
+                _ = try softwareFrameSharedBytes(frame, required_len);
             },
             .native_texture_handle => {
                 if (frame.handle == null) return error.InvalidSoftwareFrame;
             },
         }
+    }
 
-        if (frame.damage_rects_len > 0 and frame.damage_rects == null) {
+    fn softwareFrameBytesPerPixel(
+        pixel_format: apprt.surface.Message.SoftwareFramePixelFormat,
+    ) usize {
+        _ = pixel_format;
+        return 4;
+    }
+
+    fn softwareFrameRequiredLen(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!usize {
+        if (frame.width_px == 0 or frame.height_px == 0) {
             return error.InvalidSoftwareFrame;
+        }
+
+        const width = std.math.cast(usize, frame.width_px) orelse return error.InvalidSoftwareFrame;
+        const height = std.math.cast(usize, frame.height_px) orelse return error.InvalidSoftwareFrame;
+        const stride = std.math.cast(usize, frame.stride_bytes) orelse return error.InvalidSoftwareFrame;
+        if (stride == 0) return error.InvalidSoftwareFrame;
+
+        const min_stride = std.math.mul(
+            usize,
+            width,
+            softwareFrameBytesPerPixel(frame.pixel_format),
+        ) catch return error.InvalidSoftwareFrame;
+        if (stride < min_stride) return error.InvalidSoftwareFrame;
+
+        return std.math.mul(
+            usize,
+            stride,
+            height,
+        ) catch return error.InvalidSoftwareFrame;
+    }
+
+    fn softwareFrameSharedBytes(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+        required_len: usize,
+    ) error{InvalidSoftwareFrame}![]const u8 {
+        const data = frame.data orelse return error.InvalidSoftwareFrame;
+        if (frame.data_len < required_len) return error.InvalidSoftwareFrame;
+        return data[0..required_len];
+    }
+
+    fn validateSoftwareFrameDamageMetadata(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) error{InvalidSoftwareFrame}!void {
+        if (frame.damage_rects_len == 0) return;
+
+        const damage_rects = frame.damage_rects orelse return error.InvalidSoftwareFrame;
+        const frame_w = @as(u64, frame.width_px);
+        const frame_h = @as(u64, frame.height_px);
+        for (damage_rects[0..frame.damage_rects_len]) |rect| {
+            if (rect.width_px == 0 or rect.height_px == 0) {
+                return error.InvalidSoftwareFrame;
+            }
+            if (rect.x_px >= frame.width_px or rect.y_px >= frame.height_px) {
+                return error.InvalidSoftwareFrame;
+            }
+            const x1 = @as(u64, rect.x_px) + @as(u64, rect.width_px);
+            const y1 = @as(u64, rect.y_px) + @as(u64, rect.height_px);
+            if (x1 > frame_w or y1 > frame_h) {
+                return error.InvalidSoftwareFrame;
+            }
         }
     }
 
@@ -1167,6 +1227,30 @@ pub const Surface = struct {
             .handle = frame.handle,
             .damage_rects = frame.damage_rects,
             .damage_rects_len = frame.damage_rects_len,
+        };
+    }
+
+    const RuntimeSoftwareFrameCallbackPayload = struct {
+        frame: CAPI.RuntimeSoftwareFrame,
+        damage_metadata_valid: bool,
+    };
+
+    fn runtimeSoftwareFrameCallbackPayload(
+        frame: apprt.surface.Message.SoftwareFrameReady,
+    ) RuntimeSoftwareFrameCallbackPayload {
+        var c_frame = runtimeSoftwareFrameFromMessage(frame);
+        validateSoftwareFrameDamageMetadata(frame) catch {
+            c_frame.damage_rects = null;
+            c_frame.damage_rects_len = 0;
+            return .{
+                .frame = c_frame,
+                .damage_metadata_valid = false,
+            };
+        };
+
+        return .{
+            .frame = c_frame,
+            .damage_metadata_valid = true,
         };
     }
 
@@ -1193,8 +1277,15 @@ pub const Surface = struct {
             return error.InvalidSoftwareFrame;
         }
 
-        const c_frame = runtimeSoftwareFrameFromMessage(frame);
-        if (!software_frame_cb(self.userdata, &c_frame)) {
+        var callback_payload = runtimeSoftwareFrameCallbackPayload(frame);
+        if (!callback_payload.damage_metadata_valid) {
+            log.warn(
+                "software frame damage metadata rejected; publishing full-frame fallback generation={} damage_rects_len={}",
+                .{ frame.generation, frame.damage_rects_len },
+            );
+        }
+
+        if (!software_frame_cb(self.userdata, &callback_payload.frame)) {
             self.activateSoftwareFrameSessionFallback("callback_returned_false");
         }
     }
@@ -2913,7 +3004,74 @@ test "runtimeSoftwareFrameFromMessage preserves payload and damage metadata" {
     try std.testing.expectEqual(frame.damage_rects_len, c_frame.damage_rects_len);
 }
 
-test "validateSoftwareFramePayload rejects damage metadata length without pointer" {
+test "validateSoftwareFramePayload accepts frame payload even when damage metadata needs sanitizing" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    try Surface.validateSoftwareFramePayload(frame);
+}
+
+test "validateSoftwareFramePayload accepts oversized shared_cpu_bytes payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 64,
+    };
+
+    try Surface.validateSoftwareFramePayload(frame);
+}
+
+test "validateSoftwareFramePayload rejects undersized shared_cpu_bytes payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 47,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFramePayload(frame),
+    );
+}
+
+test "validateSoftwareFramePayload rejects missing native handle payload" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 2,
+        .height_px = 2,
+        .stride_bytes = 8,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .native_texture_handle,
+        .handle = null,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFramePayload(frame),
+    );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects damage metadata length without pointer" {
     const frame: apprt.surface.Message.SoftwareFrameReady = .{
         .width_px = 4,
         .height_px = 3,
@@ -2929,8 +3087,112 @@ test "validateSoftwareFramePayload rejects damage metadata length without pointe
 
     try std.testing.expectError(
         error.InvalidSoftwareFrame,
-        Surface.validateSoftwareFramePayload(frame),
+        Surface.validateSoftwareFrameDamageMetadata(frame),
     );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects out-of-bounds damage rect" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 3,
+            .y_px = 2,
+            .width_px = 2,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
+}
+
+test "validateSoftwareFrameDamageMetadata rejects zero-sized damage rect" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 0,
+            .y_px = 0,
+            .width_px = 0,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    try std.testing.expectError(
+        error.InvalidSoftwareFrame,
+        Surface.validateSoftwareFrameDamageMetadata(frame),
+    );
+}
+
+test "runtimeSoftwareFrameCallbackPayload strips invalid damage metadata" {
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = null,
+        .damage_rects_len = 1,
+    };
+
+    const payload = Surface.runtimeSoftwareFrameCallbackPayload(frame);
+    try std.testing.expect(!payload.damage_metadata_valid);
+    try std.testing.expect(payload.frame.damage_rects == null);
+    try std.testing.expectEqual(@as(usize, 0), payload.frame.damage_rects_len);
+}
+
+test "runtimeSoftwareFrameCallbackPayload preserves valid damage metadata" {
+    const damage = [_]apprt.surface.Message.SoftwareFrameDamageRect{
+        .{
+            .x_px = 1,
+            .y_px = 1,
+            .width_px = 2,
+            .height_px = 1,
+        },
+    };
+    const frame: apprt.surface.Message.SoftwareFrameReady = .{
+        .width_px = 4,
+        .height_px = 3,
+        .stride_bytes = 16,
+        .generation = 1,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrFromInt(1),
+        .data_len = 48,
+        .damage_rects = &damage,
+        .damage_rects_len = damage.len,
+    };
+
+    const payload = Surface.runtimeSoftwareFrameCallbackPayload(frame);
+    try std.testing.expect(payload.damage_metadata_valid);
+    try std.testing.expect(payload.frame.damage_rects == frame.damage_rects);
+    try std.testing.expectEqual(frame.damage_rects_len, payload.frame.damage_rects_len);
 }
 
 fn testRuntimeWakeupNoop(_: ?*anyopaque) callconv(.c) void {}
@@ -3360,6 +3622,28 @@ test "software presenter decision for embedded runtime applies runtime_failed_se
     try std.testing.expect(!decision.can_publish_software_frame);
 }
 
+test "software presenter decision for embedded runtime keeps session fallback sticky after runtime capability later disappears" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .macos,
+        null,
+        testRequiredStorageSupportMaskForMacos(),
+        true,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_failed_session_fallback,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
 test "software presenter decision for embedded runtime respects experimental disabled" {
     const decision = softwarePresenterDecisionForEmbeddedConfig(
         true,
@@ -3486,4 +3770,28 @@ test "software presenter decision for embedded runtime applies runtime_failed_se
         decision.selected,
     );
     try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback for embedded resets when experimental is disabled" {
+    try std.testing.expect(shouldResetSoftwareSnapshotRuntimeFallback(
+        true,
+        false,
+        .snapshot,
+    ));
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback for embedded resets when legacy presenter is requested" {
+    try std.testing.expect(shouldResetSoftwareSnapshotRuntimeFallback(
+        true,
+        true,
+        .@"legacy-gl",
+    ));
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback for embedded keeps session fallback for auto presenter" {
+    try std.testing.expect(!shouldResetSoftwareSnapshotRuntimeFallback(
+        true,
+        true,
+        .auto,
+    ));
 }

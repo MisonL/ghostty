@@ -42,7 +42,6 @@ const macos = if (builtin.target.os.tag.isDarwin()) @import("macos") else void;
 
 const log = std.log.scoped(.gtk_ghostty_surface);
 const software_snapshot_failure_threshold: u32 = 3;
-const software_damage_metadata_failure_threshold: u32 = 3;
 const software_presenter_context_native_unsupported = "native_unsupported";
 const software_presenter_context_runtime_fallback = "runtime_fallback";
 const software_damage_metadata_warning_sample_modulus: u64 = 64;
@@ -2514,15 +2513,6 @@ pub const Surface = extern struct {
                 },
             );
         }
-
-        if (!shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
-            unique_generation,
-            priv.software_snapshot_runtime_fallback,
-            priv.software_damage_metadata_failure_streak,
-            software_damage_metadata_failure_threshold,
-        )) return;
-
-        self.activateSoftwareSnapshotRuntimeFallback("damage_metadata_consecutive_failures");
     }
 
     pub fn softwareFrameReady(
@@ -4685,7 +4675,7 @@ test "shouldActivateSoftwareSnapshotRuntimeFallbackForFailure requires unique no
     ));
 }
 
-test "damage metadata failure streak uses generation de-duplication and threshold" {
+test "damage metadata failure streak uses generation de-duplication without forcing presenter fallback" {
     var failure_streak: u32 = 0;
     var failure_total: u64 = 0;
     var last_failure_generation: ?u64 = null;
@@ -4718,12 +4708,6 @@ test "damage metadata failure streak uses generation de-duplication and threshol
     try std.testing.expectEqual(@as(u32, 3), failure_streak);
     try std.testing.expectEqual(@as(u64, 4), failure_total);
     try std.testing.expectEqual(@as(?u64, 12), last_failure_generation);
-    try std.testing.expect(shouldActivateSoftwareSnapshotRuntimeFallbackForFailure(
-        true,
-        false,
-        failure_streak,
-        software_damage_metadata_failure_threshold,
-    ));
 }
 
 test "shouldLogSoftwareSnapshotDamageMetadataWarning samples after first warning" {
@@ -5037,6 +5021,21 @@ test "softwarePresenterSelectionFor chooses runtime fallback when snapshot repea
     try std.testing.expect(selection.experimental);
 }
 
+test "softwarePresenterSelectionFor keeps runtime fallback sticky after GTK runtime later becomes unavailable" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .snapshot,
+        false,
+        true,
+    );
+
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.snapshot, selection.requested);
+    try std.testing.expectEqual(coreconfig.SoftwareRendererPresenter.@"legacy-gl", selection.selected);
+    try std.testing.expectEqual(Surface.SoftwarePresenterReason.runtime_failed_session_fallback, selection.reason);
+    try std.testing.expect(selection.experimental);
+}
+
 test "softwarePresenterSelectionFor keeps explicit legacy request highest priority" {
     const selection = Surface.softwarePresenterSelectionFor(
         true,
@@ -5080,6 +5079,18 @@ test "shouldResetSoftwareSnapshotRuntimeFallback keeps fallback when snapshot is
         true,
         true,
         .snapshot,
+        true,
+        true,
+    );
+
+    try std.testing.expect(!Surface.shouldResetSoftwareSnapshotRuntimeFallback(true, selection));
+}
+
+test "shouldResetSoftwareSnapshotRuntimeFallback keeps fallback when auto presenter is still requested" {
+    const selection = Surface.softwarePresenterSelectionFor(
+        true,
+        true,
+        .auto,
         true,
         true,
     );
