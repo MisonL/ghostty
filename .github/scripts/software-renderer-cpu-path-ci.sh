@@ -123,6 +123,7 @@ cpu_publish_warning_consecutive_limit="${SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_L
 expect_cpu_publish_retry_reason="${SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
 expect_cpu_damage_overflow="${SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
 expect_cpu_publish_warning="${SR_CI_EXPECT_CPU_PUBLISH_WARNING:-}"
+expect_cpu_publish_success="${SR_CI_EXPECT_CPU_PUBLISH_SUCCESS:-}"
 runtime_diagnostics_smoke_test_filter="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER:-}"
 runtime_diagnostics_smoke_expect_cpu_publish_retry_reason="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
 runtime_diagnostics_smoke_expect_cpu_damage_overflow="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
@@ -136,6 +137,7 @@ runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason="${SR_CI_RUN
 runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
 runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING:-}"
 runtime_diagnostics_smoke_published_test_filter="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER:-}"
+runtime_diagnostics_smoke_published_expect_cpu_publish_success="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
 dry_run="${SR_CI_DRY_RUN:-false}"
 
@@ -210,6 +212,7 @@ fi
 validate_cpu_publish_retry_reason_env_value "SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON" "$expect_cpu_publish_retry_reason"
 validate_u64_env_value "SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW" "$expect_cpu_damage_overflow"
 validate_bool_env_value "SR_CI_EXPECT_CPU_PUBLISH_WARNING" "$expect_cpu_publish_warning"
+validate_bool_env_value "SR_CI_EXPECT_CPU_PUBLISH_SUCCESS" "$expect_cpu_publish_success"
 validate_cpu_publish_retry_reason_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON" "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason"
 validate_u64_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW" "$runtime_diagnostics_smoke_expect_cpu_damage_overflow"
 validate_bool_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING" "$runtime_diagnostics_smoke_expect_cpu_publish_warning"
@@ -219,6 +222,7 @@ validate_bool_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBL
 validate_cpu_publish_retry_reason_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON" "$runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason"
 validate_u64_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW" "$runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow"
 validate_bool_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING" "$runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+validate_bool_env_value "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS" "$runtime_diagnostics_smoke_published_expect_cpu_publish_success"
 
 resolved_runtime_diagnostics_smoke_primary_test_filter="$(
   resolve_alias_value \
@@ -253,6 +257,7 @@ resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason="$r
 resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow="$runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow"
 resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning="$runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
 resolved_runtime_diagnostics_smoke_published_test_filter="$runtime_diagnostics_smoke_published_test_filter"
+resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success="$runtime_diagnostics_smoke_published_expect_cpu_publish_success"
 
 if [[ -z "$resolved_runtime_diagnostics_smoke_primary_test_filter" && ( -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" || -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" || -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" ) ]]; then
   if [[ -n "$runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" || -n "$runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" || -n "$runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" || -n "$runtime_diagnostics_smoke_primary_test_filter" ]]; then
@@ -264,6 +269,10 @@ if [[ -z "$resolved_runtime_diagnostics_smoke_primary_test_filter" && ( -n "$res
 fi
 if [[ -z "$resolved_runtime_diagnostics_smoke_secondary_test_filter" && ( -n "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason" || -n "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow" || -n "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning" ) ]]; then
   echo "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER is required when secondary smoke expectations are provided" >&2
+  exit 2
+fi
+if [[ -z "$resolved_runtime_diagnostics_smoke_published_test_filter" && -n "$resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success" ]]; then
+  echo "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER is required when published smoke expectations are provided" >&2
   exit 2
 fi
 
@@ -390,10 +399,10 @@ if [[ -z "$expect_cpu_effective" ]]; then expect_cpu_effective="<unset>"; fi
 echo "[software-renderer-ci] $SR_CI_OS target-label=$target_label transport-label=$transport_label target=${target:-default} legacy-target=$target_is_legacy_os allow-legacy-os=$allow_legacy_os legacy-override-source=$legacy_override_source gate-expected-cpu-effective=$target_gate_expected_cpu_effective matrix-expect-cpu-effective=$expect_cpu_effective app-runtime=$app_runtime"
 echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-shader mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms reprobe-interval-frames=$resolved_cpu_shader_reprobe_interval_frames enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime fake-swiftshader-hint=$resolved_fake_swiftshader_hint expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-route frame-damage-mode=$resolved_cpu_frame_damage_mode damage-rect-cap=$resolved_cpu_damage_rect_cap effective-damage-rect-cap=$effective_cpu_damage_rect_cap publish-warning-threshold-ms=$resolved_cpu_publish_warning_threshold_ms publish-warning-consecutive-limit=$resolved_cpu_publish_warning_consecutive_limit effective-publish-warning-consecutive-limit=$effective_cpu_publish_warning_consecutive_limit"
-echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflow=${expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${expect_cpu_publish_warning:-<unset>}"
+echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflow=${expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${expect_cpu_publish_warning:-<unset>} expect-publish-success=${expect_cpu_publish_success:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-primary filter=${resolved_runtime_diagnostics_smoke_primary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-secondary filter=${resolved_runtime_diagnostics_smoke_secondary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning:-<unset>}"
-echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-published filter=${resolved_runtime_diagnostics_smoke_published_test_filter:-<unset>} expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset>"
+echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-published filter=${resolved_runtime_diagnostics_smoke_published_test_filter:-<unset>} expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset> expect-publish-success=${resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success:-<unset>}"
 if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
 elif [[ "$target_is_legacy_os" == "true" ]]; then
@@ -439,6 +448,7 @@ run_runtime_diagnostics_smoke_slot() {
   local expect_cpu_damage_overflow="$3"
   local expect_cpu_publish_retry_reason="$4"
   local expect_cpu_publish_warning="$5"
+  local expect_cpu_publish_success="$6"
   local smoke_compat_args=()
 
   if [[ -z "$test_filter" ]]; then
@@ -455,6 +465,9 @@ run_runtime_diagnostics_smoke_slot() {
   fi
   if [[ -n "$expect_cpu_publish_warning" ]]; then
     smoke_compat_args+=(--expect-cpu-publish-warning "$expect_cpu_publish_warning")
+  fi
+  if [[ -n "$expect_cpu_publish_success" ]]; then
+    smoke_compat_args+=(--expect-cpu-publish-success "$expect_cpu_publish_success")
   fi
 
   if [[ "$dry_run" == "true" ]]; then
@@ -549,6 +562,9 @@ fi
 if [[ -n "$expect_cpu_publish_warning" ]]; then
   compat_args+=(--expect-cpu-publish-warning "$expect_cpu_publish_warning")
 fi
+if [[ -n "$expect_cpu_publish_success" ]]; then
+  compat_args+=(--expect-cpu-publish-success "$expect_cpu_publish_success")
+fi
 
 if [[ "$dry_run" == "true" ]]; then
   print_compat_check_command "dry-run compat-check command" "${compat_args[@]}"
@@ -557,19 +573,22 @@ if [[ "$dry_run" == "true" ]]; then
     "$resolved_runtime_diagnostics_smoke_primary_test_filter" \
     "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" \
     "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" \
-    "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning"
+    "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" \
+    ""
   run_runtime_diagnostics_smoke_slot \
     "secondary" \
     "$resolved_runtime_diagnostics_smoke_secondary_test_filter" \
     "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow" \
     "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason" \
-    "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+    "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning" \
+    ""
   run_runtime_diagnostics_smoke_slot \
     "published" \
     "$resolved_runtime_diagnostics_smoke_published_test_filter" \
     "" \
     "" \
-    ""
+    "" \
+    "$resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success"
   exit 0
 fi
 
@@ -579,17 +598,20 @@ run_runtime_diagnostics_smoke_slot \
   "$resolved_runtime_diagnostics_smoke_primary_test_filter" \
   "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" \
   "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" \
-  "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning"
+  "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" \
+  ""
 run_runtime_diagnostics_smoke_slot \
   "secondary" \
   "$resolved_runtime_diagnostics_smoke_secondary_test_filter" \
   "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow" \
   "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason" \
-  "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+  "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning" \
+  ""
 
 run_runtime_diagnostics_smoke_slot \
   "published" \
   "$resolved_runtime_diagnostics_smoke_published_test_filter" \
   "" \
   "" \
-  ""
+  "" \
+  "$resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success"

@@ -969,6 +969,24 @@ fn logCpuPublishWarningKv(snapshot: CpuRouteDiagnosticsSnapshot) void {
     );
 }
 
+fn logCpuPublishSuccessKv(
+    snapshot: CpuRouteDiagnosticsSnapshot,
+    publish_pending: bool,
+) void {
+    const last_cpu_frame_ms = snapshot.last_cpu_frame_ms orelse return;
+    log.warn(
+        "software renderer cpu publish success kv last_cpu_frame_ms={} retry_count={} publish_pending={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
+        .{
+            last_cpu_frame_ms,
+            snapshot.publish_retry_count,
+            publish_pending,
+            snapshot.shader_capability_observed,
+            snapshot.shader_capability_available,
+            snapshot.shader_minimal_runtime_enabled,
+        },
+    );
+}
+
 fn softwareCpuRouteDisableScope(reason: SoftwareCpuRouteDisableReason) []const u8 {
     return switch (reason) {
         .build_cpu_route_unavailable, .build_renderer_not_software => "build",
@@ -3915,6 +3933,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                                     );
                                     logCpuPublishWarningKv(warning_snapshot);
                                 }
+                                logCpuPublishSuccessKv(
+                                    self.cpu_route_diagnostics.snapshot(),
+                                    self.cpu_publish_pending,
+                                );
                             }
                         }
                     },
@@ -7166,6 +7188,7 @@ test "cpu route diagnostics kv helpers emit structured logs" {
     snapshot.last_cpu_publish_latency_warning_frame_ms = 17;
     snapshot.last_cpu_publish_latency_warning_consecutive_count =
         cpu_frame_publish_warning_consecutive_limit;
+    snapshot.last_cpu_frame_ms = 17;
     snapshot.shader_capability_observed = true;
     snapshot.shader_capability_available = true;
     snapshot.shader_minimal_runtime_enabled = true;
@@ -7173,6 +7196,7 @@ test "cpu route diagnostics kv helpers emit structured logs" {
     logCpuDamageOverflowKv(snapshot);
     logCpuPublishRetryKv(snapshot, true);
     logCpuPublishWarningKv(snapshot);
+    logCpuPublishSuccessKv(snapshot, false);
 }
 
 const DrawFrameSmokePipeline = struct {};

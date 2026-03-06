@@ -368,14 +368,16 @@ case_dry_run_runtime_diagnostics_expectations_passthrough() {
     SR_CI_DRY_RUN=true \
     SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW=1 \
     SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON=mailbox_backpressure \
-    SR_CI_EXPECT_CPU_PUBLISH_WARNING=true; then
+    SR_CI_EXPECT_CPU_PUBLISH_WARNING=true \
+    SR_CI_EXPECT_CPU_PUBLISH_SUCCESS=true; then
     fail "dry-run with runtime diagnostics expectations should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics expect-damage-overflow=1 expect-publish-retry-reason=mailbox_backpressure expect-publish-warning=true" "dry-run runtime diagnostics summary"
+  assert_contains "$output" "runtime-diagnostics expect-damage-overflow=1 expect-publish-retry-reason=mailbox_backpressure expect-publish-warning=true expect-publish-success=true" "dry-run runtime diagnostics summary"
   assert_contains "$output" "--expect-cpu-damage-overflow 1" "dry-run cpu damage overflow expect arg"
   assert_contains "$output" "--expect-cpu-publish-retry-reason mailbox_backpressure" "dry-run cpu publish retry expect arg"
   assert_contains "$output" "--expect-cpu-publish-warning true" "dry-run cpu publish warning expect arg"
+  assert_contains "$output" "--expect-cpu-publish-success true" "dry-run cpu publish success expect arg"
   pass "dry-run passes runtime diagnostics expectations"
 }
 
@@ -440,13 +442,15 @@ case_dry_run_runtime_diagnostics_published_smoke_passthrough() {
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER="drawFrame software cpu smoke published frame clears pending state and finalizes unloading background"; then
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER="drawFrame software cpu smoke published frame clears pending state and finalizes unloading background" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS=true; then
     fail "dry-run with published runtime diagnostics smoke should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics-smoke-published filter=drawFrame software cpu smoke published frame clears pending state and finalizes unloading background expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset>" "dry-run published runtime diagnostics smoke summary"
+  assert_contains "$output" "runtime-diagnostics-smoke-published filter=drawFrame software cpu smoke published frame clears pending state and finalizes unloading background expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset> expect-publish-success=true" "dry-run published runtime diagnostics smoke summary"
   assert_contains "$output" "dry-run compat-check published smoke command" "dry-run published runtime diagnostics smoke command"
   assert_contains "$output" "--test-filter drawFrame\\ software\\ cpu\\ smoke\\ published\\ frame\\ clears\\ pending\\ state\\ and\\ finalizes\\ unloading\\ background" "dry-run published runtime diagnostics smoke filter arg"
+  assert_contains "$output" "--expect-cpu-publish-success true" "dry-run published runtime diagnostics smoke success arg"
   pass "dry-run passes published runtime diagnostics smoke filter"
 }
 
@@ -506,6 +510,20 @@ case_runtime_diagnostics_secondary_smoke_expectations_require_filter() {
 
   assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER is required when secondary smoke expectations are provided" "secondary runtime diagnostics smoke filter requirement"
   pass "secondary runtime diagnostics smoke expectations require filter"
+}
+
+case_runtime_diagnostics_published_smoke_expectations_require_filter() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS=true; then
+    fail "published runtime diagnostics smoke expectations without filter should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER is required when published smoke expectations are provided" "published runtime diagnostics smoke filter requirement"
+  pass "published runtime diagnostics smoke expectations require filter"
 }
 
 case_runtime_diagnostics_legacy_and_primary_smoke_conflict_fails() {
@@ -681,6 +699,20 @@ case_expect_cpu_publish_warning_invalid_fails() {
   pass "invalid cpu publish warning expectation fails fast"
 }
 
+case_expect_cpu_publish_success_invalid_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_EXPECT_CPU_PUBLISH_SUCCESS=maybe; then
+    fail "invalid cpu publish success expectation should fail"
+  fi
+
+  assert_contains "$output" "invalid SR_CI_EXPECT_CPU_PUBLISH_SUCCESS: maybe (expected: true|false)" "invalid cpu publish success expectation"
+  pass "invalid cpu publish success expectation fails fast"
+}
+
 case_force_allow_legacy_os_invalid_fails() {
   local output
   if run_with_env output \
@@ -770,6 +802,7 @@ test_cases=(
   case_runtime_diagnostics_legacy_smoke_expectations_require_filter
   case_runtime_diagnostics_primary_smoke_expectations_require_filter
   case_runtime_diagnostics_secondary_smoke_expectations_require_filter
+  case_runtime_diagnostics_published_smoke_expectations_require_filter
   case_runtime_diagnostics_legacy_and_primary_smoke_conflict_fails
   case_dry_run_cpu_frame_damage_mode_passthrough
   case_dry_run_cpu_damage_rect_cap_passthrough
@@ -782,6 +815,7 @@ test_cases=(
   case_expect_cpu_damage_overflow_invalid_fails
   case_expect_cpu_damage_overflow_too_large_fails
   case_expect_cpu_publish_warning_invalid_fails
+  case_expect_cpu_publish_success_invalid_fails
   case_force_allow_legacy_os_invalid_fails
   case_dry_run_cpu_shader_reprobe_interval_frames_passthrough
   case_dry_run_cpu_shader_reprobe_interval_zero_passthrough

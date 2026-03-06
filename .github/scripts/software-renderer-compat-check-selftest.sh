@@ -105,6 +105,7 @@ pub const software_renderer_route_backend = .${route_backend};"
     echo "software renderer cpu damage kv frame_damage_mode=rects rect_count=3 overflow_count=1 damage_rect_cap=64"
     echo "software renderer cpu publish retry kv reason=mailbox_backpressure retry_count=4 invalid_surface_count=1 pool_retired_pressure_count=1 frame_pool_exhausted_count=1 mailbox_backpressure_count=1"
     echo "software renderer cpu publish warning kv last_cpu_frame_ms=17 threshold_ms=40 consecutive=3 warning_count=1 shader_capability_observed=true shader_capability_available=true shader_minimal_runtime_enabled=true"
+    echo "software renderer cpu publish success kv last_cpu_frame_ms=17 retry_count=4 publish_pending=false shader_capability_observed=true shader_capability_available=true shader_minimal_runtime_enabled=true"
     exit 0
     ;;
   toolchain-linker-pic)
@@ -238,7 +239,8 @@ case_blackbox_success_smoke() {
     --expect-cpu-shader-capability-status available \
     --expect-cpu-damage-overflow 1 \
     --expect-cpu-publish-retry-reason mailbox_backpressure \
-    --expect-cpu-publish-warning true; then
+    --expect-cpu-publish-warning true \
+    --expect-cpu-publish-success true; then
     fail "blackbox success smoke should pass"
   fi
 
@@ -352,6 +354,45 @@ case_runtime_publish_warning_missing_detected() {
   pass "runtime publish warning missing classified correctly"
 }
 
+case_runtime_publish_success_missing_detected() {
+  local output
+  if run_with_fake_zig output \
+    runtime-log-missing \
+    --mode build \
+    --expect-cpu-publish-success true; then
+    fail "runtime publish success missing should fail"
+  fi
+
+  assert_contains "$output" "failure-class=assertion runtime-log-missing" "runtime publish success missing"
+  pass "runtime publish success missing classified correctly"
+}
+
+case_runtime_publish_success_false_succeeds_without_log() {
+  local output
+  if ! run_with_fake_zig output \
+    runtime-log-missing \
+    --mode build \
+    --expect-cpu-publish-success false; then
+    fail "runtime publish success false expectation should pass without success log"
+  fi
+
+  assert_contains "$output" "[software-compat] cpu-publish-success assertion matched" "runtime publish success false"
+  pass "runtime publish success false expectation passes"
+}
+
+case_runtime_publish_success_false_detects_unexpected_log() {
+  local output
+  if run_with_fake_zig output \
+    success \
+    --mode build \
+    --expect-cpu-publish-success false; then
+    fail "runtime publish success false should fail when success log exists"
+  fi
+
+  assert_contains "$output" "failure-class=assertion runtime-log-mismatch" "runtime publish success false mismatch"
+  pass "runtime publish success false detects unexpected log"
+}
+
 case_runtime_publish_warning_false_succeeds_without_log() {
   local output
   if ! run_with_fake_zig output \
@@ -404,6 +445,19 @@ case_expect_cpu_publish_warning_invalid_fails_fast() {
   pass "invalid cpu publish warning fails fast"
 }
 
+case_expect_cpu_publish_success_invalid_fails_fast() {
+  local output
+  if run_with_fake_zig output \
+    success \
+    --mode build \
+    --expect-cpu-publish-success maybe; then
+    fail "invalid cpu publish success should fail"
+  fi
+
+  assert_contains "$output" "invalid --expect-cpu-publish-success: maybe (expected: true|false)" "invalid cpu publish success"
+  pass "invalid cpu publish success fails fast"
+}
+
 case_expect_cpu_damage_overflow_too_large_fails_fast() {
   local output
   if run_with_fake_zig output \
@@ -427,10 +481,14 @@ test_cases=(
   case_runtime_damage_overflow_zero_detects_unexpected_log
   case_runtime_publish_retry_mismatch_detected
   case_runtime_publish_warning_missing_detected
+  case_runtime_publish_success_missing_detected
+  case_runtime_publish_success_false_succeeds_without_log
+  case_runtime_publish_success_false_detects_unexpected_log
   case_runtime_publish_warning_false_succeeds_without_log
   case_runtime_publish_warning_false_detects_unexpected_log
   case_expect_cpu_publish_retry_reason_invalid_fails_fast
   case_expect_cpu_publish_warning_invalid_fails_fast
+  case_expect_cpu_publish_success_invalid_fails_fast
   case_expect_cpu_damage_overflow_too_large_fails_fast
   case_drawframe_test_filter_passthrough_in_cmd
   case_helper_test_filter_passthrough_in_cmd

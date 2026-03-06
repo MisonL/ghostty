@@ -37,6 +37,7 @@ Usage:
     [--expect-cpu-publish-retry-reason <invalid_surface|pool_retired_pressure|frame_pool_exhausted|mailbox_backpressure>] \
     [--expect-cpu-damage-overflow <u64>] \
     [--expect-cpu-publish-warning <true|false>] \
+    [--expect-cpu-publish-success <true|false>] \
     [--expect-software-route-backend <opengl|metal>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
@@ -70,7 +71,7 @@ EOF
 
 option_requires_value() {
   case "$1" in
-    --mode|--transport|--test-filter|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
+    --mode|--transport|--test-filter|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-cpu-publish-success|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
       return 0
       ;;
     *)
@@ -226,6 +227,7 @@ expect_cpu_publish_warning_consecutive_limit=""
 expect_cpu_publish_retry_reason=""
 expect_cpu_damage_overflow=""
 expect_cpu_publish_warning=""
+expect_cpu_publish_success=""
 expect_software_route_backend=""
 app_runtime=""
 system_path=""
@@ -492,6 +494,14 @@ while (($# > 0)); do
       ;;
     --expect-cpu-publish-warning)
       expect_cpu_publish_warning="${2:-}"
+      shift 2
+      ;;
+    --expect-cpu-publish-success=*)
+      expect_cpu_publish_success="${1#*=}"
+      shift
+      ;;
+    --expect-cpu-publish-success)
+      expect_cpu_publish_success="${2:-}"
       shift 2
       ;;
     --expect-software-route-backend=*)
@@ -775,6 +785,11 @@ if [[ -n "$expect_cpu_publish_warning" && "$expect_cpu_publish_warning" != "true
   exit 2
 fi
 
+if [[ -n "$expect_cpu_publish_success" && "$expect_cpu_publish_success" != "true" && "$expect_cpu_publish_success" != "false" ]]; then
+  echo "invalid --expect-cpu-publish-success: $expect_cpu_publish_success (expected: true|false)" >&2
+  exit 2
+fi
+
 if [[ -n "$expect_software_route_backend" && "$expect_software_route_backend" != "opengl" && "$expect_software_route_backend" != "metal" ]]; then
   echo "invalid --expect-software-route-backend: $expect_software_route_backend (expected: opengl|metal)" >&2
   exit 2
@@ -799,7 +814,7 @@ if [[ -n "$expected_host_os" && "$expected_host_os" != "linux" && "$expected_hos
   exit 2
 fi
 
-if [[ "$mismatch_policy" == "skip" ]] && [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_reprobe_interval_frames" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_cpu_publish_warning_threshold_ms" || -n "$expect_cpu_publish_warning_consecutive_limit" || -n "$expect_cpu_publish_retry_reason" || -n "$expect_cpu_damage_overflow" || -n "$expect_cpu_publish_warning" || -n "$expect_software_route_backend" ]]; then
+if [[ "$mismatch_policy" == "skip" ]] && [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_reprobe_interval_frames" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_cpu_publish_warning_threshold_ms" || -n "$expect_cpu_publish_warning_consecutive_limit" || -n "$expect_cpu_publish_retry_reason" || -n "$expect_cpu_damage_overflow" || -n "$expect_cpu_publish_warning" || -n "$expect_cpu_publish_success" || -n "$expect_software_route_backend" ]]; then
   echo "[software-compat] warning: mismatch-policy=skip with --expect-* may bypass assertions on host/target mismatch."
 fi
 
@@ -1340,6 +1355,57 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     fi
 
     echo "[software-compat] cpu-publish-warning assertion matched"
+  fi
+
+  if [[ -n "$expect_cpu_publish_success" ]]; then
+    publish_success_line="$(grep -E 'software renderer cpu publish success kv ' "$log_file" | tail -n 1 || true)"
+    publish_success_present="false"
+    publish_success_pending="unknown"
+    publish_success_retry_count="unknown"
+    publish_success_frame_ms="unknown"
+    if [[ -n "$publish_success_line" ]]; then
+      publish_success_present="true"
+      publish_success_pending="$(extract_log_kv_field "$publish_success_line" "publish_pending" || true)"
+      publish_success_retry_count="$(extract_log_kv_field "$publish_success_line" "retry_count" || true)"
+      publish_success_frame_ms="$(extract_log_kv_field "$publish_success_line" "last_cpu_frame_ms" || true)"
+    fi
+
+    echo "[software-compat] publish-success-log-snapshot present=$publish_success_present publish_pending=$publish_success_pending retry_count=$publish_success_retry_count last_cpu_frame_ms=$publish_success_frame_ms"
+
+    if [[ "$expect_cpu_publish_success" == "true" && "$publish_success_present" != "true" ]]; then
+      report_failure \
+        "assertion runtime-log-missing" \
+        "expected structured cpu publish success kv log line was not found" \
+        "expected-success=$expect_cpu_publish_success"
+    fi
+    if [[ "$expect_cpu_publish_success" == "false" && "$publish_success_present" != "false" ]]; then
+      report_failure \
+        "assertion runtime-log-mismatch" \
+        "cpu publish success presence mismatch in runtime logs" \
+        "expected=$expect_cpu_publish_success actual=$publish_success_present line=$publish_success_line"
+    fi
+    if [[ "$expect_cpu_publish_success" == "true" ]]; then
+      if [[ "$publish_success_pending" != "false" ]]; then
+        report_failure \
+          "assertion runtime-log-mismatch" \
+          "cpu publish success pending state mismatch in runtime logs" \
+          "expected=false actual=${publish_success_pending:-<unset>} line=$publish_success_line"
+      fi
+      if [[ -z "$publish_success_frame_ms" || ! "$publish_success_frame_ms" =~ ^[0-9]+$ ]]; then
+        report_failure \
+          "assertion runtime-log-mismatch" \
+          "cpu publish success frame latency missing or invalid in runtime logs" \
+          "actual=${publish_success_frame_ms:-<unset>} line=$publish_success_line"
+      fi
+      if [[ -z "$publish_success_retry_count" || ! "$publish_success_retry_count" =~ ^[0-9]+$ ]]; then
+        report_failure \
+          "assertion runtime-log-mismatch" \
+          "cpu publish success retry count missing or invalid in runtime logs" \
+          "actual=${publish_success_retry_count:-<unset>} line=$publish_success_line"
+      fi
+    fi
+
+    echo "[software-compat] cpu-publish-success assertion matched"
   fi
 
   echo "[software-compat] success"
