@@ -7566,6 +7566,36 @@ const DrawFrameSmokeFixture = struct {
 
         return released;
     }
+
+    fn fillAppQueue(self: *DrawFrameSmokeFixture) usize {
+        var count: usize = 0;
+        while (self.app_queue.push(.quit, .instant) > 0) {
+            count += 1;
+        }
+
+        return count;
+    }
+
+    fn initSingleCellGrid(
+        self: *DrawFrameSmokeFixture,
+        rgba: DrawFrameSmokeShaderPkg.CellBg,
+    ) !void {
+        try self.renderer.cells.resize(self.renderer.alloc, .{
+            .rows = 1,
+            .columns = 1,
+        });
+        self.renderer.uniforms.grid_size = .{ 1, 1 };
+        self.renderer.cells.bgCell(0, 0).* = rgba;
+    }
+
+    fn setConfiguredBgImagePath(
+        self: *DrawFrameSmokeFixture,
+        path: []const u8,
+    ) !void {
+        self.renderer.config.bg_image = .{
+            .required = try self.renderer.config.arena.allocator().dupeZ(u8, path),
+        };
+    }
 };
 
 test "drawFrame software cpu smoke retries exhausted pool and clears platform transient state" {
@@ -7634,6 +7664,98 @@ test "drawFrame software cpu smoke retries exhausted pool and clears platform tr
     }
 }
 
+test "drawFrame software cpu smoke mailbox backpressure keeps pending until platform route clears transient state" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    const filled_count = smoke.fillAppQueue();
+    try std.testing.expectEqual(@as(usize, 64), filled_count);
+
+    smoke.renderer.cpu_frame_publish_warning = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    var snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "mailbox_backpressure",
+        snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        snapshot.cpu_publish_retry_mailbox_backpressure_count,
+    );
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(usize, 0), smoke.drainSurfaceMailboxAndReleaseFrames());
+
+    smoke.renderer.config.software_renderer_experimental = false;
+    smoke.renderer.cells_rebuilt = false;
+
+    try smoke.renderer.drawFrame(false);
+
+    snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), smoke.renderer.cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!smoke.renderer.cpu_frame_publish_warning.warned);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_end_count);
+}
+
+test "drawFrame software cpu smoke zero surface returns before invalid surface retry" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    smoke.renderer.api.surface_size = .{
+        .width = 0,
+        .height = surface_size.height,
+    };
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    const snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.cpu_publish_retry_invalid_surface_count);
+    try std.testing.expect(smoke.renderer.cpu_frame_pool == null);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+}
+
 test "drawFrame software cpu smoke published frame clears pending state and finalizes unloading background" {
     if (build_config.renderer != .software) return error.SkipZigTest;
     if (!software_renderer_cpu_effective) return error.SkipZigTest;
@@ -7675,6 +7797,194 @@ test "drawFrame software cpu smoke published frame clears pending state and fina
     try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
     try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
     try std.testing.expectEqual(@as(usize, 1), smoke.drainSurfaceMailboxAndReleaseFrames());
+}
+
+test "drawFrame software cpu smoke published frame keeps unloading background slot and uses non-empty grid" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    try smoke.initSingleCellGrid(.{ 10, 20, 30, 255 });
+    try smoke.setConfiguredBgImagePath("/tmp/ghostty-smoke-bg.png");
+
+    smoke.renderer.bg_image = try makeOwnedPendingRgbaImage(
+        DrawFrameSmokeRenderer.Image,
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 255 },
+    );
+    clearConfiguredBackgroundImage(&smoke.renderer.bg_image);
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    const snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(!smoke.renderer.cells_rebuilt);
+    try std.testing.expect(smoke.renderer.bg_image != null);
+    try std.testing.expect(smoke.renderer.bg_image.?.isUnloading());
+    try std.testing.expect(smoke.renderer.cpu_text_layer != null);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.cells.size.rows);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.cells.size.columns);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(usize, 1), smoke.drainSurfaceMailboxAndReleaseFrames());
+}
+
+test "drawFrame software cpu smoke published frame route switch clears platform transient state" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    smoke.renderer.bg_image = try makeOwnedPendingRgbaImage(
+        DrawFrameSmokeRenderer.Image,
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 255 },
+    );
+    clearConfiguredBackgroundImage(&smoke.renderer.bg_image);
+    smoke.renderer.config.bg_image = null;
+    smoke.renderer.cpu_publish_pending = true;
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    var snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.bg_image == null);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+
+    smoke.renderer.cpu_publish_pending = true;
+    smoke.renderer.cpu_frame_publish_warning = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+    smoke.renderer.config.software_renderer_experimental = false;
+    smoke.renderer.cells_rebuilt = false;
+
+    try smoke.renderer.drawFrame(false);
+
+    snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), smoke.renderer.cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!smoke.renderer.cpu_frame_publish_warning.warned);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(usize, 1), smoke.drainSurfaceMailboxAndReleaseFrames());
+}
+
+test "drawFrame software cpu smoke no damage records skipped publish" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+    if (software_renderer_cpu_frame_damage_mode != .rects) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    try smoke.renderer.drawFrame(false);
+
+    const snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_skipped_no_damage_count);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+}
+
+test "drawFrame software cpu smoke pool retired pressure keeps redraw pending" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    var current_pool = try GenericRendererTestPool.init(alloc, 1, 1);
+    smoke.renderer.cpu_frame_pool = current_pool.pool;
+    const current_frame = current_pool.frame;
+    current_pool = undefined;
+
+    var retired_frames: [max_retired_cpu_frame_pools]apprt.surface.Message.SoftwareFrameReady =
+        undefined;
+    var retired_count: usize = 0;
+    defer {
+        current_frame.release();
+        for (retired_frames[0..retired_count]) |frame| frame.release();
+    }
+
+    for (0..max_retired_cpu_frame_pools) |i| {
+        var retired_pool = try GenericRendererTestPool.init(alloc, 1, 1);
+        try smoke.renderer.retired_cpu_frame_pools.append(
+            alloc,
+            retired_pool.pool,
+        );
+        retired_frames[i] = retired_pool.frame;
+        retired_pool = undefined;
+        retired_count += 1;
+    }
+
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    const snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "pool_retired_pressure",
+        snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_publish_retry_pool_pressure_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.cpu_retired_pool_pressure_warning_count);
+    try std.testing.expectEqualStrings(
+        "retired_pool_pressure",
+        snapshot.last_cpu_frame_pool_warning_reason,
+    );
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
 }
 
 const GenericRendererTestPool = struct {
