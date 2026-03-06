@@ -246,7 +246,7 @@ case_blackbox_success_smoke() {
   pass "blackbox success smoke passes"
 }
 
-case_test_filter_passthrough_in_cmd() {
+case_drawframe_test_filter_passthrough_in_cmd() {
   local output
   if ! run_with_fake_zig output \
     success \
@@ -257,7 +257,21 @@ case_test_filter_passthrough_in_cmd() {
 
   assert_contains "$output" "test-filter=drawFrame software cpu smoke" "test-filter summary"
   assert_contains "$output" "-Dtest-filter=drawFrame software cpu smoke" "test-filter cmd passthrough"
-  pass "test-filter passthrough is preserved"
+  pass "drawFrame test-filter passthrough is preserved"
+}
+
+case_helper_test_filter_passthrough_in_cmd() {
+  local output
+  if ! run_with_fake_zig output \
+    success \
+    --mode test \
+    --test-filter "cpu route diagnostics kv helpers emit structured logs"; then
+    fail "helper test-filter passthrough should succeed"
+  fi
+
+  assert_contains "$output" "test-filter=cpu route diagnostics kv helpers emit structured logs" "helper test-filter summary"
+  assert_contains "$output" "-Dtest-filter=cpu route diagnostics kv helpers emit structured logs" "helper test-filter cmd passthrough"
+  pass "helper test-filter passthrough is preserved"
 }
 
 case_test_filter_requires_test_mode() {
@@ -418,7 +432,8 @@ test_cases=(
   case_expect_cpu_publish_retry_reason_invalid_fails_fast
   case_expect_cpu_publish_warning_invalid_fails_fast
   case_expect_cpu_damage_overflow_too_large_fails_fast
-  case_test_filter_passthrough_in_cmd
+  case_drawframe_test_filter_passthrough_in_cmd
+  case_helper_test_filter_passthrough_in_cmd
   case_test_filter_requires_test_mode
   case_toolchain_linker_pic_detected
   case_xcode_build_chain_detected

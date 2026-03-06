@@ -396,7 +396,45 @@ case_dry_run_runtime_diagnostics_zero_and_false_passthrough() {
   pass "dry-run passes runtime diagnostics zero/false expectations"
 }
 
-case_dry_run_runtime_diagnostics_smoke_passthrough() {
+case_dry_run_runtime_diagnostics_primary_smoke_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON=frame_pool_exhausted; then
+    fail "dry-run with primary runtime diagnostics smoke should succeed"
+  fi
+
+  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "dry-run primary runtime diagnostics smoke summary"
+  assert_contains "$output" "dry-run compat-check primary smoke command" "dry-run primary runtime diagnostics smoke command"
+  assert_contains "$output" "--expect-cpu-publish-retry-reason frame_pool_exhausted" "dry-run primary runtime diagnostics smoke retry arg"
+  pass "dry-run passes primary runtime diagnostics smoke expectations"
+}
+
+case_dry_run_runtime_diagnostics_secondary_smoke_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER="cpu route diagnostics kv helpers emit structured logs" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW=1 \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON=mailbox_backpressure \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING=true; then
+    fail "dry-run with secondary runtime diagnostics smoke should succeed"
+  fi
+
+  assert_contains "$output" "runtime-diagnostics-smoke-secondary filter=cpu route diagnostics kv helpers emit structured logs expect-damage-overflow=1 expect-publish-retry-reason=mailbox_backpressure expect-publish-warning=true" "dry-run secondary runtime diagnostics smoke summary"
+  assert_contains "$output" "dry-run compat-check secondary smoke command" "dry-run secondary runtime diagnostics smoke command"
+  assert_contains "$output" "--expect-cpu-damage-overflow 1" "dry-run secondary runtime diagnostics smoke overflow arg"
+  assert_contains "$output" "--expect-cpu-publish-retry-reason mailbox_backpressure" "dry-run secondary runtime diagnostics smoke retry arg"
+  assert_contains "$output" "--expect-cpu-publish-warning true" "dry-run secondary runtime diagnostics smoke warning arg"
+  pass "dry-run passes secondary runtime diagnostics smoke expectations"
+}
+
+case_dry_run_runtime_diagnostics_legacy_smoke_aliases_map_to_primary() {
   local output
   if ! run_with_env output \
     SR_CI_OS=linux \
@@ -404,27 +442,69 @@ case_dry_run_runtime_diagnostics_smoke_passthrough() {
     SR_CI_DRY_RUN=true \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke" \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON=frame_pool_exhausted; then
-    fail "dry-run with runtime diagnostics smoke should succeed"
+    fail "dry-run with legacy runtime diagnostics smoke aliases should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics-smoke filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "dry-run runtime diagnostics smoke summary"
-  assert_contains "$output" "dry-run compat-check smoke command" "dry-run runtime diagnostics smoke command"
-  assert_contains "$output" "--expect-cpu-publish-retry-reason frame_pool_exhausted" "dry-run runtime diagnostics smoke retry arg"
-  pass "dry-run passes runtime diagnostics smoke expectations"
+  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "legacy smoke aliases primary summary"
+  assert_contains "$output" "dry-run compat-check primary smoke command" "legacy smoke aliases primary command"
+  pass "legacy runtime diagnostics smoke aliases map to primary"
 }
 
-case_runtime_diagnostics_smoke_expectations_require_filter() {
+case_runtime_diagnostics_legacy_smoke_expectations_require_filter() {
   local output
   if run_with_env output \
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW=1; then
-    fail "runtime diagnostics smoke expectations without filter should fail"
+    fail "legacy runtime diagnostics smoke expectations without filter should fail"
   fi
 
   assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER is required when smoke expectations are provided" "runtime diagnostics smoke filter requirement"
-  pass "runtime diagnostics smoke expectations require filter"
+  pass "legacy runtime diagnostics smoke expectations require filter"
+}
+
+case_runtime_diagnostics_primary_smoke_expectations_require_filter() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_DAMAGE_OVERFLOW=1; then
+    fail "primary runtime diagnostics smoke expectations without filter should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER is required when primary smoke expectations are provided" "primary runtime diagnostics smoke filter requirement"
+  pass "primary runtime diagnostics smoke expectations require filter"
+}
+
+case_runtime_diagnostics_secondary_smoke_expectations_require_filter() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW=1; then
+    fail "secondary runtime diagnostics smoke expectations without filter should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER is required when secondary smoke expectations are provided" "secondary runtime diagnostics smoke filter requirement"
+  pass "secondary runtime diagnostics smoke expectations require filter"
+}
+
+case_runtime_diagnostics_legacy_and_primary_smoke_conflict_fails() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER="cpu route diagnostics kv helpers emit structured logs"; then
+    fail "conflicting legacy and primary smoke config should fail"
+  fi
+
+  assert_contains "$output" "conflicting smoke configuration: SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER=drawFrame software cpu smoke but SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER=cpu route diagnostics kv helpers emit structured logs" "runtime diagnostics smoke conflict"
+  pass "conflicting legacy and primary smoke config fails fast"
 }
 
 case_dry_run_cpu_frame_damage_mode_passthrough() {
@@ -667,8 +747,13 @@ test_cases=(
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
   case_dry_run_runtime_diagnostics_expectations_passthrough
   case_dry_run_runtime_diagnostics_zero_and_false_passthrough
-  case_dry_run_runtime_diagnostics_smoke_passthrough
-  case_runtime_diagnostics_smoke_expectations_require_filter
+  case_dry_run_runtime_diagnostics_primary_smoke_passthrough
+  case_dry_run_runtime_diagnostics_secondary_smoke_passthrough
+  case_dry_run_runtime_diagnostics_legacy_smoke_aliases_map_to_primary
+  case_runtime_diagnostics_legacy_smoke_expectations_require_filter
+  case_runtime_diagnostics_primary_smoke_expectations_require_filter
+  case_runtime_diagnostics_secondary_smoke_expectations_require_filter
+  case_runtime_diagnostics_legacy_and_primary_smoke_conflict_fails
   case_dry_run_cpu_frame_damage_mode_passthrough
   case_dry_run_cpu_damage_rect_cap_passthrough
   case_cpu_damage_rect_cap_invalid_fails

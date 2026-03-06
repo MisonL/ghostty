@@ -254,7 +254,17 @@ macOS 额外必填：
   - `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW`
   - `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`
   - `SR_CI_EXPECT_CPU_PUBLISH_WARNING`
-- 真实 smoke 入口：
+- `primary` 真实 smoke 入口：
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_DAMAGE_OVERFLOW`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_WARNING`
+- `secondary` diagnostics smoke 入口：
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON`
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING`
+- 兼容保留的 `primary` 旧别名：
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER`
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW`
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON`
@@ -284,9 +294,12 @@ macOS 额外必填：
 | `SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW` | 十进制非负整数文本（运行期 `u64` 断言，`0` 表示断言“没有 overflow 日志”） | `-1`、`1.5`、`one`、`18446744073709551616` | 立即报错并退出 |
 | `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON` | `invalid_surface`、`pool_retired_pressure`、`frame_pool_exhausted`、`mailbox_backpressure` | `pressure`、`retry` | 立即报错并退出 |
 | `SR_CI_EXPECT_CPU_PUBLISH_WARNING` | `true|false` | `maybe`、`1` | 立即报错并退出 |
-| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW` | 十进制非负整数文本（运行期 `u64` smoke 断言） | `-1`、`one`、`18446744073709551616` | 立即报错并退出 |
-| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON` | `invalid_surface`、`pool_retired_pressure`、`frame_pool_exhausted`、`mailbox_backpressure` | `pressure`、`retry` | 立即报错并退出 |
-| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING` | `true|false` | `maybe`、`1` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_DAMAGE_OVERFLOW` | 十进制非负整数文本（运行期 `u64` primary smoke 断言） | `-1`、`one`、`18446744073709551616` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON` | `invalid_surface`、`pool_retired_pressure`、`frame_pool_exhausted`、`mailbox_backpressure` | `pressure`、`retry` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_WARNING` | `true|false` | `maybe`、`1` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW` | 十进制非负整数文本（运行期 `u64` secondary smoke 断言） | `-1`、`one`、`18446744073709551616` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON` | `invalid_surface`、`pool_retired_pressure`、`frame_pool_exhausted`、`mailbox_backpressure` | `pressure`、`retry` | 立即报错并退出 |
+| `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING` | `true|false` | `maybe`、`1` | 立即报错并退出 |
 
 统一失败语义：
 
@@ -294,7 +307,8 @@ macOS 额外必填：
 - 失败发生在调用 `./.github/scripts/software-renderer-compat-check.sh` 之前，属于“启动前失败”，不会进入 compat-check 执行阶段。
 - 当参数合法且被设置时，入口脚本会同时透传 `--cpu-*` 与对应 `--expect-cpu-*` 断言参数到 compat-check，确保 `options.zig` 快照值和期望一致（防止“参数传入但未生效”）。
 - 运行期 diagnostics 断言类参数不会参与 `options.zig` 校验，而是直接透传到 compat-check，对 `zig build test` 输出中的结构化日志做运行期匹配。
-- `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_*` 属于第二次 smoke 调用专用参数；若设置任意 smoke 断言而未设置 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER`，入口脚本会直接失败，避免“看起来启用了 smoke 实际没有跑”。
+- `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_*` / `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_*` 分别属于 `primary` / `secondary` 两次 smoke 调用专用参数；若设置任一槽位的 smoke 断言而未设置对应 `*_TEST_FILTER`，入口脚本会直接失败，避免“看起来启用了 smoke 实际没有跑”。
+- 旧单槽位 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_*` 变量仍作为 `primary` 兼容别名保留；若旧别名与新 `PRIMARY_*` 同时设置且值不一致，入口脚本会直接失败。
 - 对会被构建侧归一化的值，入口脚本会先对齐“生效值”再组装 `--expect-*`：
   - `SR_CI_CPU_FRAME_DAMAGE_MODE=rects` 且 `SR_CI_CPU_DAMAGE_RECT_CAP=0` 时，期望值归一化为 `1`；
   - `SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_LIMIT=0` 时，期望值归一化为 `1`。
@@ -326,13 +340,15 @@ macOS 额外必填：
 - `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`
 - `SR_CI_EXPECT_CPU_PUBLISH_WARNING`
 
-默认 CI 还可以额外跑一条“真实 smoke”：
+默认 CI 还会额外跑两条 runtime diagnostics smoke：
 
-- 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER` 把 compat-check 限定到单个 `zig build test -Dtest-filter=...` 场景；
-- 当前默认 smoke 用例是 `drawFrame software cpu smoke`；
-- 这条默认 smoke 直接走 `drawFrame -> publishCpuSoftwareFrame -> retry(frame_pool_exhausted)` 的真实链路，并在下一帧切回平台路由时验证瞬态状态被清理；
-- 默认只断言 `frame_pool_exhausted` retry reason，不再强制要求 damage overflow / publish warning 日志；
-- 这条 smoke 直接消费真实 Zig 测试输出，不依赖 fake log 夹具；
+- `primary` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER` 把 compat-check 限定到 `drawFrame software cpu smoke`；
+- `primary` 直接走 `drawFrame -> publishCpuSoftwareFrame -> retry(frame_pool_exhausted)` 的真实链路，并在下一帧切回平台路由时验证瞬态状态被清理；
+- `primary` 默认只断言 `frame_pool_exhausted` retry reason，不强制要求 damage overflow / publish warning 日志；
+- `secondary` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER` 跑 `cpu route diagnostics kv helpers emit structured logs`；
+- `secondary` 专门覆盖 `damage overflow`、`publish retry`、`publish warning` 三类结构化 diagnostics 日志断言；
+- 旧单槽位 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_*` 仍映射到 `primary`，只用于兼容已有本地调用；
+- 两条 smoke 都直接消费真实 Zig 测试输出，不依赖 fake log 夹具；
 - fake selftest 仍然保留，职责是验证脚本 parser/断言契约，而不是替代真实日志链路。
 
 这些断言都基于 `zig build test` 输出中的结构化 `kv` 日志：
