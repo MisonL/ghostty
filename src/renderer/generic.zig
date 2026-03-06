@@ -4,6 +4,7 @@ const xev = @import("xev");
 const wuffs = @import("wuffs");
 const build_config = @import("../build_config.zig");
 const apprt = @import("../apprt.zig");
+const App = @import("../App.zig");
 const configpkg = @import("../config.zig");
 const font = @import("../font/main.zig");
 const inputpkg = @import("../input.zig");
@@ -7442,97 +7443,106 @@ const DrawFrameSmokeGraphicsAPI = struct {
 
 const DrawFrameSmokeRenderer = Renderer(DrawFrameSmokeGraphicsAPI);
 
-fn makeDrawFrameSmokeRenderer(
-    alloc: Allocator,
-    surface_size: renderer.ScreenSize,
-) !DrawFrameSmokeRenderer {
-    var raw_config = try configpkg.Config.default(alloc);
-    defer raw_config.deinit();
-    raw_config.@"software-renderer-experimental" = true;
-    raw_config.@"software-renderer-presenter" = .auto;
+const DrawFrameSmokeFixture = struct {
+    renderer: DrawFrameSmokeRenderer = undefined,
+    font_grid_set: font.SharedGridSet = undefined,
+    font_grid_key: ?font.SharedGridSet.Key = null,
+    app_queue: App.Mailbox.Queue = .{},
+    rt_app: apprt.App = .{},
+    fake_surface: Surface = undefined,
+    fake_rt_surface: apprt.Surface = undefined,
+    fake_thread: renderer.Thread = undefined,
 
-    var result: DrawFrameSmokeRenderer = undefined;
-    result.alloc = alloc;
-    result.draw_mutex = .{};
-    result.config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, &raw_config);
-    result.surface_mailbox = undefined;
-    result.grid_metrics = undefined;
-    result.size = .{
-        .screen = surface_size,
-        .cell = .{
-            .width = 1,
-            .height = 1,
-        },
-        .padding = .{},
-    };
-    result.focused = false;
-    result.software_frame_publishing = true;
-    result.cpu_frame_pool = null;
-    result.cpu_text_layer = null;
-    result.retired_cpu_frame_pools = .{};
-    result.cpu_frame_generation = 0;
-    result.cpu_native_transport_warned = false;
-    result.cpu_custom_shader_mode_off_warned = false;
-    result.cpu_custom_shader_capability_unobserved_warned = false;
-    result.cpu_custom_shader_unsupported_warned = false;
-    result.cpu_custom_shader_safe_timeout_warned = false;
-    result.cpu_runtime_publishing_warned = false;
-    result.cpu_config_experimental_warned = false;
-    result.cpu_legacy_presenter_warned = false;
-    result.cpu_frame_pool_exhausted_warned = false;
-    result.cpu_retired_pool_pressure_warned = false;
-    result.cpu_frame_publish_warning = .{};
-    result.cpu_publish_pending = false;
-    result.cpu_route_diagnostics = .{};
-    result.cpu_custom_shader_probe = null;
-    result.cpu_custom_shader_reprobe_unavailable_frame_count = 0;
-    result.cpu_damage_tracker =
-        cpu_renderer.DamageTracker.init(software_renderer_cpu_damage_rect_cap);
-    result.cpu_rebuild_damage_full = true;
-    result.cpu_rebuild_damage_row_min = null;
-    result.cpu_rebuild_damage_row_max_exclusive = 0;
-    result.custom_shader_focused_changed = false;
-    result.scrollbar = .{
-        .total = 0,
-        .offset = 0,
-        .len = 0,
-    };
-    result.scrollbar_dirty = false;
-    result.last_bottom_node = null;
-    result.last_bottom_y = 0;
-    result.search_matches = null;
-    result.search_selected_match = null;
-    result.search_matches_dirty = false;
-    result.cells = undefined;
-    result.cells_rebuilt = false;
-    result.uniforms = undefined;
-    result.custom_shader_uniforms = undefined;
-    result.first_frame_time = null;
-    result.last_frame_time = null;
-    result.font_grid = undefined;
-    result.font_shaper = undefined;
-    result.font_shaper_cache = undefined;
-    result.images = .empty;
-    result.bg_image = null;
-    result.bg_image_changed = false;
-    result.bg_image_buffer = std.mem.zeroes(DrawFrameSmokeShaderPkg.BgImage);
-    result.bg_image_buffer_modified = 0;
-    result.api = .{
-        .surface_size = surface_size,
-    };
-    result.display_link = null;
-    result.health = .{ .raw = .healthy };
-    result.swap_chain = undefined;
-    result.target_config_modified = 0;
-    result.reinitialize_shaders = false;
-    result.has_custom_shaders = false;
-    result.shaders = .{};
-    result.terminal_state = .empty;
-    result.terminal_state_frame_count = 0;
-    result.overlay = null;
+    fn init(
+        self: *DrawFrameSmokeFixture,
+        alloc: Allocator,
+        surface_size: renderer.ScreenSize,
+    ) !void {
+        self.app_queue = .{};
+        self.rt_app = .{};
+        self.fake_surface = undefined;
+        self.fake_rt_surface = undefined;
+        self.fake_thread = undefined;
+        self.font_grid_key = null;
 
-    return result;
-}
+        var raw_config = try configpkg.Config.default(alloc);
+        defer raw_config.deinit();
+        raw_config.@"software-renderer-experimental" = true;
+        raw_config.@"software-renderer-presenter" = .auto;
+
+        self.font_grid_set = try font.SharedGridSet.init(alloc);
+        errdefer self.font_grid_set.deinit();
+
+        var font_config = try font.SharedGridSet.DerivedConfig.init(alloc, &raw_config);
+        defer font_config.deinit();
+
+        const font_grid_key, const font_grid = try self.font_grid_set.ref(
+            &font_config,
+            .{ .points = 12 },
+        );
+        errdefer self.font_grid_set.deref(font_grid_key);
+        self.font_grid_key = font_grid_key;
+
+        const empty_bg_cells = try alloc.alloc(DrawFrameSmokeShaderPkg.CellBg, 0);
+        errdefer alloc.free(empty_bg_cells);
+        const empty_fg_rows = try alloc.alloc(
+            std.ArrayListUnmanaged(DrawFrameSmokeShaderPkg.CellText),
+            0,
+        );
+        errdefer alloc.free(empty_fg_rows);
+
+        self.renderer = try DrawFrameSmokeRenderer.init(alloc, .{
+            .config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, &raw_config),
+            .font_grid = font_grid,
+            .size = .{
+                .screen = surface_size,
+                .cell = font_grid.cellSize(),
+                .padding = .{},
+            },
+            .surface_mailbox = .{
+                .surface = &self.fake_surface,
+                .app = .{
+                    .rt_app = &self.rt_app,
+                    .mailbox = &self.app_queue,
+                },
+            },
+            .rt_surface = &self.fake_rt_surface,
+            .thread = &self.fake_thread,
+        });
+        self.renderer.cells = .{
+            .bg_cells = empty_bg_cells,
+            .fg_rows = .{ .lists = empty_fg_rows },
+        };
+        self.renderer.cells_rebuilt = false;
+    }
+
+    fn deinit(self: *DrawFrameSmokeFixture) void {
+        _ = self.drainSurfaceMailboxAndReleaseFrames();
+        self.renderer.deinit();
+        if (self.font_grid_key) |key| self.font_grid_set.deref(key);
+        self.font_grid_set.deinit();
+        self.* = undefined;
+    }
+
+    fn drainSurfaceMailboxAndReleaseFrames(self: *DrawFrameSmokeFixture) usize {
+        var released: usize = 0;
+        while (self.app_queue.pop()) |msg| switch (msg) {
+            .surface_message => |surface_msg| {
+                _ = surface_msg.surface;
+                switch (surface_msg.message) {
+                    .software_frame_ready => |frame| {
+                        frame.release();
+                        released += 1;
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        };
+
+        return released;
+    }
+};
 
 test "drawFrame software cpu smoke retries exhausted pool and clears platform transient state" {
     if (build_config.renderer != .software) return error.SkipZigTest;
@@ -7545,11 +7555,11 @@ test "drawFrame software cpu smoke retries exhausted pool and clears platform tr
         .height = 4,
     };
 
-    var smoke = try makeDrawFrameSmokeRenderer(alloc, surface_size);
-    defer smoke.config.deinit();
-    defer smoke.cpu_damage_tracker.deinit(alloc);
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
 
-    smoke.cpu_frame_pool = try cpu_renderer.FramePool.init(
+    smoke.renderer.cpu_frame_pool = try cpu_renderer.FramePool.init(
         alloc,
         3,
         surface_size.width,
@@ -7557,50 +7567,90 @@ test "drawFrame software cpu smoke retries exhausted pool and clears platform tr
         .bgra8_premul,
         software_renderer_cpu_damage_rect_pool_capacity,
     );
-    defer if (smoke.cpu_frame_pool) |*pool| {
-        if (pool.isIdle()) pool.deinitIdle();
-    };
 
     var acquired: [3]cpu_renderer.FramePool.Acquired = undefined;
     for (&acquired) |*slot| {
-        slot.* = smoke.cpu_frame_pool.?.acquire() orelse return error.TestUnexpectedResult;
+        slot.* = smoke.renderer.cpu_frame_pool.?.acquire() orelse return error.TestUnexpectedResult;
     }
 
-    smoke.cpu_frame_publish_warning = .{
+    smoke.renderer.cpu_frame_publish_warning = .{
         .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
         .warned = true,
     };
 
-    try smoke.drawFrame(true);
+    try smoke.renderer.drawFrame(true);
 
-    const retry_snapshot = smoke.cpu_route_diagnostics.snapshot();
-    try std.testing.expect(smoke.cpu_publish_pending);
-    try std.testing.expect(smoke.cells_rebuilt);
+    const retry_snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.cells_rebuilt);
     try std.testing.expectEqual(@as(u64, 1), retry_snapshot.publish_retry_count);
     try std.testing.expectEqualStrings(
         "frame_pool_exhausted",
         retry_snapshot.last_cpu_publish_retry_reason,
     );
     try std.testing.expectEqual(@as(u64, 1), retry_snapshot.cpu_publish_retry_pool_exhausted_count);
-    try std.testing.expectEqual(@as(u32, 1), smoke.api.draw_frame_start_count);
-    try std.testing.expectEqual(@as(u32, 1), smoke.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
 
-    smoke.config.software_renderer_experimental = false;
-    smoke.cells_rebuilt = false;
+    smoke.renderer.config.software_renderer_experimental = false;
+    smoke.renderer.cells_rebuilt = false;
 
-    try smoke.drawFrame(false);
+    try smoke.renderer.drawFrame(false);
 
-    try std.testing.expect(!smoke.cpu_publish_pending);
-    try std.testing.expectEqual(@as(u8, 0), smoke.cpu_frame_publish_warning.consecutive_over_threshold);
-    try std.testing.expect(!smoke.cpu_frame_publish_warning.warned);
-    try std.testing.expectEqual(@as(u32, 1), smoke.api.present_last_target_count);
-    try std.testing.expectEqual(@as(u32, 2), smoke.api.draw_frame_start_count);
-    try std.testing.expectEqual(@as(u32, 2), smoke.api.draw_frame_end_count);
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), smoke.renderer.cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!smoke.renderer.cpu_frame_publish_warning.warned);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_end_count);
 
     for (&acquired, 0..) |*slot, i| {
-        const frame = smoke.cpu_frame_pool.?.publish(slot, @intCast(i), &.{});
+        const frame = smoke.renderer.cpu_frame_pool.?.publish(slot, @intCast(i), &.{});
         frame.release();
     }
+}
+
+test "drawFrame software cpu smoke published frame clears pending state and finalizes unloading background" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    smoke.renderer.bg_image = try makeOwnedPendingRgbaImage(
+        DrawFrameSmokeRenderer.Image,
+        alloc,
+        1,
+        1,
+        &.{ 1, 2, 3, 255 },
+    );
+    clearConfiguredBackgroundImage(&smoke.renderer.bg_image);
+    try std.testing.expect(smoke.renderer.bg_image != null);
+    try std.testing.expect(smoke.renderer.bg_image.?.isUnloading());
+
+    smoke.renderer.config.bg_image = null;
+    smoke.renderer.cpu_publish_pending = true;
+    smoke.renderer.cells_rebuilt = true;
+
+    try smoke.renderer.drawFrame(true);
+
+    const snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(!smoke.renderer.cells_rebuilt);
+    try std.testing.expect(smoke.renderer.bg_image == null);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.publish_retry_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.draw_frame_end_count);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(usize, 1), smoke.drainSurfaceMailboxAndReleaseFrames());
 }
 
 const GenericRendererTestPool = struct {
