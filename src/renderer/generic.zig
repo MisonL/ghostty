@@ -158,8 +158,18 @@ fn cpuCellPixelOrigin(base_px: u32, cell_px: u32, index: usize) ?u32 {
     return std.math.add(u32, base_px, offset_px) catch return null;
 }
 
+fn bgImageOrNull(bg_image: anytype) ?switch (@typeInfo(@TypeOf(bg_image))) {
+    .optional => |info| info.child,
+    else => @TypeOf(bg_image),
+} {
+    return switch (@typeInfo(@TypeOf(bg_image))) {
+        .optional => bg_image,
+        else => bg_image,
+    };
+}
+
 fn needsFrameBgImageBuffer(bg_image: anytype) bool {
-    const image = bg_image orelse return false;
+    const image = bgImageOrNull(bg_image) orelse return false;
     return switch (image) {
         .ready => true,
         else => false,
@@ -186,7 +196,7 @@ fn bgImageRequiresConservativeFullCpuDamage(
     bg_image: anytype,
     config_has_bg_image: bool,
 ) bool {
-    const image = bg_image orelse return false;
+    const image = bgImageOrNull(bg_image) orelse return false;
     return config_has_bg_image or image.isUnloading();
 }
 
@@ -973,7 +983,7 @@ fn logCpuPublishSuccessKv(
     snapshot: CpuRouteDiagnosticsSnapshot,
     publish_pending: bool,
 ) void {
-    const last_cpu_frame_ms = snapshot.last_cpu_frame_ms orelse return;
+    const last_cpu_frame_ms = snapshot.last_cpu_frame_ms orelse 0;
     log.warn(
         "software renderer cpu publish success kv last_cpu_frame_ms={} retry_count={} publish_pending={} shader_capability_observed={} shader_capability_available={} shader_minimal_runtime_enabled={}",
         .{
@@ -3805,6 +3815,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // If either of our surface dimensions is zero
             // then drawing is absurd, so we just return.
+            //
+            // This means publishCpuSoftwareFrame(.retry = .invalid_surface)
+            // is not reachable through drawFrame(); the helper still guards
+            // against invalid dimensions for any future direct callers.
             if (surface_size.width == 0 or surface_size.height == 0) return;
 
             const size_changed =
