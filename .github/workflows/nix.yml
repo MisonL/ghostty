@@ -1,8 +1,5 @@
 on:
-  push:
-    branches-ignore:
-      - "**"
-  pull_request: {}
+  workflow_dispatch: {}
 name: Nix
 
 concurrency:
