@@ -402,12 +402,12 @@ case_dry_run_runtime_diagnostics_primary_smoke_passthrough() {
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER="drawFrame software cpu smoke retries exhausted pool and clears platform transient state" \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_EXPECT_CPU_PUBLISH_RETRY_REASON=frame_pool_exhausted; then
     fail "dry-run with primary runtime diagnostics smoke should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "dry-run primary runtime diagnostics smoke summary"
+  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke retries exhausted pool and clears platform transient state expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "dry-run primary runtime diagnostics smoke summary"
   assert_contains "$output" "dry-run compat-check primary smoke command" "dry-run primary runtime diagnostics smoke command"
   assert_contains "$output" "--expect-cpu-publish-retry-reason frame_pool_exhausted" "dry-run primary runtime diagnostics smoke retry arg"
   pass "dry-run passes primary runtime diagnostics smoke expectations"
@@ -434,18 +434,34 @@ case_dry_run_runtime_diagnostics_secondary_smoke_passthrough() {
   pass "dry-run passes secondary runtime diagnostics smoke expectations"
 }
 
+case_dry_run_runtime_diagnostics_published_smoke_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER="drawFrame software cpu smoke published frame clears pending state and finalizes unloading background"; then
+    fail "dry-run with published runtime diagnostics smoke should succeed"
+  fi
+
+  assert_contains "$output" "runtime-diagnostics-smoke-published filter=drawFrame software cpu smoke published frame clears pending state and finalizes unloading background expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset>" "dry-run published runtime diagnostics smoke summary"
+  assert_contains "$output" "dry-run compat-check published smoke command" "dry-run published runtime diagnostics smoke command"
+  assert_contains "$output" "--test-filter drawFrame software cpu smoke published frame clears pending state and finalizes unloading background" "dry-run published runtime diagnostics smoke filter arg"
+  pass "dry-run passes published runtime diagnostics smoke filter"
+}
+
 case_dry_run_runtime_diagnostics_legacy_smoke_aliases_map_to_primary() {
   local output
   if ! run_with_env output \
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke retries exhausted pool and clears platform transient state" \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON=frame_pool_exhausted; then
     fail "dry-run with legacy runtime diagnostics smoke aliases should succeed"
   fi
 
-  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "legacy smoke aliases primary summary"
+  assert_contains "$output" "runtime-diagnostics-smoke-primary filter=drawFrame software cpu smoke retries exhausted pool and clears platform transient state expect-damage-overflow=<unset> expect-publish-retry-reason=frame_pool_exhausted expect-publish-warning=<unset>" "legacy smoke aliases primary summary"
   assert_contains "$output" "dry-run compat-check primary smoke command" "legacy smoke aliases primary command"
   pass "legacy runtime diagnostics smoke aliases map to primary"
 }
@@ -498,12 +514,12 @@ case_runtime_diagnostics_legacy_and_primary_smoke_conflict_fails() {
     SR_CI_OS=linux \
     SR_CI_TRANSPORT_MODE=auto \
     SR_CI_DRY_RUN=true \
-    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="drawFrame software cpu smoke retries exhausted pool and clears platform transient state" \
     SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER="cpu route diagnostics kv helpers emit structured logs"; then
     fail "conflicting legacy and primary smoke config should fail"
   fi
 
-  assert_contains "$output" "conflicting smoke configuration: SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER=drawFrame software cpu smoke but SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER=cpu route diagnostics kv helpers emit structured logs" "runtime diagnostics smoke conflict"
+  assert_contains "$output" "conflicting smoke configuration: SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER=drawFrame software cpu smoke retries exhausted pool and clears platform transient state but SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER=cpu route diagnostics kv helpers emit structured logs" "runtime diagnostics smoke conflict"
   pass "conflicting legacy and primary smoke config fails fast"
 }
 

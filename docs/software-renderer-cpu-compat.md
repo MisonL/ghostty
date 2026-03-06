@@ -264,6 +264,8 @@ macOS 额外必填：
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW`
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON`
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING`
+- `published` 真实 smoke 入口：
+  - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER`
 - 兼容保留的 `primary` 旧别名：
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER`
   - `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW`
@@ -340,15 +342,17 @@ macOS 额外必填：
 - `SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON`
 - `SR_CI_EXPECT_CPU_PUBLISH_WARNING`
 
-默认 CI 还会额外跑两条 runtime diagnostics smoke：
+默认 CI 还会额外跑三条 runtime diagnostics smoke：
 
-- `primary` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER` 把 compat-check 限定到 `drawFrame software cpu smoke`；
+- `primary` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PRIMARY_TEST_FILTER` 把 compat-check 限定到 `drawFrame software cpu smoke retries exhausted pool and clears platform transient state`；
 - `primary` 直接走 `drawFrame -> publishCpuSoftwareFrame -> retry(frame_pool_exhausted)` 的真实链路，并在下一帧切回平台路由时验证瞬态状态被清理；
 - `primary` 默认只断言 `frame_pool_exhausted` retry reason，不强制要求 damage overflow / publish warning 日志；
 - `secondary` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_TEST_FILTER` 跑 `cpu route diagnostics kv helpers emit structured logs`；
 - `secondary` 专门覆盖 `damage overflow`、`publish retry`、`publish warning` 三类结构化 diagnostics 日志断言；
+- `published` 通过 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER` 跑 `drawFrame software cpu smoke published frame clears pending state and finalizes unloading background`；
+- `published` 覆盖真实 `drawFrame -> publishCpuSoftwareFrame -> published` 成功链路，验证发布后会清理 pending 状态并 finalize unloading background；
 - 旧单槽位 `SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_*` 仍映射到 `primary`，只用于兼容已有本地调用；
-- 两条 smoke 都直接消费真实 Zig 测试输出，不依赖 fake log 夹具；
+- 三条 smoke 都直接消费真实 Zig 测试输出，不依赖 fake log 夹具；
 - fake selftest 仍然保留，职责是验证脚本 parser/断言契约，而不是替代真实日志链路。
 
 这些断言都基于 `zig build test` 输出中的结构化 `kv` 日志：

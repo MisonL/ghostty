@@ -135,6 +135,7 @@ runtime_diagnostics_smoke_secondary_test_filter="${SR_CI_RUNTIME_DIAGNOSTICS_SMO
 runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
 runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
 runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING:-}"
+runtime_diagnostics_smoke_published_test_filter="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
 dry_run="${SR_CI_DRY_RUN:-false}"
 
@@ -251,6 +252,7 @@ resolved_runtime_diagnostics_smoke_secondary_test_filter="$runtime_diagnostics_s
 resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason="$runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason"
 resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow="$runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow"
 resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning="$runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+resolved_runtime_diagnostics_smoke_published_test_filter="$runtime_diagnostics_smoke_published_test_filter"
 
 if [[ -z "$resolved_runtime_diagnostics_smoke_primary_test_filter" && ( -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" || -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" || -n "$resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" ) ]]; then
   if [[ -n "$runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason" || -n "$runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow" || -n "$runtime_diagnostics_smoke_primary_expect_cpu_publish_warning" || -n "$runtime_diagnostics_smoke_primary_test_filter" ]]; then
@@ -391,6 +393,7 @@ echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-route frame-damage-mode=$res
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflow=${expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${expect_cpu_publish_warning:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-primary filter=${resolved_runtime_diagnostics_smoke_primary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-secondary filter=${resolved_runtime_diagnostics_smoke_secondary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning:-<unset>}"
+echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-published filter=${resolved_runtime_diagnostics_smoke_published_test_filter:-<unset>} expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset>"
 if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
 elif [[ "$target_is_legacy_os" == "true" ]]; then
@@ -577,3 +580,10 @@ run_runtime_diagnostics_smoke_slot \
   "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow" \
   "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason" \
   "$resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning"
+
+run_runtime_diagnostics_smoke_slot \
+  "published" \
+  "$resolved_runtime_diagnostics_smoke_published_test_filter" \
+  "" \
+  "" \
+  ""
