@@ -1077,6 +1077,19 @@ pub const Image = DefaultImage.Image;
 const DefaultGraphicsAPI = renderer.Renderer.API;
 const DefaultTexture = DefaultGraphicsAPI.Texture;
 
+fn fakeReadyDefaultTexture() DefaultTexture {
+    if (@hasField(DefaultTexture, "id")) {
+        return .{ .id = 1 };
+    }
+
+    return .{
+        .texture = undefined,
+        .width = 0,
+        .height = 0,
+        .bpp = 0,
+    };
+}
+
 test "renderer.image: cpuPixels returns pending pixels and can repopulate same transmit_time when forced" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -1121,7 +1134,7 @@ test "renderer.image: cpuPixels returns pending pixels and can repopulate same t
     // Simulate "same transmit_time but no pending pixels".
     const existing = state.images.getPtr(.overlay).?;
     alloc.free(existing.image.getPending().?.dataSlice());
-    existing.image = .{ .ready = std.mem.zeroes(DefaultTexture) };
+    existing.image = .{ .ready = fakeReadyDefaultTexture() };
 
     var second_pixels = [_]u8{ 9, 10, 11, 12 };
     try state.prepImage(
@@ -1175,7 +1188,7 @@ test "renderer.image: prepImage skips identical transmit_time by default when pe
 
     const existing = state.images.getPtr(.overlay).?;
     alloc.free(existing.image.getPending().?.dataSlice());
-    existing.image = .{ .ready = std.mem.zeroes(DefaultTexture) };
+    existing.image = .{ .ready = fakeReadyDefaultTexture() };
 
     var second_pixels = [_]u8{ 9, 10, 11, 12 };
     try state.prepImage(
@@ -1271,7 +1284,7 @@ test "renderer.image: kittyNeedsCpuPixels reports ready images without pending d
 
     const entry = state.images.getPtr(.{ .kitty = 7 }).?;
     alloc.free(entry.image.getPending().?.dataSlice());
-    entry.image = .{ .ready = std.mem.zeroes(DefaultTexture) };
+    entry.image = .{ .ready = fakeReadyDefaultTexture() };
 
     try testing.expect(state.kittyNeedsCpuPixels());
 }

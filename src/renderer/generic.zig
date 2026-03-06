@@ -6105,7 +6105,7 @@ test "cpuCellPixelOrigin rejects offset and base overflow" {
 }
 
 test "needsFrameBgImageBuffer only enables for ready image" {
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
 
     try std.testing.expect(!needsFrameBgImageBuffer(@as(?TestImage, null)));
     try std.testing.expect(!needsFrameBgImageBuffer(TestImage{ .pending = undefined }));
@@ -6136,7 +6136,7 @@ fn makeOwnedPendingRgbaImage(
 
 test "applyPreparedBackgroundImage stores first pending image" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = null;
     defer if (bg_image) |*image| image.deinit(alloc);
 
@@ -6157,7 +6157,7 @@ test "applyPreparedBackgroundImage stores first pending image" {
 
 test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBackgroundImage marks unload" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -6195,7 +6195,7 @@ test "applyPreparedBackgroundImage replaces pending image and clearConfiguredBac
 
 test "bg image unload boundary still forces full cpu damage" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -6220,7 +6220,7 @@ test "bg image unload boundary still forces full cpu damage" {
 
 test "partial cpu row damage resumes after bg image slot is cleared" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -6240,7 +6240,7 @@ test "partial cpu row damage resumes after bg image slot is cleared" {
 
 test "background image prepare failure clears stale unload slot" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -6277,7 +6277,7 @@ test "clear cpu route transient state resets stale pending publish and warnings"
 
 test "cpu publish retry keeps redraw pending without clearing unloading background image" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -6307,7 +6307,7 @@ test "cpu publish retry keeps redraw pending without clearing unloading backgrou
 
 test "published cpu frame finalizes unloading background only after config is cleared" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
 
     var bg_image_gone: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
@@ -6357,7 +6357,7 @@ test "published cpu frame finalizes unloading background only after config is cl
 
 test "applyPreparedBackgroundImage replaces unloading slot with new pending image" {
     const alloc = std.testing.allocator;
-    const TestImage = Renderer(renderer.Renderer.API).Image;
+    const TestImage = DrawFrameSmokeRenderer.Image;
     var bg_image: ?TestImage = try makeOwnedPendingRgbaImage(
         TestImage,
         alloc,
@@ -7387,7 +7387,7 @@ const DrawFrameSmokeGraphicsAPI = struct {
     present_last_target_count: u32 = 0,
     blending: configpkg.Config.AlphaBlending = .native,
 
-    pub fn init(_: Allocator, options: renderer.Options) !Self {
+    pub fn init(_: Allocator, options: anytype) !Self {
         return .{
             .surface_size = options.size.screen,
             .blending = options.config.blending,
@@ -7481,6 +7481,117 @@ const DrawFrameSmokeGraphicsAPI = struct {
 
 const DrawFrameSmokeRenderer = Renderer(DrawFrameSmokeGraphicsAPI);
 
+fn initDrawFrameSmokeRenderer(
+    alloc: Allocator,
+    raw_config: *const configpkg.Config,
+    font_grid: *font.SharedGrid,
+    surface_size: renderer.ScreenSize,
+    surface_mailbox: apprt.surface.Mailbox,
+) !DrawFrameSmokeRenderer {
+    var api = try DrawFrameSmokeGraphicsAPI.init(alloc, .{
+        .size = .{
+            .screen = surface_size,
+        },
+        .config = .{
+            .blending = raw_config.@"alpha-blending",
+        },
+    });
+    errdefer api.deinit();
+
+    var swap_chain = try DrawFrameSmokeRenderer.SwapChain.init(api, false);
+    errdefer swap_chain.deinit();
+
+    var font_shaper = try font.Shaper.init(alloc, .{
+        .features = &.{},
+    });
+    errdefer font_shaper.deinit();
+
+    font_grid.lock.lockShared();
+    defer font_grid.lock.unlockShared();
+
+    var result: DrawFrameSmokeRenderer = .{
+        .alloc = alloc,
+        .config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, raw_config),
+        .surface_mailbox = surface_mailbox,
+        .grid_metrics = font_grid.metrics,
+        .size = .{
+            .screen = surface_size,
+            .cell = font_grid.cellSize(),
+            .padding = .{},
+        },
+        .focused = true,
+        .cells = .{},
+        .uniforms = .{
+            .projection_matrix = undefined,
+            .cell_size = undefined,
+            .grid_size = undefined,
+            .grid_padding = undefined,
+            .screen_size = undefined,
+            .padding_extend = .{},
+            .min_contrast = raw_config.@"minimum-contrast",
+            .cursor_pos = .{ std.math.maxInt(u16), std.math.maxInt(u16) },
+            .cursor_color = undefined,
+            .bg_color = .{
+                raw_config.background.r,
+                raw_config.background.g,
+                raw_config.background.b,
+                @intFromFloat(@round(raw_config.@"background-opacity" * 255.0)),
+            },
+            .bools = .{
+                .cursor_wide = false,
+                .use_display_p3 = raw_config.@"window-colorspace" == .@"display-p3",
+                .use_linear_blending = raw_config.@"alpha-blending".isLinear(),
+                .use_linear_correction = raw_config.@"alpha-blending" == .@"linear-corrected",
+            },
+        },
+        .custom_shader_uniforms = .{
+            .resolution = .{ 0, 0, 1 },
+            .time = 0,
+            .time_delta = 0,
+            .frame_rate = 60,
+            .frame = 0,
+            .channel_time = @splat(@splat(0)),
+            .channel_resolution = @splat(@splat(0)),
+            .mouse = @splat(0),
+            .date = @splat(0),
+            .sample_rate = 0,
+            .current_cursor = @splat(0),
+            .previous_cursor = @splat(0),
+            .current_cursor_color = @splat(0),
+            .previous_cursor_color = @splat(0),
+            .current_cursor_style = 0,
+            .previous_cursor_style = 0,
+            .cursor_visible = 0,
+            .cursor_change_time = 0,
+            .time_focus = 0,
+            .focus = 1,
+            .palette = @splat(@splat(0)),
+            .background_color = @splat(0),
+            .foreground_color = @splat(0),
+            .cursor_color = @splat(0),
+            .cursor_text = @splat(0),
+            .selection_background_color = @splat(0),
+            .selection_foreground_color = @splat(0),
+        },
+        .bg_image_buffer = undefined,
+        .font_grid = font_grid,
+        .font_shaper = font_shaper,
+        .font_shaper_cache = font.ShaperCache.init(),
+        .shaders = undefined,
+        .api = api,
+        .swap_chain = swap_chain,
+        .display_link = null,
+    };
+
+    try result.initShaders();
+    result.updateFontGridUniforms();
+    result.updateScreenSizeUniforms();
+    result.updateBgImageBuffer();
+    try result.prepBackgroundImage();
+
+    return result;
+}
+
 const DrawFrameSmokeFixture = struct {
     renderer: DrawFrameSmokeRenderer = undefined,
     font_grid_set: font.SharedGridSet = undefined,
@@ -7529,24 +7640,19 @@ const DrawFrameSmokeFixture = struct {
         );
         errdefer alloc.free(empty_fg_rows);
 
-        self.renderer = try DrawFrameSmokeRenderer.init(alloc, .{
-            .config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, &raw_config),
-            .font_grid = font_grid,
-            .size = .{
-                .screen = surface_size,
-                .cell = font_grid.cellSize(),
-                .padding = .{},
-            },
-            .surface_mailbox = .{
+        self.renderer = try initDrawFrameSmokeRenderer(
+            alloc,
+            &raw_config,
+            font_grid,
+            surface_size,
+            .{
                 .surface = &self.fake_surface,
                 .app = .{
                     .rt_app = &self.rt_app,
                     .mailbox = &self.app_queue,
                 },
             },
-            .rt_surface = &self.fake_rt_surface,
-            .thread = &self.fake_thread,
-        });
+        );
         self.renderer.cells = .{
             .bg_cells = empty_bg_cells,
             .fg_rows = .{ .lists = empty_fg_rows },
