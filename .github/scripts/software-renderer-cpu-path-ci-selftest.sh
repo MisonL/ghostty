@@ -396,6 +396,41 @@ case_dry_run_runtime_diagnostics_zero_and_false_passthrough() {
   pass "dry-run passes runtime diagnostics zero/false expectations"
 }
 
+case_dry_run_runtime_diagnostics_smoke_passthrough() {
+  local output
+  if ! run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER="cpu route diagnostics kv helpers emit structured logs" \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW=1 \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON=mailbox_backpressure \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING=true; then
+    fail "dry-run with runtime diagnostics smoke should succeed"
+  fi
+
+  assert_contains "$output" "runtime-diagnostics-smoke filter=cpu route diagnostics kv helpers emit structured logs expect-damage-overflow=1 expect-publish-retry-reason=mailbox_backpressure expect-publish-warning=true" "dry-run runtime diagnostics smoke summary"
+  assert_contains "$output" "dry-run compat-check smoke command" "dry-run runtime diagnostics smoke command"
+  assert_contains "$output" "--expect-cpu-damage-overflow 1" "dry-run runtime diagnostics smoke overflow arg"
+  assert_contains "$output" "--expect-cpu-publish-retry-reason mailbox_backpressure" "dry-run runtime diagnostics smoke retry arg"
+  assert_contains "$output" "--expect-cpu-publish-warning true" "dry-run runtime diagnostics smoke warning arg"
+  pass "dry-run passes runtime diagnostics smoke expectations"
+}
+
+case_runtime_diagnostics_smoke_expectations_require_filter() {
+  local output
+  if run_with_env output \
+    SR_CI_OS=linux \
+    SR_CI_TRANSPORT_MODE=auto \
+    SR_CI_DRY_RUN=true \
+    SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW=1; then
+    fail "runtime diagnostics smoke expectations without filter should fail"
+  fi
+
+  assert_contains "$output" "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER is required when smoke expectations are provided" "runtime diagnostics smoke filter requirement"
+  pass "runtime diagnostics smoke expectations require filter"
+}
+
 case_dry_run_cpu_frame_damage_mode_passthrough() {
   local output
   if ! run_with_env output \
@@ -636,6 +671,8 @@ test_cases=(
   case_dry_run_cpu_publish_warning_threshold_only_passthrough
   case_dry_run_runtime_diagnostics_expectations_passthrough
   case_dry_run_runtime_diagnostics_zero_and_false_passthrough
+  case_dry_run_runtime_diagnostics_smoke_passthrough
+  case_runtime_diagnostics_smoke_expectations_require_filter
   case_dry_run_cpu_frame_damage_mode_passthrough
   case_dry_run_cpu_damage_rect_cap_passthrough
   case_cpu_damage_rect_cap_invalid_fails

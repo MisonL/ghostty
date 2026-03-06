@@ -246,6 +246,33 @@ case_blackbox_success_smoke() {
   pass "blackbox success smoke passes"
 }
 
+case_test_filter_passthrough_in_cmd() {
+  local output
+  if ! run_with_fake_zig output \
+    success \
+    --mode test \
+    --test-filter "cpu route diagnostics kv helpers emit structured logs"; then
+    fail "test-filter passthrough should succeed"
+  fi
+
+  assert_contains "$output" "test-filter=cpu route diagnostics kv helpers emit structured logs" "test-filter summary"
+  assert_contains "$output" "-Dtest-filter=cpu route diagnostics kv helpers emit structured logs" "test-filter cmd passthrough"
+  pass "test-filter passthrough is preserved"
+}
+
+case_test_filter_requires_test_mode() {
+  local output
+  if run_with_fake_zig output \
+    success \
+    --mode build \
+    --test-filter smoke-only; then
+    fail "test-filter with build mode should fail"
+  fi
+
+  assert_contains "$output" "invalid --test-filter: only supported with --mode test" "test-filter mode gate"
+  pass "test-filter rejects build mode"
+}
+
 case_runtime_damage_overflow_mismatch_detected() {
   local output
   if run_with_fake_zig output \
@@ -391,6 +418,8 @@ test_cases=(
   case_expect_cpu_publish_retry_reason_invalid_fails_fast
   case_expect_cpu_publish_warning_invalid_fails_fast
   case_expect_cpu_damage_overflow_too_large_fails_fast
+  case_test_filter_passthrough_in_cmd
+  case_test_filter_requires_test_mode
   case_toolchain_linker_pic_detected
   case_xcode_build_chain_detected
   case_logic_or_runtime_default_detected

@@ -61,6 +61,10 @@ cpu_publish_warning_consecutive_limit="${SR_CI_CPU_PUBLISH_WARNING_CONSECUTIVE_L
 expect_cpu_publish_retry_reason="${SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
 expect_cpu_damage_overflow="${SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
 expect_cpu_publish_warning="${SR_CI_EXPECT_CPU_PUBLISH_WARNING:-}"
+runtime_diagnostics_smoke_test_filter="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER:-}"
+runtime_diagnostics_smoke_expect_cpu_publish_retry_reason="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON:-}"
+runtime_diagnostics_smoke_expect_cpu_damage_overflow="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW:-}"
+runtime_diagnostics_smoke_expect_cpu_publish_warning="${SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING:-}"
 system_path="${SR_CI_SYSTEM_PATH:-}"
 dry_run="${SR_CI_DRY_RUN:-false}"
 
@@ -146,6 +150,26 @@ if [[ -n "$expect_cpu_damage_overflow" ]] && decimal_exceeds_u64 "$expect_cpu_da
 fi
 if [[ -n "$expect_cpu_publish_warning" && "$expect_cpu_publish_warning" != "true" && "$expect_cpu_publish_warning" != "false" ]]; then
   echo "invalid SR_CI_EXPECT_CPU_PUBLISH_WARNING: $expect_cpu_publish_warning (expected: true|false)" >&2
+  exit 2
+fi
+if [[ -n "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" && "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" != "invalid_surface" && "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" != "pool_retired_pressure" && "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" != "frame_pool_exhausted" && "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" != "mailbox_backpressure" ]]; then
+  echo "invalid SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON: $runtime_diagnostics_smoke_expect_cpu_publish_retry_reason (expected: invalid_surface|pool_retired_pressure|frame_pool_exhausted|mailbox_backpressure)" >&2
+  exit 2
+fi
+if [[ -n "$runtime_diagnostics_smoke_expect_cpu_damage_overflow" && ! "$runtime_diagnostics_smoke_expect_cpu_damage_overflow" =~ ^[0-9]+$ ]]; then
+  echo "invalid SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW: $runtime_diagnostics_smoke_expect_cpu_damage_overflow (expected: u64)" >&2
+  exit 2
+fi
+if [[ -n "$runtime_diagnostics_smoke_expect_cpu_damage_overflow" ]] && decimal_exceeds_u64 "$runtime_diagnostics_smoke_expect_cpu_damage_overflow"; then
+  echo "invalid SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW: $runtime_diagnostics_smoke_expect_cpu_damage_overflow (expected: 0..18446744073709551615)" >&2
+  exit 2
+fi
+if [[ -n "$runtime_diagnostics_smoke_expect_cpu_publish_warning" && "$runtime_diagnostics_smoke_expect_cpu_publish_warning" != "true" && "$runtime_diagnostics_smoke_expect_cpu_publish_warning" != "false" ]]; then
+  echo "invalid SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING: $runtime_diagnostics_smoke_expect_cpu_publish_warning (expected: true|false)" >&2
+  exit 2
+fi
+if [[ -z "$runtime_diagnostics_smoke_test_filter" && ( -n "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" || -n "$runtime_diagnostics_smoke_expect_cpu_damage_overflow" || -n "$runtime_diagnostics_smoke_expect_cpu_publish_warning" ) ]]; then
+  echo "SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER is required when smoke expectations are provided" >&2
   exit 2
 fi
 
@@ -273,6 +297,7 @@ echo "[software-renderer-ci] $SR_CI_OS target-label=$target_label transport-labe
 echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-shader mode=$resolved_cpu_shader_mode backend=$resolved_cpu_shader_backend timeout-ms=$resolved_cpu_shader_timeout_ms reprobe-interval-frames=$resolved_cpu_shader_reprobe_interval_frames enable-minimal-runtime=$resolved_cpu_shader_enable_minimal_runtime fake-swiftshader-hint=$resolved_fake_swiftshader_hint expect-cpu-shader-backend=${expect_cpu_shader_backend:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS resolved-cpu-route frame-damage-mode=$resolved_cpu_frame_damage_mode damage-rect-cap=$resolved_cpu_damage_rect_cap effective-damage-rect-cap=$effective_cpu_damage_rect_cap publish-warning-threshold-ms=$resolved_cpu_publish_warning_threshold_ms publish-warning-consecutive-limit=$resolved_cpu_publish_warning_consecutive_limit effective-publish-warning-consecutive-limit=$effective_cpu_publish_warning_consecutive_limit"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflow=${expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${expect_cpu_publish_warning:-<unset>}"
+echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke filter=${runtime_diagnostics_smoke_test_filter:-<unset>} expect-damage-overflow=${runtime_diagnostics_smoke_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${runtime_diagnostics_smoke_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${runtime_diagnostics_smoke_expect_cpu_publish_warning:-<unset>}"
 if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
 elif [[ "$target_is_legacy_os" == "true" ]]; then
@@ -295,7 +320,24 @@ if [[ "$SR_CI_OS" == "macos" && -z "$system_path" ]]; then
   exit 1
 fi
 
-compat_args=(
+print_compat_check_command() {
+  local label="$1"
+  shift
+
+  printf "[software-renderer-ci] %s: %q" "$label" "./.github/scripts/software-renderer-compat-check.sh"
+  for arg in "$@"; do
+    printf " %q" "$arg"
+  done
+  printf "\n"
+}
+
+run_compat_check_command() {
+  nix develop -c \
+    ./.github/scripts/software-renderer-compat-check.sh \
+    "$@"
+}
+
+base_compat_args=(
   --mode test
   --transport "$SR_CI_TRANSPORT_MODE"
   --allow-legacy-os="$allow_legacy_os"
@@ -304,58 +346,71 @@ compat_args=(
   --expect-software-route-backend "$route_backend"
 )
 if [[ -n "$cpu_shader_mode" ]]; then
-  compat_args+=(--cpu-shader-mode "$cpu_shader_mode")
-  compat_args+=(--expect-cpu-shader-mode "$cpu_shader_mode")
+  base_compat_args+=(--cpu-shader-mode "$cpu_shader_mode")
+  base_compat_args+=(--expect-cpu-shader-mode "$cpu_shader_mode")
 fi
 if [[ -n "$cpu_shader_backend" ]]; then
-  compat_args+=(--cpu-shader-backend "$cpu_shader_backend")
+  base_compat_args+=(--cpu-shader-backend "$cpu_shader_backend")
 fi
 if [[ -n "$expect_cpu_shader_backend" ]]; then
-  compat_args+=(--expect-cpu-shader-backend "$expect_cpu_shader_backend")
+  base_compat_args+=(--expect-cpu-shader-backend "$expect_cpu_shader_backend")
 fi
 if [[ -n "$cpu_shader_timeout_ms" ]]; then
-  compat_args+=(--cpu-shader-timeout-ms "$cpu_shader_timeout_ms")
-  compat_args+=(--expect-cpu-shader-timeout-ms "$cpu_shader_timeout_ms")
+  base_compat_args+=(--cpu-shader-timeout-ms "$cpu_shader_timeout_ms")
+  base_compat_args+=(--expect-cpu-shader-timeout-ms "$cpu_shader_timeout_ms")
 fi
 if [[ -n "$cpu_shader_reprobe_interval_frames" ]]; then
-  compat_args+=(--cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
-  compat_args+=(--expect-cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
+  base_compat_args+=(--cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
+  base_compat_args+=(--expect-cpu-shader-reprobe-interval-frames "$cpu_shader_reprobe_interval_frames")
 fi
 if [[ -n "$cpu_shader_enable_minimal_runtime" ]]; then
-  compat_args+=(--cpu-shader-enable-minimal-runtime "$cpu_shader_enable_minimal_runtime")
-  compat_args+=(--expect-cpu-shader-enable-minimal-runtime "$cpu_shader_enable_minimal_runtime")
+  base_compat_args+=(--cpu-shader-enable-minimal-runtime "$cpu_shader_enable_minimal_runtime")
+  base_compat_args+=(--expect-cpu-shader-enable-minimal-runtime "$cpu_shader_enable_minimal_runtime")
 fi
 if [[ -n "$inject_fake_swiftshader_hint" ]]; then
-  compat_args+=(--inject-fake-swiftshader-hint "$inject_fake_swiftshader_hint")
+  base_compat_args+=(--inject-fake-swiftshader-hint "$inject_fake_swiftshader_hint")
 fi
 if [[ -n "$expect_cpu_shader_capability_status" ]]; then
-  compat_args+=(--expect-cpu-shader-capability-status "$expect_cpu_shader_capability_status")
+  base_compat_args+=(--expect-cpu-shader-capability-status "$expect_cpu_shader_capability_status")
 fi
 if [[ -n "$expect_cpu_shader_capability_reason" ]]; then
-  compat_args+=(--expect-cpu-shader-capability-reason "$expect_cpu_shader_capability_reason")
+  base_compat_args+=(--expect-cpu-shader-capability-reason "$expect_cpu_shader_capability_reason")
 fi
 if [[ -n "$expect_cpu_shader_capability_hint_source" ]]; then
-  compat_args+=(--expect-cpu-shader-capability-hint-source "$expect_cpu_shader_capability_hint_source")
+  base_compat_args+=(--expect-cpu-shader-capability-hint-source "$expect_cpu_shader_capability_hint_source")
 fi
 if [[ -n "$expect_cpu_shader_capability_hint_readable" ]]; then
-  compat_args+=(--expect-cpu-shader-capability-hint-readable "$expect_cpu_shader_capability_hint_readable")
+  base_compat_args+=(--expect-cpu-shader-capability-hint-readable "$expect_cpu_shader_capability_hint_readable")
 fi
 if [[ -n "$cpu_frame_damage_mode" ]]; then
-  compat_args+=(--cpu-frame-damage-mode "$cpu_frame_damage_mode")
-  compat_args+=(--expect-cpu-frame-damage-mode "$cpu_frame_damage_mode")
+  base_compat_args+=(--cpu-frame-damage-mode "$cpu_frame_damage_mode")
+  base_compat_args+=(--expect-cpu-frame-damage-mode "$cpu_frame_damage_mode")
 fi
 if [[ -n "$cpu_damage_rect_cap" ]]; then
-  compat_args+=(--cpu-damage-rect-cap "$cpu_damage_rect_cap")
-  compat_args+=(--expect-cpu-damage-rect-cap "$effective_cpu_damage_rect_cap")
+  base_compat_args+=(--cpu-damage-rect-cap "$cpu_damage_rect_cap")
+  base_compat_args+=(--expect-cpu-damage-rect-cap "$effective_cpu_damage_rect_cap")
 fi
 if [[ -n "$cpu_publish_warning_threshold_ms" ]]; then
-  compat_args+=(--cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
-  compat_args+=(--expect-cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
+  base_compat_args+=(--cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
+  base_compat_args+=(--expect-cpu-publish-warning-threshold-ms "$cpu_publish_warning_threshold_ms")
 fi
 if [[ -n "$cpu_publish_warning_consecutive_limit" ]]; then
-  compat_args+=(--cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
-  compat_args+=(--expect-cpu-publish-warning-consecutive-limit "$effective_cpu_publish_warning_consecutive_limit")
+  base_compat_args+=(--cpu-publish-warning-consecutive-limit "$cpu_publish_warning_consecutive_limit")
+  base_compat_args+=(--expect-cpu-publish-warning-consecutive-limit "$effective_cpu_publish_warning_consecutive_limit")
 fi
+if [[ -n "$target" ]]; then
+  base_compat_args+=(--target "$target")
+fi
+if [[ "$expect_cpu_effective" != "<unset>" ]]; then
+  base_compat_args+=(--expect-cpu-effective "$expect_cpu_effective")
+fi
+if [[ "$SR_CI_OS" == "linux" ]]; then
+  base_compat_args+=(--app-runtime "$app_runtime")
+else
+  base_compat_args+=(--system "$system_path")
+fi
+
+compat_args=("${base_compat_args[@]}")
 if [[ -n "$expect_cpu_publish_retry_reason" ]]; then
   compat_args+=(--expect-cpu-publish-retry-reason "$expect_cpu_publish_retry_reason")
 fi
@@ -365,27 +420,32 @@ fi
 if [[ -n "$expect_cpu_publish_warning" ]]; then
   compat_args+=(--expect-cpu-publish-warning "$expect_cpu_publish_warning")
 fi
-if [[ -n "$target" ]]; then
-  compat_args+=(--target "$target")
-fi
-if [[ "$expect_cpu_effective" != "<unset>" ]]; then
-  compat_args+=(--expect-cpu-effective "$expect_cpu_effective")
-fi
-if [[ "$SR_CI_OS" == "linux" ]]; then
-  compat_args+=(--app-runtime "$app_runtime")
-else
-  compat_args+=(--system "$system_path")
+
+smoke_compat_args=()
+if [[ -n "$runtime_diagnostics_smoke_test_filter" ]]; then
+  smoke_compat_args=("${base_compat_args[@]}")
+  smoke_compat_args+=(--test-filter "$runtime_diagnostics_smoke_test_filter")
+  if [[ -n "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason" ]]; then
+    smoke_compat_args+=(--expect-cpu-publish-retry-reason "$runtime_diagnostics_smoke_expect_cpu_publish_retry_reason")
+  fi
+  if [[ -n "$runtime_diagnostics_smoke_expect_cpu_damage_overflow" ]]; then
+    smoke_compat_args+=(--expect-cpu-damage-overflow "$runtime_diagnostics_smoke_expect_cpu_damage_overflow")
+  fi
+  if [[ -n "$runtime_diagnostics_smoke_expect_cpu_publish_warning" ]]; then
+    smoke_compat_args+=(--expect-cpu-publish-warning "$runtime_diagnostics_smoke_expect_cpu_publish_warning")
+  fi
 fi
 
 if [[ "$dry_run" == "true" ]]; then
-  printf "[software-renderer-ci] dry-run compat-check command: %q" "./.github/scripts/software-renderer-compat-check.sh"
-  for arg in "${compat_args[@]}"; do
-    printf " %q" "$arg"
-  done
-  printf "\n"
+  print_compat_check_command "dry-run compat-check command" "${compat_args[@]}"
+  if (( ${#smoke_compat_args[@]} > 0 )); then
+    print_compat_check_command "dry-run compat-check smoke command" "${smoke_compat_args[@]}"
+  fi
   exit 0
 fi
 
-nix develop -c \
-  ./.github/scripts/software-renderer-compat-check.sh \
-  "${compat_args[@]}"
+run_compat_check_command "${compat_args[@]}"
+if (( ${#smoke_compat_args[@]} > 0 )); then
+  echo "[software-renderer-ci] $SR_CI_OS running runtime diagnostics smoke filter=$runtime_diagnostics_smoke_test_filter"
+  run_compat_check_command "${smoke_compat_args[@]}"
+fi

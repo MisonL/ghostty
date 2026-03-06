@@ -7,6 +7,7 @@ usage() {
 Usage:
   .github/scripts/software-renderer-compat-check.sh \
     [--transport <auto|shared|native>] \
+    [--test-filter <zig-test-filter>] \
     [--target <zig-target>] \
     [--allow-legacy-os <true|false>] \
     [--cpu-shader-mode <off|safe|full>] \
@@ -69,7 +70,7 @@ EOF
 
 option_requires_value() {
   case "$1" in
-    --mode|--transport|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
+    --mode|--transport|--test-filter|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
       return 0
       ;;
     *)
@@ -195,6 +196,7 @@ extract_log_kv_field() {
 
 mode="test"
 transport="auto"
+test_filter=""
 target=""
 allow_legacy_os="false"
 cpu_shader_mode=""
@@ -250,6 +252,14 @@ while (($# > 0)); do
       ;;
     --transport)
       transport="${2:-}"
+      shift 2
+      ;;
+    --test-filter=*)
+      test_filter="${1#*=}"
+      shift
+      ;;
+    --test-filter)
+      test_filter="${2:-}"
       shift 2
       ;;
     --target=*)
@@ -774,6 +784,10 @@ if [[ "$mode" != "build" && "$mode" != "test" ]]; then
   echo "invalid --mode: $mode" >&2
   exit 2
 fi
+if [[ -n "$test_filter" && "$mode" != "test" ]]; then
+  echo "invalid --test-filter: only supported with --mode test" >&2
+  exit 2
+fi
 
 if [[ "$mismatch_policy" != "skip" && "$mismatch_policy" != "fail" ]]; then
   echo "invalid --mismatch-policy: $mismatch_policy" >&2
@@ -891,6 +905,9 @@ cmd=(zig build)
 if [[ "$mode" == "test" ]]; then
   cmd+=(test)
 fi
+if [[ -n "$test_filter" ]]; then
+  cmd+=("-Dtest-filter=$test_filter")
+fi
 cmd+=(-Drenderer=software)
 cmd+=(-Dsoftware-renderer-cpu-mvp=true)
 cmd+=("-Dsoftware-renderer-cpu-allow-legacy-os=$allow_legacy_os")
@@ -967,7 +984,7 @@ JSON
   echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path library=$fake_swiftshader_library_path"
 fi
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-reprobe-interval-frames=${cpu_shader_reprobe_interval_frames:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport test-filter=${test_filter:-<unset>} allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-reprobe-interval-frames=${cpu_shader_reprobe_interval_frames:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
 resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
 resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
 resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"

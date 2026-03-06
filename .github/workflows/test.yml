@@ -1286,6 +1286,10 @@ jobs:
           SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.expect_cpu_damage_overflow }}
           SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.expect_cpu_publish_retry_reason }}
           SR_CI_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.expect_cpu_publish_warning }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'cpu route diagnostics kv helpers emit structured logs' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && '1' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'mailbox_backpressure' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'true' || '' }}
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 
   test-software-renderer-macos:
@@ -1594,6 +1598,10 @@ jobs:
           SR_CI_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.expect_cpu_damage_overflow }}
           SR_CI_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.expect_cpu_publish_retry_reason }}
           SR_CI_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.expect_cpu_publish_warning }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_TEST_FILTER: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'cpu route diagnostics kv helpers emit structured logs' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_DAMAGE_OVERFLOW: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && '1' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_RETRY_REASON: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'mailbox_backpressure' || '' }}
+          SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_EXPECT_CPU_PUBLISH_WARNING: ${{ matrix.target.target_label == 'default-target' && matrix.transport.transport_label == 'auto' && 'true' || '' }}
           SR_CI_SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 
