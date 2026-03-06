@@ -76,8 +76,8 @@ jobs:
           fi
 
   required:
+    if: github.repository == 'ghostty-org/ghostty' && always()
     name: "Required Checks: Test"
-    if: always()
     runs-on: namespace-profile-ghostty-xsm
     needs:
       - skip
@@ -138,6 +138,7 @@ jobs:
           exit 1
 
   build-bench:
+    if: github.repository == 'ghostty-org/ghostty'
     # We build benchmarks on large because it uses ReleaseFast
     runs-on: namespace-profile-ghostty-lg
     needs: test
@@ -168,6 +169,7 @@ jobs:
         run: nix develop -c zig build -Demit-bench
 
   build-examples:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +215,7 @@ jobs:
           nix develop -c zig build
 
   build-flatpak:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
     runs-on: namespace-profile-ghostty-sm
@@ -247,6 +250,7 @@ jobs:
             -Dflatpak
 
   build-snap:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
     runs-on: namespace-profile-ghostty-sm
@@ -281,6 +285,7 @@ jobs:
             -Dsnap
 
   build-libghostty-vt:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       matrix:
         target:
@@ -326,6 +331,7 @@ jobs:
 
   # lib-vt requires macOS runner for macOS/iOS builds becauase it requires the `apple_sdk` path
   build-libghostty-vt-macos:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       matrix:
         target: [aarch64-macos, x86_64-macos, aarch64-ios]
@@ -365,6 +371,7 @@ jobs:
 
   # lib-vt requires the Android NDK for Android builds
   build-libghostty-vt-android:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       matrix:
         target:
@@ -412,6 +419,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
   build-linux:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -445,6 +453,7 @@ jobs:
         run: nix develop -c zig build
 
   build-linux-libghostty:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-md
     needs: test
     env:
@@ -474,6 +483,7 @@ jobs:
         run: nix develop -c zig build -Dapp-runtime=none
 
   build-nix:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -522,6 +532,7 @@ jobs:
         run: nm result/bin/.ghostty-wrapped 2>&1 | grep -q 'main_ghostty.main'
 
   build-dist:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-md
     needs: test
     outputs:
@@ -600,6 +611,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-macos-tahoe
     needs: test
     env:
@@ -660,6 +672,7 @@ jobs:
             COMPILATION_CACHE_KEEP_CAS_DIRECTORY=YES
 
   build-macos-freetype:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-macos-tahoe
     needs: test
     env:
@@ -705,6 +718,7 @@ jobs:
           nix develop -c zig build --system ${{ steps.deps.outputs.deps }} -Demit-macos-app=false -Drenderer=metal -Dfont-backend=coretext_freetype
 
   build-windows:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: windows-2022
     # this will not stop other jobs from running
     continue-on-error: true
@@ -818,6 +832,7 @@ jobs:
         run: nix develop -c zig build --system ${ZIG_GLOBAL_CACHE_DIR}/p
 
   test-gtk:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -867,6 +882,7 @@ jobs:
             -Dgtk-wayland=${{ matrix.wayland }}
 
   test-simd:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -902,6 +918,7 @@ jobs:
           nix develop -c zig build test -Dsimd=${{ matrix.simd }}
 
   test-sentry-linux:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -937,6 +954,7 @@ jobs:
           nix develop -c zig build -Dsentry=${{ matrix.sentry }}
 
   test-macos:
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-macos-tahoe
     needs: test
     env:
@@ -977,6 +995,7 @@ jobs:
         run: nix develop -c zig build test --system ${{ steps.deps.outputs.deps }}
 
   test-software-renderer-linux:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -1296,6 +1315,7 @@ jobs:
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 
   test-software-renderer-macos:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1616,6 +1636,7 @@ jobs:
         run: ./.github/scripts/software-renderer-cpu-path-ci.sh
 
   test-i18n:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -1651,6 +1672,7 @@ jobs:
           nix develop -c zig build -Di18n=${{ matrix.i18n }}
 
   test-fuzz-libghostty:
+    if: github.repository == 'ghostty-org/ghostty'
     name: Build test/fuzz-libghostty
     runs-on: namespace-profile-ghostty-sm
     needs: test
@@ -1962,6 +1984,7 @@ jobs:
         run: git diff --exit-code
 
   test-pkg-linux:
+    if: github.repository == 'ghostty-org/ghostty'
     strategy:
       fail-fast: false
       matrix:
@@ -1997,6 +2020,7 @@ jobs:
           nix develop -c sh -c "cd pkg/${{ matrix.pkg }} ; zig build test"
 
   test-debian-13:
+    if: github.repository == 'ghostty-org/ghostty'
     name: Test build on Debian 13
     runs-on: namespace-profile-ghostty-sm
     timeout-minutes: 10
