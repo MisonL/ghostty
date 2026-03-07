@@ -163,7 +163,7 @@ pub fn main() !void {
         \\
     );
 
-    try stdout.end();
+    try writer.flush();
 }
 
 /// Generate the icon resources. This works by looking up all the icons
