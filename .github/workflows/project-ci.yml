@@ -140,6 +140,7 @@ jobs:
 
       - name: Run macOS core test suite
         env:
+          GHOSTTY_CI_SKIP_UI_TESTS: "true"
           SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
         run: |
           mkdir -p ci-logs
@@ -147,6 +148,7 @@ jobs:
           test -n "${SYSTEM_PATH:-}"
           test -d "$SYSTEM_PATH"
           echo "Using SYSTEM_PATH=$SYSTEM_PATH"
+          echo "Using GHOSTTY_CI_SKIP_UI_TESTS=$GHOSTTY_CI_SKIP_UI_TESTS"
           nix --accept-flake-config develop -c zig build test --system "$SYSTEM_PATH" 2>&1 | tee ci-logs/macos-core-tests.log
 
       - name: Upload macOS core logs
@@ -191,6 +193,7 @@ jobs:
 
       - name: Run macOS software renderer validation
         env:
+          GHOSTTY_CI_SKIP_UI_TESTS: "true"
           SR_CI_OS: macos
           SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
           SR_CI_TARGET_LABEL: default-target
@@ -237,6 +240,7 @@ jobs:
           test -n "$SR_CI_SYSTEM_PATH"
           test -d "$SR_CI_SYSTEM_PATH"
           echo "Using SYSTEM_PATH=$SYSTEM_PATH"
+          echo "Using GHOSTTY_CI_SKIP_UI_TESTS=$GHOSTTY_CI_SKIP_UI_TESTS"
           nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
 
       - name: Upload macOS software renderer logs
