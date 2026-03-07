@@ -275,30 +275,65 @@ jobs:
           path: ci-logs/
           if-no-files-found: error
 
-  windows-win32-d3d12-smoke:
-    name: Windows Win32 D3D12 Smoke
-    runs-on: windows-2022
-    timeout-minutes: 45
+  linux-build-windows-smoke-artifact:
+    name: Linux Build Windows Smoke Artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install Zig
-        shell: pwsh
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build Windows smoke executable
         run: |
-          $fileContent = Get-Content -Path "build.zig.zon" -Raw
-          $pattern = 'minimum_zig_version\s*=\s*"([^"]+)"'
-          $zigVersion = [regex]::Match($fileContent, $pattern).Groups[1].Value
-          $version = "zig-x86_64-windows-$zigVersion"
-          $uri = "https://ziglang.org/download/$zigVersion/$version.zip"
-          Invoke-WebRequest -Uri "$uri" -OutFile ".\zig-windows.zip"
-          Expand-Archive -Path ".\zig-windows.zip" -DestinationPath ".\" -Force
-          Remove-Item -Path ".\zig-windows.zip"
-          Rename-Item -Path ".\$version" -NewName ".\zig"
-          .\zig\zig.exe version
+          mkdir -p ci-logs windows-smoke-artifact
+          set -euo pipefail
+          nix --accept-flake-config develop -c zig build \
+            -Dtarget=x86_64-windows-gnu \
+            -Dfont-backend=directwrite \
+            -Dapp-runtime=win32 \
+            -Drenderer=d3d12 \
+            -Dci-windows-smoke-minimal=true \
+            -Demit-exe=true 2>&1 | tee ci-logs/windows-smoke-build.log
+          test -f zig-out/bin/ghostty.exe
+          cp zig-out/bin/ghostty.exe windows-smoke-artifact/ghostty.exe
+
+      - name: Upload Windows smoke executable
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-smoke-exe
+          path: windows-smoke-artifact/
+          if-no-files-found: error
+
+      - name: Upload Windows smoke build logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-smoke-build-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  windows-win32-d3d12-smoke:
+    name: Windows Win32 D3D12 Smoke
+    runs-on: windows-2022
+    timeout-minutes: 45
+    needs: linux-build-windows-smoke-artifact
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download Windows smoke executable
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: windows-win32-d3d12-smoke-exe
+          path: windows-smoke-artifact
 
       - name: Run Windows Win32 D3D12 smoke
         shell: pwsh
+        env:
+          GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
         run: .\.github\scripts\windows-win32-d3d12-smoke.ps1
 
       - name: Upload Windows smoke logs

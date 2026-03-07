@@ -11,25 +11,31 @@ if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
 
-$zigExe = Join-Path $repoRoot "zig\zig.exe"
-if (-not (Test-Path $zigExe)) {
-  $zigExe = "zig"
+$exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
+if ([string]::IsNullOrWhiteSpace($exePath)) {
+  $zigExe = Join-Path $repoRoot "zig\zig.exe"
+  if (-not (Test-Path $zigExe)) {
+    $zigExe = "zig"
+  }
+
+  Write-Host "Using Zig executable: $zigExe"
+
+  & $zigExe build `
+    -Dtarget=x86_64-windows-gnu `
+    -Dfont-backend=directwrite `
+    -Dapp-runtime=win32 `
+    -Drenderer=d3d12 `
+    -Dci-windows-smoke-minimal=true `
+    -Demit-exe=true 2>&1 | Tee-Object -FilePath $logPath -Append
+  if ($LASTEXITCODE -ne 0) {
+    throw "Windows D3D12 smoke build failed with exit code $LASTEXITCODE"
+  }
+
+  $exePath = Join-Path $repoRoot "zig-out\bin\ghostty.exe"
+} else {
+  Write-Host "Using prebuilt smoke executable: $exePath"
 }
 
-Write-Host "Using Zig executable: $zigExe"
-
-& $zigExe build `
-  -Dtarget=x86_64-windows-gnu `
-  -Dfont-backend=directwrite `
-  -Dapp-runtime=win32 `
-  -Drenderer=d3d12 `
-  -Dci-windows-smoke-minimal=true `
-  -Demit-exe=true 2>&1 | Tee-Object -FilePath $logPath -Append
-if ($LASTEXITCODE -ne 0) {
-  throw "Windows D3D12 smoke build failed with exit code $LASTEXITCODE"
-}
-
-$exePath = Join-Path $repoRoot "zig-out\bin\ghostty.exe"
 if (-not (Test-Path $exePath)) {
   throw "Expected executable not found: $exePath"
 }
