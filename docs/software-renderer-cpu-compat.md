@@ -231,6 +231,43 @@ macOS 额外必填：
 
 - `SR_CI_SYSTEM_PATH`（传给 compat-check 的 `--system`）
 
+### 8.1.1 项目仓库专属 `Project CI` 工作流
+
+当前项目仓库使用的主验证入口是：
+
+- `.github/workflows/project-ci.yml`
+
+工作流固定拆成 4 个 job：
+
+- `Linux Core Tests`
+- `Linux Software Renderer Validation`
+- `macOS Core Tests`
+- `macOS Software Renderer Validation`
+
+职责边界：
+
+- `Core Tests` 负责 `zig build test` 主测试集；
+- `Software Renderer Validation` 负责脚本自测、compat-check 与 runtime diagnostics smoke；
+- 4 个 job 都会上传各自的 `ci-logs/` 作为排障基线。
+
+### 8.1.2 GitHub-hosted macOS runner 的验证边界
+
+项目专属 `Project CI` 在 GitHub-hosted macOS runner 上固定设置：
+
+- `GHOSTTY_CI_SKIP_UI_TESTS=true`
+
+这意味着：
+
+- macOS CI 上的 `zig build test` 只验证 Zig 核心与非 UI 路径；
+- 不再把 `xcodebuild test` UI 测试链路作为 hosted runner 必须通过的前提；
+- `macOS Software Renderer Validation` 仍会继续验证 software-renderer 脚本、自测与真实 Zig smoke；
+- 若需要完整 Xcode UI tests，应在专用本机 runner 或本地机器上执行，不应把 GitHub-hosted runner 结果解读成“已覆盖 UI 自动化”。
+
+推荐把两类验证区分开理解：
+
+- `Project CI` 当前保证：项目专属仓库的核心 Zig 路径、software-renderer 兼容脚本、runtime diagnostics smoke 全部可重复通过；
+- 本地或专用 macOS runner 额外保证：Xcode UI tests / App 层交互链路。
+
 ### 8.2 常用可选项
 
 - target 与 gate 预期：
@@ -281,7 +318,25 @@ macOS 额外必填：
 - 其他：
   - `SR_CI_EXPECT_CPU_SHADER_BACKEND`
   - `SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND`
-  - `SR_CI_DRY_RUN`
+- `SR_CI_DRY_RUN`
+
+### 8.2.1 本地复现项目专属 CI 的 macOS 路径
+
+若要本地复现 hosted macOS CI 的非 UI 验证口径，可执行：
+
+```bash
+nix --accept-flake-config build -L .#deps
+SYSTEM_PATH="$(readlink ./result)"
+GHOSTTY_CI_SKIP_UI_TESTS=true zig build test --system "$SYSTEM_PATH"
+```
+
+若要在本地继续执行完整 macOS UI tests，则不要设置 `GHOSTTY_CI_SKIP_UI_TESTS`：
+
+```bash
+nix --accept-flake-config build -L .#deps
+SYSTEM_PATH="$(readlink ./result)"
+zig build test --system "$SYSTEM_PATH"
+```
 
 ### 8.3 CI 入口脚本 fail-fast 参数校验边界
 

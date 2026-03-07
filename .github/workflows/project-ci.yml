@@ -135,11 +135,12 @@ jobs:
           SYSTEM_PATH="$(readlink ./result)"
           test -n "$SYSTEM_PATH"
           test -d "$SYSTEM_PATH"
-          echo "Resolved SYSTEM_PATH=$SYSTEM_PATH"
           printf 'deps=%s\n' "$SYSTEM_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run macOS core test suite
         env:
+          # GitHub-hosted macOS runner 只验证 Zig/非 UI 路径；
+          # 完整 Xcode UI tests 需在专用本机 runner 或本地手动执行。
           GHOSTTY_CI_SKIP_UI_TESTS: "true"
           SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
         run: |
@@ -147,8 +148,6 @@ jobs:
           set -euo pipefail
           test -n "${SYSTEM_PATH:-}"
           test -d "$SYSTEM_PATH"
-          echo "Using SYSTEM_PATH=$SYSTEM_PATH"
-          echo "Using GHOSTTY_CI_SKIP_UI_TESTS=$GHOSTTY_CI_SKIP_UI_TESTS"
           nix --accept-flake-config develop -c zig build test --system "$SYSTEM_PATH" 2>&1 | tee ci-logs/macos-core-tests.log
 
       - name: Upload macOS core logs
@@ -181,7 +180,6 @@ jobs:
           SYSTEM_PATH="$(readlink ./result)"
           test -n "$SYSTEM_PATH"
           test -d "$SYSTEM_PATH"
-          echo "Resolved SYSTEM_PATH=$SYSTEM_PATH"
           printf 'deps=%s\n' "$SYSTEM_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run software renderer selftests
@@ -193,6 +191,8 @@ jobs:
 
       - name: Run macOS software renderer validation
         env:
+          # GitHub-hosted macOS runner 只验证 Zig/非 UI 路径；
+          # 完整 Xcode UI tests 需在专用本机 runner 或本地手动执行。
           GHOSTTY_CI_SKIP_UI_TESTS: "true"
           SR_CI_OS: macos
           SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
@@ -239,8 +239,6 @@ jobs:
           export SR_CI_SYSTEM_PATH="$SYSTEM_PATH"
           test -n "$SR_CI_SYSTEM_PATH"
           test -d "$SR_CI_SYSTEM_PATH"
-          echo "Using SYSTEM_PATH=$SYSTEM_PATH"
-          echo "Using GHOSTTY_CI_SKIP_UI_TESTS=$GHOSTTY_CI_SKIP_UI_TESTS"
           nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
 
       - name: Upload macOS software renderer logs
