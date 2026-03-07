@@ -35,7 +35,7 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
         .config = cfg,
         .help_strings = try .init(b, cfg),
         .unicode_tables = try .init(b, uucode_tables),
-        .framedata = try .init(b),
+        .framedata = try .init(b, cfg),
         .uucode_tables = uucode_tables,
 
         // Setup by retarget

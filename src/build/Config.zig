@@ -65,6 +65,7 @@ wayland: bool = false,
 sentry: bool = true,
 simd: bool = true,
 i18n: bool = true,
+ci_windows_smoke_minimal: bool = false,
 wasm_shared: bool = true,
 software_renderer_cpu_mvp: bool = false,
 software_renderer_cpu_allow_legacy_os: bool = false,
@@ -327,6 +328,12 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         .linux, .freebsd => target.result.isGnuLibC(),
         else => false,
     };
+
+    config.ci_windows_smoke_minimal = b.option(
+        bool,
+        "ci-windows-smoke-minimal",
+        "Trim non-essential build graph for Windows GUI smoke validation.",
+    ) orelse false;
 
     //---------------------------------------------------------------
     // Ghostty Exe Properties
@@ -605,6 +612,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "sentry", self.sentry);
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
+    step.addOption(bool, "ci_windows_smoke_minimal", self.ci_windows_smoke_minimal);
     step.addOption(bool, "software_renderer_cpu_mvp", self.software_renderer_cpu_mvp);
     step.addOption(
         bool,

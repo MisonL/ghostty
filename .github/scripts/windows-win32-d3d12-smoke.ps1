@@ -23,6 +23,7 @@ Write-Host "Using Zig executable: $zigExe"
   -Dfont-backend=directwrite `
   -Dapp-runtime=win32 `
   -Drenderer=d3d12 `
+  -Dci-windows-smoke-minimal=true `
   -Demit-exe=true 2>&1 | Tee-Object -FilePath $logPath -Append
 if ($LASTEXITCODE -ne 0) {
   throw "Windows D3D12 smoke build failed with exit code $LASTEXITCODE"

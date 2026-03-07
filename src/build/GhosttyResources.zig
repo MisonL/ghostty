@@ -12,6 +12,10 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     var steps: std.ArrayList(*std.Build.Step) = .empty;
     errdefer steps.deinit(b.allocator);
 
+    if (cfg.ci_windows_smoke_minimal and cfg.target.result.os.tag == .windows) {
+        return .{ .steps = try steps.toOwnedSlice(b.allocator) };
+    }
+
     // This is the exe used to generate some build data.
     const build_data_exe = b.addExecutable(.{
         .name = "ghostty-build-data",
@@ -430,6 +434,7 @@ fn addLinuxAppResources(
 }
 
 pub fn install(self: *const GhosttyResources) void {
+    if (self.steps.len == 0) return;
     const b = self.steps[0].owner;
     self.addStepDependencies(b.getInstallStep());
 }

@@ -3,12 +3,24 @@
 const GhosttyFrameData = @This();
 
 const std = @import("std");
+const Config = @import("Config.zig");
 const DistResource = @import("GhosttyDist.zig").Resource;
 
 /// The output path for the compressed framedata zig file
 output: std.Build.LazyPath,
 
-pub fn init(b: *std.Build) !GhosttyFrameData {
+pub fn init(b: *std.Build, cfg: *const Config) !GhosttyFrameData {
+    if (cfg.ci_windows_smoke_minimal and cfg.target.result.os.tag == .windows) {
+        const wf = b.addWriteFiles();
+        const zig_file = wf.add("framedata.zig",
+            \\//! This file is auto-generated. Do not edit.
+            \\
+            \\pub const compressed = "";
+            \\
+        );
+        return .{ .output = zig_file };
+    }
+
     const dist = distResources(b);
 
     // Generate the Zig source file that embeds the compressed data
