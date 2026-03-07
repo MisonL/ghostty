@@ -15,6 +15,13 @@ final class SettingsModel: ObservableObject {
     @Published var managedAutoSecureInput: Bool = false
     @Published var managedSecureInputIndication: Bool = false
     @Published var managedScrollbar: Ghostty.Config.Scrollbar = .system
+    @Published var managedWindowSaveState: String = "default"
+    @Published var managedBackgroundOpacity: Double = 1.0
+    @Published var managedQuickTerminalPosition: QuickTerminalPosition = .top
+    @Published var managedQuickTerminalScreen: QuickTerminalScreen = .main
+    @Published var managedQuickTerminalAutoHide: Bool = true
+    @Published var managedQuickTerminalSpaceBehavior: QuickTerminalSpaceBehavior = .move
+    @Published var managedAutoUpdateChannel: Ghostty.AutoUpdateChannel = .stable
     @Published private(set) var hasManagedOverrides: Bool = false
     @Published private(set) var saveMessage: String?
     @Published private(set) var saveMessageIsError: Bool = false
@@ -129,6 +136,13 @@ final class SettingsModel: ObservableObject {
         managedAutoSecureInput = config.autoSecureInput
         managedSecureInputIndication = config.secureInputIndication
         managedScrollbar = config.scrollbar
+        managedWindowSaveState = config.windowSaveState.isEmpty ? "default" : config.windowSaveState
+        managedBackgroundOpacity = config.backgroundOpacity
+        managedQuickTerminalPosition = config.quickTerminalPosition
+        managedQuickTerminalScreen = config.quickTerminalScreen
+        managedQuickTerminalAutoHide = config.quickTerminalAutoHide
+        managedQuickTerminalSpaceBehavior = config.quickTerminalSpaceBehavior
+        managedAutoUpdateChannel = config.autoUpdateChannel
         hasManagedOverrides = Self.hasManagedBlock(in: configPath)
     }
 
@@ -143,8 +157,35 @@ final class SettingsModel: ObservableObject {
             "macos-auto-secure-input = \(managedAutoSecureInput)",
             "macos-secure-input-indication = \(managedSecureInputIndication)",
             "scrollbar = \(managedScrollbar.rawValue)",
+            "window-save-state = \(managedWindowSaveState)",
+            String(format: "background-opacity = %.2f", managedBackgroundOpacity),
+            "quick-terminal-position = \(managedQuickTerminalPosition.rawValue)",
+            "quick-terminal-screen = \(encode(managedQuickTerminalScreen))",
+            "quick-terminal-autohide = \(managedQuickTerminalAutoHide)",
+            "quick-terminal-space-behavior = \(encode(managedQuickTerminalSpaceBehavior))",
+            "auto-update-channel = \(managedAutoUpdateChannel.rawValue)",
             Self.managedBlockEnd,
         ].joined(separator: "\n")
+    }
+
+    private func encode(_ value: QuickTerminalScreen) -> String {
+        switch value {
+        case .main:
+            return "main"
+        case .mouse:
+            return "mouse"
+        case .menuBar:
+            return "macos-menu-bar"
+        }
+    }
+
+    private func encode(_ value: QuickTerminalSpaceBehavior) -> String {
+        switch value {
+        case .move:
+            return "move"
+        case .remain:
+            return "remain"
+        }
     }
 
     private func ensureConfigPath() throws -> String {
@@ -385,6 +426,7 @@ struct SettingsView: View {
             Toggle("macOS Window Shadow", isOn: $model.managedWindowShadow)
             Toggle("Auto Secure Input", isOn: $model.managedAutoSecureInput)
             Toggle("Secure Input Indicator", isOn: $model.managedSecureInputIndication)
+            Toggle("Quick Terminal Auto Hide", isOn: $model.managedQuickTerminalAutoHide)
 
             HStack(spacing: 12) {
                 Text("Scrollbar")
@@ -393,6 +435,76 @@ struct SettingsView: View {
                 Picker("Scrollbar", selection: $model.managedScrollbar) {
                     Text("system").tag(Ghostty.Config.Scrollbar.system)
                     Text("never").tag(Ghostty.Config.Scrollbar.never)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 12) {
+                Text("Window Save State")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Window Save State", selection: $model.managedWindowSaveState) {
+                    Text("default").tag("default")
+                    Text("never").tag("never")
+                    Text("always").tag("always")
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 12) {
+                Text("Background Opacity")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Slider(value: $model.managedBackgroundOpacity, in: 0.20...1.0, step: 0.05)
+                Text(String(format: "%.2f", model.managedBackgroundOpacity))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 48, alignment: .trailing)
+            }
+
+            HStack(spacing: 12) {
+                Text("Quick Terminal Position")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Quick Terminal Position", selection: $model.managedQuickTerminalPosition) {
+                    Text("top").tag(QuickTerminalPosition.top)
+                    Text("bottom").tag(QuickTerminalPosition.bottom)
+                    Text("left").tag(QuickTerminalPosition.left)
+                    Text("right").tag(QuickTerminalPosition.right)
+                    Text("center").tag(QuickTerminalPosition.center)
+                }
+                .pickerStyle(.menu)
+            }
+
+            HStack(spacing: 12) {
+                Text("Quick Terminal Screen")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Quick Terminal Screen", selection: $model.managedQuickTerminalScreen) {
+                    Text("main").tag(QuickTerminalScreen.main)
+                    Text("mouse").tag(QuickTerminalScreen.mouse)
+                    Text("menu-bar").tag(QuickTerminalScreen.menuBar)
+                }
+                .pickerStyle(.menu)
+            }
+
+            HStack(spacing: 12) {
+                Text("Quick Terminal Space Behavior")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Quick Terminal Space Behavior", selection: $model.managedQuickTerminalSpaceBehavior) {
+                    Text("move").tag(QuickTerminalSpaceBehavior.move)
+                    Text("remain").tag(QuickTerminalSpaceBehavior.remain)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 12) {
+                Text("Auto Update Channel")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Auto Update Channel", selection: $model.managedAutoUpdateChannel) {
+                    Text("stable").tag(Ghostty.AutoUpdateChannel.stable)
+                    Text("tip").tag(Ghostty.AutoUpdateChannel.tip)
                 }
                 .pickerStyle(.segmented)
             }
