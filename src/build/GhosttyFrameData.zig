@@ -75,10 +75,14 @@ pub fn distResources(b: *std.Build) struct {
     }
 
     const run = b.addRunArtifact(exe);
-    // Use a repository-relative path instead of a LazyPath here because
-    // Zig's native Windows run step currently asserts on absolute child
-    // path arguments during configure.
-    run.addArg("src/build/framegen/frames");
+    // Use a cwd-relative LazyPath that carries an absolute path from the
+    // owning build root. This keeps dependency builds (such as the
+    // libghostty software-host example) working while still avoiding the
+    // native Windows RunStep path assertion issues we hit with plain src_path
+    // arguments in CI.
+    run.addDirectoryArg(.{
+        .cwd_relative = b.pathFromRoot("src/build/framegen/frames"),
+    });
     const compressed_file = run.addOutputFileArg("framedata.compressed");
 
     return .{
