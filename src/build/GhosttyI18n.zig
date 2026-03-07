@@ -31,7 +31,9 @@ pub fn init(b: *std.Build, cfg: *const Config) !GhosttyI18n {
             locale;
 
         const msgfmt = b.addSystemCommand(&.{ "msgfmt", "-o", "-" });
-        msgfmt.addFileArg(b.path("po/" ++ locale ++ ".po"));
+        const locale_path = "po/" ++ locale ++ ".po";
+        msgfmt.addArg(locale_path);
+        msgfmt.addFileInput(b.path(locale_path));
 
         try steps.append(b.allocator, &b.addInstallFile(
             msgfmt.captureStdOut(),
@@ -184,7 +186,9 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
 
     inline for (locales) |locale| {
         const msgmerge = b.addSystemCommand(&.{ "msgmerge", "--quiet", "--no-fuzzy-matching" });
-        msgmerge.addFileArg(b.path("po/" ++ locale ++ ".po"));
+        const locale_path = "po/" ++ locale ++ ".po";
+        msgmerge.addArg(locale_path);
+        msgmerge.addFileInput(b.path(locale_path));
         msgmerge.addFileArg(xgettext_merge.captureStdOut());
         usf.addCopyFileToSource(msgmerge.captureStdOut(), "po/" ++ locale ++ ".po");
     }

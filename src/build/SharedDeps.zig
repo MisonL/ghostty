@@ -833,7 +833,7 @@ pub fn gtkNgDistResources(
                     bp.name,
                 },
             ));
-            blueprint_run.addFileArg(b.path(b.fmt(
+            const blueprint_path = b.fmt(
                 "{s}/{d}.{d}/{s}.blp",
                 .{
                     gresource.ui_path,
@@ -841,7 +841,9 @@ pub fn gtkNgDistResources(
                     bp.minor,
                     bp.name,
                 },
-            )));
+            );
+            blueprint_run.addArg(blueprint_path);
+            blueprint_run.addFileInput(b.path(blueprint_path));
 
             xml_run.addFileArg(ui_file);
         }
