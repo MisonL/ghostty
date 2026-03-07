@@ -95,7 +95,7 @@
                             <menuItem isSeparatorItem="YES" id="VOq-y0-SEH"/>
                             <menuItem title="Preferences…" keyEquivalent="," id="BOF-NM-1cW">
                                 <connections>
-                                    <action selector="openConfig:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
+                                    <action selector="showSettings:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Reload Configuration" id="KKH-XX-5py">

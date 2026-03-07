@@ -598,7 +598,6 @@ class AppDelegate: NSObject,
         guard ghostty.readiness == .ready else { return }
 
         syncMenuShortcut(config, action: "check_for_updates", menuItem: self.menuCheckForUpdates)
-        syncMenuShortcut(config, action: "open_config", menuItem: self.menuOpenConfig)
         syncMenuShortcut(config, action: "reload_config", menuItem: self.menuReloadConfig)
         syncMenuShortcut(config, action: "quit", menuItem: self.menuQuit)
 
@@ -1063,6 +1062,10 @@ class AppDelegate: NSObject,
 
     @IBAction func openConfig(_ sender: Any?) {
         Ghostty.App.openConfig()
+    }
+
+    @IBAction func showSettings(_ sender: Any?) {
+        SettingsController.shared.show()
     }
 
     @IBAction func reloadConfig(_ sender: Any?) {
