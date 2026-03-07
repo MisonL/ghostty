@@ -4913,7 +4913,7 @@ test "damage metadata rejection stays separate from snapshot failure runtime fal
     };
 
     var payload: [48]u8 = [_]u8{0} ** 48;
-    var damage_rects = [_]apprt.surface.SoftwareDamageRect{.{
+    var damage_rects = [_]apprt.surface.Message.SoftwareFrameDamageRect{.{
         .x_px = 0,
         .y_px = 0,
         .width_px = 2,
@@ -5018,7 +5018,7 @@ test "damage metadata counters reset after a subsequent valid frame" {
     };
 
     var payload: [48]u8 = [_]u8{0} ** 48;
-    var damage_rects = [_]apprt.surface.SoftwareDamageRect{.{
+    var damage_rects = [_]apprt.surface.Message.SoftwareFrameDamageRect{.{
         .x_px = 0,
         .y_px = 0,
         .width_px = 2,

@@ -634,15 +634,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 // put into the map immediately below and our errdefer to
                 // handle our map state will fix this up.
 
-                const pixel_format: Module.Image.Pending.PixelFormat = switch (pending.pixel_format) {
-                    .gray => .gray,
-                    .gray_alpha => .gray_alpha,
-                    .rgb => .rgb,
-                    .bgr => .bgr,
-                    .rgba => .rgba,
-                    .bgra => .bgra,
-                    else => unreachable,
-                };
+                const pixel_format: Module.Image.Pending.PixelFormat = pending.pixel_format;
 
                 // Store it in the map
                 const new_image: Module.Image = .{
@@ -690,13 +682,13 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                     .{
                         .width = image.width,
                         .height = image.height,
-                        .pixel_format = switch (image.format) {
+                        .pixel_format = @as(Module.Image.Pending.PixelFormat, switch (image.format) {
                             .gray => .gray,
                             .gray_alpha => .gray_alpha,
                             .rgb => .rgb,
                             .rgba => .rgba,
                             .png => unreachable, // should be decoded by now
-                        },
+                        }),
 
                         // constCasts are always gross but this one is safe is because
                         // the data is only read from here and copied into its own

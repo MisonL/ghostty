@@ -11,6 +11,10 @@ pub fn CellModule(comptime shaderpkg: type) type {
     return struct {
         const Self = @This();
 
+        pub fn isSymbol(cp: u21) bool {
+            return symbols.get(cp);
+        }
+
         /// The possible cell content keys that exist.
         pub const Key = enum {
             bg,
