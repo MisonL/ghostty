@@ -138,6 +138,7 @@ pub fn init(
                 \\  ''|*[!0-9]*) retries=2 ;;
                 \\esac
                 \\if [ "$retries" -lt 1 ]; then retries=1; fi
+                \\mkdir -p build
                 \\attempt=1
                 \\while :; do
                 \\  log_file="build/xcodebuild-test-attempt-$attempt.log"
