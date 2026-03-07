@@ -4,14 +4,27 @@ import GhosttyKit
 
 @MainActor
 final class SettingsModel: ObservableObject {
+    private static let managedBlockStart = "# BEGIN Ghostty macOS Settings (managed)"
+    private static let managedBlockEnd = "# END Ghostty macOS Settings (managed)"
+
     @Published private(set) var config: Ghostty.Config
     @Published private(set) var configPath: String
+    @Published var managedFocusFollowsMouse: Bool = false
+    @Published var managedWindowStepResize: Bool = false
+    @Published var managedWindowShadow: Bool = false
+    @Published var managedAutoSecureInput: Bool = false
+    @Published var managedSecureInputIndication: Bool = false
+    @Published var managedScrollbar: Ghostty.Config.Scrollbar = .system
+    @Published private(set) var hasManagedOverrides: Bool = false
+    @Published private(set) var saveMessage: String?
+    @Published private(set) var saveMessageIsError: Bool = false
 
     private var configObserver: NSObjectProtocol?
 
     init(config: Ghostty.Config? = nil) {
         self.config = config ?? Ghostty.Config()
         self.configPath = Self.resolveConfigPath()
+        self.refreshDraftFromConfig()
 
         configObserver = NotificationCenter.default.addObserver(
             forName: .ghosttyConfigDidChange,
@@ -19,15 +32,18 @@ final class SettingsModel: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let self else { return }
-            guard notification.object == nil else { return }
+            Task { @MainActor in
+                guard notification.object == nil else { return }
 
-            if let updated = notification.userInfo?[Notification.Name.GhosttyConfigChangeKey] as? Ghostty.Config {
-                self.config = updated
-            } else {
-                self.refresh()
+                if let updated = notification.userInfo?[Notification.Name.GhosttyConfigChangeKey] as? Ghostty.Config {
+                    self.config = updated
+                } else {
+                    self.refresh()
+                }
+
+                self.configPath = Self.resolveConfigPath()
+                self.refreshDraftFromConfig()
             }
-
-            self.configPath = Self.resolveConfigPath()
         }
     }
 
@@ -46,6 +62,7 @@ final class SettingsModel: ObservableObject {
             config = Ghostty.Config(clone: cfg)
         }
         configPath = Self.resolveConfigPath()
+        refreshDraftFromConfig()
     }
 
     func openConfig() {
@@ -64,8 +81,141 @@ final class SettingsModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func saveManagedSettings() {
+        do {
+            let path = try ensureConfigPath()
+            let contents = try readConfigFile(at: path)
+            let updated = Self.replacingManagedBlock(
+                in: contents,
+                with: managedBlockContents(),
+            )
+            try writeConfigFile(updated, to: path)
+
+            hasManagedOverrides = true
+            saveMessage = "Saved managed settings to the config file and requested a reload."
+            saveMessageIsError = false
+            reloadConfig()
+        } catch {
+            saveMessage = "Failed to save managed settings: \(error.localizedDescription)"
+            saveMessageIsError = true
+        }
+    }
+
+    func removeManagedSettings() {
+        do {
+            let path = try ensureConfigPath()
+            let contents = try readConfigFile(at: path)
+            let updated = Self.replacingManagedBlock(in: contents, with: nil)
+            try writeConfigFile(updated, to: path)
+
+            hasManagedOverrides = false
+            saveMessage = "Removed the managed settings block and requested a reload."
+            saveMessageIsError = false
+            reloadConfig()
+        } catch {
+            saveMessage = "Failed to remove managed settings: \(error.localizedDescription)"
+            saveMessageIsError = true
+        }
+    }
+
     private static func resolveConfigPath() -> String {
         Ghostty.AllocatedString(ghostty_config_open_path()).string
+    }
+
+    private func refreshDraftFromConfig() {
+        managedFocusFollowsMouse = config.focusFollowsMouse
+        managedWindowStepResize = config.windowStepResize
+        managedWindowShadow = config.macosWindowShadow
+        managedAutoSecureInput = config.autoSecureInput
+        managedSecureInputIndication = config.secureInputIndication
+        managedScrollbar = config.scrollbar
+        hasManagedOverrides = Self.hasManagedBlock(in: configPath)
+    }
+
+    private func managedBlockContents() -> String {
+        [
+            Self.managedBlockStart,
+            "# This block is written by Ghostty's macOS settings window.",
+            "# It overrides earlier definitions of the same keys.",
+            "focus-follows-mouse = \(managedFocusFollowsMouse)",
+            "window-step-resize = \(managedWindowStepResize)",
+            "macos-window-shadow = \(managedWindowShadow)",
+            "macos-auto-secure-input = \(managedAutoSecureInput)",
+            "macos-secure-input-indication = \(managedSecureInputIndication)",
+            "scrollbar = \(managedScrollbar.rawValue)",
+            Self.managedBlockEnd,
+        ].joined(separator: "\n")
+    }
+
+    private func ensureConfigPath() throws -> String {
+        let path = configPath.isEmpty ? Self.resolveConfigPath() : configPath
+        guard !path.isEmpty else {
+            throw SettingsPersistenceError.missingConfigPath
+        }
+
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: Data())
+        }
+
+        configPath = path
+        return path
+    }
+
+    private func readConfigFile(at path: String) throws -> String {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func writeConfigFile(_ contents: String, to path: String) throws {
+        try contents.write(
+            to: URL(fileURLWithPath: path),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private static func hasManagedBlock(in path: String) -> Bool {
+        guard !path.isEmpty,
+              let contents = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+        else { return false }
+        return contents.contains(managedBlockStart) && contents.contains(managedBlockEnd)
+    }
+
+    private static func replacingManagedBlock(in contents: String, with block: String?) -> String {
+        guard let start = contents.range(of: managedBlockStart),
+              let end = contents.range(of: managedBlockEnd, range: start.lowerBound..<contents.endIndex)
+        else {
+            guard let block else { return contents }
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "\(block)\n" : "\(trimmed)\n\n\(block)\n"
+        }
+
+        let before = contents[..<start.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        let after = contents[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        let middle = block?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var sections: [String] = []
+        if !before.isEmpty { sections.append(String(before)) }
+        if let middle, !middle.isEmpty { sections.append(middle) }
+        if !after.isEmpty { sections.append(String(after)) }
+        return sections.joined(separator: "\n\n") + (sections.isEmpty ? "" : "\n")
+    }
+}
+
+private enum SettingsPersistenceError: LocalizedError {
+    case missingConfigPath
+
+    var errorDescription: String? {
+        switch self {
+        case .missingConfigPath:
+            return "Ghostty could not resolve a writable configuration path."
+        }
     }
 }
 
@@ -118,6 +268,8 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+
+                managedSettings
 
                 if model.diagnosticsCount > 0 {
                     diagnosticsBanner
@@ -213,6 +365,44 @@ struct SettingsView: View {
                 Spacer()
                 Text("Diagnostics: \(model.diagnosticsCount)")
                     .foregroundStyle(model.diagnosticsCount > 0 ? .orange : .secondary)
+            }
+        }
+    }
+
+    private var managedSettings: some View {
+        SettingsSection("Managed Settings") {
+            Text("Save a small set of common macOS preferences into a managed block at the end of your config file. These values override earlier definitions of the same keys, and Ghostty reloads after saving.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let saveMessage = model.saveMessage {
+                Text(saveMessage)
+                    .foregroundStyle(model.saveMessageIsError ? .red : .secondary)
+            }
+
+            Toggle("Focus Follows Mouse", isOn: $model.managedFocusFollowsMouse)
+            Toggle("Window Step Resize", isOn: $model.managedWindowStepResize)
+            Toggle("macOS Window Shadow", isOn: $model.managedWindowShadow)
+            Toggle("Auto Secure Input", isOn: $model.managedAutoSecureInput)
+            Toggle("Secure Input Indicator", isOn: $model.managedSecureInputIndication)
+
+            HStack(spacing: 12) {
+                Text("Scrollbar")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Scrollbar", selection: $model.managedScrollbar) {
+                    Text("system").tag(Ghostty.Config.Scrollbar.system)
+                    Text("never").tag(Ghostty.Config.Scrollbar.never)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 10) {
+                Button("Save and Reload") { model.saveManagedSettings() }
+                    .buttonStyle(.borderedProminent)
+                Button("Remove Managed Overrides") { model.removeManagedSettings() }
+                    .disabled(!model.hasManagedOverrides)
+                Spacer()
             }
         }
     }
