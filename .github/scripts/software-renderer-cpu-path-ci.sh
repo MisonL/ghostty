@@ -403,6 +403,9 @@ echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics expect-damage-overflo
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-primary filter=${resolved_runtime_diagnostics_smoke_primary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_primary_expect_cpu_publish_warning:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-secondary filter=${resolved_runtime_diagnostics_smoke_secondary_test_filter:-<unset>} expect-damage-overflow=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_damage_overflow:-<unset>} expect-publish-retry-reason=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_retry_reason:-<unset>} expect-publish-warning=${resolved_runtime_diagnostics_smoke_secondary_expect_cpu_publish_warning:-<unset>}"
 echo "[software-renderer-ci] $SR_CI_OS runtime-diagnostics-smoke-published filter=${resolved_runtime_diagnostics_smoke_published_test_filter:-<unset>} expect-damage-overflow=<unset> expect-publish-retry-reason=<unset> expect-publish-warning=<unset> expect-publish-success=${resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success:-<unset>}"
+if [[ "$SR_CI_OS" == "macos" ]]; then
+  echo "[software-renderer-ci] $SR_CI_OS system-path=${system_path:-<unset>}"
+fi
 if [[ "$allow_legacy_os" == "true" ]]; then
   echo "[software-renderer-ci] $SR_CI_OS note: allow-legacy-os only bypasses build target-version gate; runtime fallback gates still apply."
 elif [[ "$target_is_legacy_os" == "true" ]]; then
@@ -421,7 +424,7 @@ else
 fi
 
 if [[ "$SR_CI_OS" == "macos" && -z "$system_path" ]]; then
-  echo "SR_CI_SYSTEM_PATH is required for macOS software-renderer cpu-path CI" >&2
+  echo "SR_CI_SYSTEM_PATH is required for macOS software-renderer cpu-path CI (current-value=${system_path:-<unset>})" >&2
   exit 1
 fi
 

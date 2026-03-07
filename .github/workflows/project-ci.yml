@@ -128,15 +128,25 @@ jobs:
         run: xcodebuild -version
 
       - name: Build macOS deps
+        id: deps
         run: |
+          set -euo pipefail
           nix --accept-flake-config build -L .#deps
-          echo "SYSTEM_PATH=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_ENV"
+          SYSTEM_PATH="$(readlink ./result)"
+          test -n "$SYSTEM_PATH"
+          test -d "$SYSTEM_PATH"
+          echo "Resolved SYSTEM_PATH=$SYSTEM_PATH"
+          printf 'deps=%s\n' "$SYSTEM_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run macOS core test suite
+        env:
+          SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
         run: |
           mkdir -p ci-logs
-          set -o pipefail
-          SYSTEM_PATH="$(python3 -c 'import os; print(os.path.realpath("result"))')"
+          set -euo pipefail
+          test -n "${SYSTEM_PATH:-}"
+          test -d "$SYSTEM_PATH"
+          echo "Using SYSTEM_PATH=$SYSTEM_PATH"
           nix --accept-flake-config develop -c zig build test --system "$SYSTEM_PATH" 2>&1 | tee ci-logs/macos-core-tests.log
 
       - name: Upload macOS core logs
@@ -162,9 +172,15 @@ jobs:
         run: xcodebuild -version
 
       - name: Build macOS deps
+        id: deps
         run: |
+          set -euo pipefail
           nix --accept-flake-config build -L .#deps
-          echo "SYSTEM_PATH=$(python3 -c 'import os; print(os.path.realpath(\"result\"))')" >> "$GITHUB_ENV"
+          SYSTEM_PATH="$(readlink ./result)"
+          test -n "$SYSTEM_PATH"
+          test -d "$SYSTEM_PATH"
+          echo "Resolved SYSTEM_PATH=$SYSTEM_PATH"
+          printf 'deps=%s\n' "$SYSTEM_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run software renderer selftests
         run: |
@@ -176,6 +192,7 @@ jobs:
       - name: Run macOS software renderer validation
         env:
           SR_CI_OS: macos
+          SYSTEM_PATH: ${{ steps.deps.outputs.deps }}
           SR_CI_TARGET_LABEL: default-target
           SR_CI_TARGET: ""
           SR_CI_TRANSPORT_LABEL: auto
@@ -213,10 +230,14 @@ jobs:
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS: "true"
         run: |
           mkdir -p ci-logs
-          set -o pipefail
-          SYSTEM_PATH="$(python3 -c 'import os; print(os.path.realpath("result"))')"
-          SR_CI_SYSTEM_PATH="$SYSTEM_PATH" \
-            nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
+          set -euo pipefail
+          test -n "${SYSTEM_PATH:-}"
+          test -d "$SYSTEM_PATH"
+          export SR_CI_SYSTEM_PATH="$SYSTEM_PATH"
+          test -n "$SR_CI_SYSTEM_PATH"
+          test -d "$SR_CI_SYSTEM_PATH"
+          echo "Using SYSTEM_PATH=$SYSTEM_PATH"
+          nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
 
       - name: Upload macOS software renderer logs
         if: always()

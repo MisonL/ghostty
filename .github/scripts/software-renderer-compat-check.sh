@@ -180,6 +180,16 @@ report_failure() {
   exit 1
 }
 
+print_cmd() {
+  local arg
+
+  printf "[software-compat] cmd:"
+  for arg in "$@"; do
+    printf " %q" "$arg"
+  done
+  printf "\n"
+}
+
 extract_log_kv_field() {
   local line="$1"
   local key="$2"
@@ -999,7 +1009,7 @@ JSON
   echo "[software-compat] inject-fake-swiftshader-hint=true path=$fake_swiftshader_hint_path library=$fake_swiftshader_library_path"
 fi
 
-echo "[software-compat] host=$host_os mode=$mode transport=$transport test-filter=${test_filter:-<unset>} allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-reprobe-interval-frames=${cpu_shader_reprobe_interval_frames:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default}"
+echo "[software-compat] host=$host_os mode=$mode transport=$transport test-filter=${test_filter:-<unset>} allow-legacy-os=$allow_legacy_os cpu-shader-mode=${cpu_shader_mode:-default} cpu-shader-backend=${cpu_shader_backend:-default} cpu-shader-timeout-ms=${cpu_shader_timeout_ms:-default} cpu-shader-reprobe-interval-frames=${cpu_shader_reprobe_interval_frames:-default} cpu-shader-enable-minimal-runtime=${cpu_shader_enable_minimal_runtime:-default} cpu-frame-damage-mode=${cpu_frame_damage_mode:-default} cpu-damage-rect-cap=${cpu_damage_rect_cap:-default} cpu-publish-warning-threshold-ms=${cpu_publish_warning_threshold_ms:-default} cpu-publish-warning-consecutive-limit=${cpu_publish_warning_consecutive_limit:-default} target=${target:-default} system-path=${system_path:-<unset>}"
 resolved_cpu_shader_mode="${cpu_shader_mode:-full}"
 resolved_cpu_shader_backend="${cpu_shader_backend:-vulkan_swiftshader}"
 resolved_cpu_shader_timeout_ms="${cpu_shader_timeout_ms:-16}"
@@ -1022,7 +1032,7 @@ fi
 if [[ -n "$expect_software_route_backend" ]]; then
   echo "[software-compat] expect-software-route-backend=$expect_software_route_backend"
 fi
-echo "[software-compat] cmd: ${cmd[*]}"
+print_cmd "${cmd[@]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"; if [[ -n "$fake_swiftshader_hint_dir" ]]; then rm -rf "$fake_swiftshader_hint_dir"; fi; if [[ "$had_prev_vk_driver_files" == "true" ]]; then export VK_DRIVER_FILES="$prev_vk_driver_files"; else unset VK_DRIVER_FILES; fi' EXIT

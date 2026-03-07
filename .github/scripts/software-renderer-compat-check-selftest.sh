@@ -258,7 +258,7 @@ case_drawframe_test_filter_passthrough_in_cmd() {
   fi
 
   assert_contains "$output" "test-filter=drawFrame software cpu smoke" "test-filter summary"
-  assert_contains "$output" "-Dtest-filter=drawFrame software cpu smoke" "test-filter cmd passthrough"
+  assert_contains "$output" "-Dtest-filter=drawFrame\\ software\\ cpu\\ smoke" "test-filter cmd passthrough"
   pass "drawFrame test-filter passthrough is preserved"
 }
 
@@ -272,7 +272,7 @@ case_helper_test_filter_passthrough_in_cmd() {
   fi
 
   assert_contains "$output" "test-filter=cpu route diagnostics kv helpers emit structured logs" "helper test-filter summary"
-  assert_contains "$output" "-Dtest-filter=cpu route diagnostics kv helpers emit structured logs" "helper test-filter cmd passthrough"
+  assert_contains "$output" "-Dtest-filter=cpu\\ route\\ diagnostics\\ kv\\ helpers\\ emit\\ structured\\ logs" "helper test-filter cmd passthrough"
   pass "helper test-filter passthrough is preserved"
 }
 
