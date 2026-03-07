@@ -16,22 +16,32 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
         const Module = @This();
 
         fn pendingPixelFormatBpp(pixel_format: anytype) usize {
-            return switch (pixel_format) {
-                .gray => 1,
-                .gray_alpha => 2,
-                .rgb, .bgr => 3,
-                .rgba, .bgra => 4,
+            return switch (@typeInfo(@TypeOf(pixel_format))) {
+                .@"enum" => pixel_format.bpp(),
+                .enum_literal => switch (pixel_format) {
+                    .gray => 1,
+                    .gray_alpha => 2,
+                    .rgb, .bgr => 3,
+                    .rgba, .bgra => 4,
+                    else => unreachable,
+                },
+                else => comptime unreachable,
             };
         }
 
         fn imagePendingPixelFormat(pixel_format: anytype) Module.Image.Pending.PixelFormat {
-            return switch (pixel_format) {
-                .gray => .gray,
-                .gray_alpha => .gray_alpha,
-                .rgb => .rgb,
-                .bgr => .bgr,
-                .rgba => .rgba,
-                .bgra => .bgra,
+            return switch (@typeInfo(@TypeOf(pixel_format))) {
+                .@"enum" => @enumFromInt(@intFromEnum(pixel_format)),
+                .enum_literal => switch (pixel_format) {
+                    .gray => .gray,
+                    .gray_alpha => .gray_alpha,
+                    .rgb => .rgb,
+                    .bgr => .bgr,
+                    .rgba => .rgba,
+                    .bgra => .bgra,
+                    else => unreachable,
+                },
+                else => comptime unreachable,
             };
         }
 
