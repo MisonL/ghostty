@@ -7528,7 +7528,7 @@ fn initDrawFrameSmokeRenderer(
             .grid_padding = undefined,
             .screen_size = undefined,
             .padding_extend = .{},
-            .min_contrast = raw_config.@"minimum-contrast",
+            .min_contrast = @floatCast(raw_config.@"minimum-contrast"),
             .cursor_pos = .{ std.math.maxInt(u16), std.math.maxInt(u16) },
             .cursor_color = undefined,
             .bg_color = .{

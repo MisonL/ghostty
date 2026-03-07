@@ -210,11 +210,11 @@ jobs:
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_SECONDARY_EXPECT_CPU_PUBLISH_WARNING: "true"
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_TEST_FILTER: drawFrame software cpu smoke published frame clears pending state and finalizes unloading background
           SR_CI_RUNTIME_DIAGNOSTICS_SMOKE_PUBLISHED_EXPECT_CPU_PUBLISH_SUCCESS: "true"
-          SR_CI_SYSTEM_PATH: ${{ env.SYSTEM_PATH }}
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
+          SR_CI_SYSTEM_PATH="$SYSTEM_PATH" \
+            nix --accept-flake-config develop -c ./.github/scripts/software-renderer-cpu-path-ci.sh 2>&1 | tee ci-logs/software-renderer-macos.log
 
       - name: Upload macOS software renderer logs
         if: always()

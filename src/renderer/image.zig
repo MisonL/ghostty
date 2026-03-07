@@ -1082,12 +1082,14 @@ fn fakeReadyDefaultTexture() DefaultTexture {
         return .{ .id = 1 };
     }
 
-    return .{
-        .texture = undefined,
-        .width = 0,
-        .height = 0,
-        .bpp = 0,
-    };
+    var texture: DefaultTexture = undefined;
+    inline for (@typeInfo(DefaultTexture).@"struct".fields) |field| {
+        switch (@typeInfo(field.type)) {
+            .pointer, .optional => @field(texture, field.name) = undefined,
+            else => @field(texture, field.name) = std.mem.zeroes(field.type),
+        }
+    }
+    return texture;
 }
 
 test "renderer.image: cpuPixels returns pending pixels and can repopulate same transmit_time when forced" {
