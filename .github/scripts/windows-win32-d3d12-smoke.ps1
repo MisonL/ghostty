@@ -40,6 +40,22 @@ if (-not (Test-Path $exePath)) {
   throw "Expected executable not found: $exePath"
 }
 
+$cmdExe = $env:ComSpec
+if ([string]::IsNullOrWhiteSpace($cmdExe)) {
+  $winDir = $env:WINDIR
+  if ([string]::IsNullOrWhiteSpace($winDir)) {
+    throw "Unable to determine Windows shell path from ComSpec or WINDIR"
+  }
+  $cmdExe = Join-Path $winDir "System32\cmd.exe"
+}
+
+if (-not (Test-Path $cmdExe)) {
+  throw "Expected Windows shell executable not found: $cmdExe"
+}
+
+"Using Windows shell executable: $cmdExe" | Out-File -FilePath $logPath -Append -Encoding utf8
+Write-Host "Using Windows shell executable: $cmdExe"
+
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $exePath
 $psi.UseShellExecute = $false
@@ -48,7 +64,7 @@ $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $false
 $psi.WorkingDirectory = $repoRoot
 $psi.ArgumentList.Add("-e")
-$psi.ArgumentList.Add("cmd.exe")
+$psi.ArgumentList.Add($cmdExe)
 $psi.ArgumentList.Add("/c")
 $psi.ArgumentList.Add("echo ghostty-ci-smoke & ping -n 3 127.0.0.1 >nul")
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE"] = "1"
