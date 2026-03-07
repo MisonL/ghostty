@@ -12,6 +12,7 @@ pub const web_canvas = @import("face/web_canvas.zig");
 pub const Face = switch (options.backend) {
     .freetype,
     .fontconfig_freetype,
+    .directwrite,
     .coretext_freetype,
     => freetype.Face,
 
@@ -63,8 +64,7 @@ pub const DesiredSize = struct {
             DesiredSize,
             .{ .name = "GhosttyFontDesiredSize" },
         ),
-
-        .none => void,
+        else => void,
     };
 };
 

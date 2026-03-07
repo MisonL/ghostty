@@ -4719,6 +4719,7 @@ pub fn finalize(self: *Config) !void {
                     .true,
             }
         },
+        .win32 => {},
     }
 
     // If we have the special value "inherit" then set it to null which
@@ -8991,8 +8992,7 @@ pub const GtkTitlebarStyle = enum(c_int) {
             GtkTitlebarStyle,
             .{ .name = "GhosttyGtkTitlebarStyle" },
         ),
-
-        .none => void,
+        else => void,
     };
 };
 
@@ -9706,8 +9706,7 @@ pub const WindowDecoration = enum(c_int) {
             WindowDecoration,
             .{ .name = "GhosttyConfigWindowDecoration" },
         ),
-
-        .none => void,
+        else => void,
     };
 
     pub fn parseCLI(input_: ?[]const u8) !WindowDecoration {

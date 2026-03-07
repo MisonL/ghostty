@@ -15,6 +15,7 @@ const size = @import("renderer/size.zig");
 pub const shadertoy = @import("renderer/shadertoy.zig");
 pub const Backend = @import("renderer/backend.zig").Backend;
 pub const GenericRenderer = @import("renderer/generic.zig").Renderer;
+pub const D3D12 = @import("renderer/D3D12.zig").D3D12;
 pub const Metal = @import("renderer/Metal.zig");
 pub const OpenGL = @import("renderer/OpenGL.zig");
 pub const CPU = @import("renderer/CPU.zig").CPU;
@@ -38,6 +39,7 @@ pub const lib = @import("lib/main.zig");
 /// The implementation to use for the renderer. This is comptime chosen
 /// so that every build has exactly one renderer implementation.
 pub const Renderer = switch (build_config.renderer) {
+    .d3d12 => GenericRenderer(D3D12),
     .metal => GenericRenderer(Metal),
     .opengl => GenericRenderer(OpenGL),
     .software => GenericRenderer(Software),

@@ -9,6 +9,9 @@ pub const Backend = enum {
     /// Fontconfig for font discovery and FreeType for font rendering.
     fontconfig_freetype,
 
+    /// DirectWrite font backend scaffold for Windows.
+    directwrite,
+
     /// CoreText for font discovery, rendering, and shaping (macOS).
     coretext,
 
@@ -43,7 +46,12 @@ pub const Backend = enum {
         // macOS also supports "coretext_freetype" but there is no scenario
         // that is the default. It is only used by people who want to
         // self-compile Ghostty and prefer the freetype aesthetic.
-        return if (target.os.tag.isDarwin()) .coretext else .fontconfig_freetype;
+        return if (target.os.tag.isDarwin())
+            .coretext
+        else if (target.os.tag == .windows)
+            .directwrite
+        else
+            .fontconfig_freetype;
     }
 
     // All the functions below can be called at comptime or runtime to
@@ -53,6 +61,7 @@ pub const Backend = enum {
         return switch (self) {
             .freetype,
             .fontconfig_freetype,
+            .directwrite,
             .coretext_freetype,
             => true,
 
@@ -74,6 +83,7 @@ pub const Backend = enum {
 
             .freetype,
             .fontconfig_freetype,
+            .directwrite,
             .web_canvas,
             => false,
         };
@@ -84,6 +94,7 @@ pub const Backend = enum {
             .fontconfig_freetype => true,
 
             .freetype,
+            .directwrite,
             .coretext,
             .coretext_freetype,
             .coretext_harfbuzz,
@@ -97,6 +108,7 @@ pub const Backend = enum {
         return switch (self) {
             .freetype,
             .fontconfig_freetype,
+            .directwrite,
             .coretext_freetype,
             .coretext_harfbuzz,
             => true,
@@ -105,6 +117,13 @@ pub const Backend = enum {
             .coretext_noshape,
             .web_canvas,
             => false,
+        };
+    }
+
+    pub fn hasDirectwrite(self: Backend) bool {
+        return switch (self) {
+            .directwrite => true,
+            else => false,
         };
     }
 };

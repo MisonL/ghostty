@@ -127,6 +127,9 @@ pub fn build(b: *std.Build) !void {
         b,
         &deps,
     );
+    if (libghostty_shared.artifact) |artifact| {
+        b.getInstallStep().dependOn(&artifact.step);
+    }
 
     // libghostty-vt
     const libghostty_vt_shared = shared: {

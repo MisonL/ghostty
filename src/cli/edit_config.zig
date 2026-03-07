@@ -76,20 +76,6 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     const path = try configpkg.preferredDefaultFilePath(alloc);
     defer alloc.free(path);
 
-    // We don't currently support Windows because we use the exec syscall.
-    if (comptime builtin.os.tag == .windows) {
-        try stderr.print(
-            \\The `ghostty +edit-config` command is not supported on Windows.
-            \\Please edit the configuration file manually at the following path:
-            \\
-            \\{s}
-            \\
-        ,
-            .{path},
-        );
-        return 1;
-    }
-
     // Get our editor
     const get_env_: ?internal_os.GetEnvResult = env: {
         // VISUAL vs. EDITOR: https://unix.stackexchange.com/questions/4859/visual-vs-editor-what-s-the-difference
@@ -111,6 +97,24 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     // If we don't have `$EDITOR` set then we can't do anything
     // but we can still print a helpful message.
     if (editor.len == 0) {
+        if (comptime builtin.os.tag == .windows) {
+            const file_url = try std.fmt.allocPrint(alloc, "file://{s}", .{path});
+            defer alloc.free(file_url);
+
+            internal_os.open(alloc, .text, file_url) catch |err| {
+                try stderr.print(
+                    \\Failed to open the Ghostty configuration file with the default
+                    \\Windows application. Error code={}.
+                    \\
+                    \\Path: {s}
+                    \\
+                , .{ err, path });
+                return 1;
+            };
+
+            return 0;
+        }
+
         try stderr.print(
             \\The $EDITOR or $VISUAL environment variable is not set or is empty.
             \\This environment variable is required to edit the Ghostty configuration
@@ -134,6 +138,18 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
         );
 
         return 1;
+    }
+
+    if (comptime builtin.os.tag == .windows) {
+        var child = std.process.Child.init(&.{ editor, path }, alloc);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        const term = try child.spawnAndWait();
+        return switch (term) {
+            .Exited => |code| code,
+            else => 1,
+        };
     }
 
     // We require libc because we want to use std.c.environ for envp

@@ -612,6 +612,14 @@ fn mapCustomShaderExecutorExecuteError(err: CustomShaderExecutorExecuteError) Ru
 }
 
 fn vulkanSwiftshaderProbe() VulkanSwiftshaderProbe {
+    if (builtin.os.tag == .windows) {
+        return vulkanSwiftshaderProbeFromEnvHintsForOs(
+            .{},
+            builtin.os.tag,
+            pathLooksReadable,
+        );
+    }
+
     return vulkanSwiftshaderProbeFromEnvHintsForOs(
         .{
             .vk_driver_files = std.posix.getenv("VK_DRIVER_FILES"),

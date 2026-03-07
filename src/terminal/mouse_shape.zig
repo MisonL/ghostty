@@ -60,8 +60,7 @@ pub const MouseShape = enum(c_int) {
                 MouseShape,
                 .{ .name = "GhosttyMouseShape" },
             ),
-
-            .none => void,
+            else => void,
         };
     };
 

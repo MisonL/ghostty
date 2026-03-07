@@ -241,14 +241,16 @@ macOS 额外必填：
 
 - `Linux Core Tests`
 - `Linux Software Renderer Validation`
+- `Linux libghostty Software Host Smoke`
 - `macOS Core Tests`
 - `macOS Software Renderer Validation`
 
 职责边界：
 
 - `Core Tests` 负责 `zig build test` 主测试集；
+- `Linux libghostty Software Host Smoke` 负责构建并运行 `example/c-libghostty-software-host`，验证完整 `libghostty` 的 software-host surface 与 `software_frame_cb` 闭环；
 - `Software Renderer Validation` 负责脚本自测、compat-check 与 runtime diagnostics smoke；
-- 4 个 job 都会上传各自的 `ci-logs/` 作为排障基线。
+- 所有 job 都会上传各自的 `ci-logs/` 作为排障基线。
 
 ### 8.1.2 GitHub-hosted macOS runner 的验证边界
 

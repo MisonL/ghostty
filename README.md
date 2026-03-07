@@ -136,7 +136,10 @@ in Zig but we do a lot of platform-native things:
 - The Linux app is built with GTK.
 
 There are more improvements to be made. The macOS settings window is still
-a work-in-progress. Similar improvements will follow with Linux.
+a work-in-progress, but it now exposes a real Preferences window that can
+inspect the active configuration, reload/open the config file, surface
+configuration diagnostics, and write a managed block of common macOS settings
+back into the config file. Similar improvements will follow with Linux.
 
 #### Cross-platform `libghostty` for Embeddable Terminals
 
@@ -160,6 +163,11 @@ The ultimate goal is not hypothetical! The macOS app is a `libghostty` consumer.
 The macOS app is a native Swift app developed in Xcode and `main()` is
 within Swift. The Swift app links to `libghostty` and uses the C API to
 render terminals.
+
+As part of the ongoing cross-platform work, the project now also includes an
+initial software-host surface mode for `libghostty`, allowing embedders to
+create a surface without an AppKit/UIKit view and consume shared CPU software
+frames through the existing runtime frame callback ABI.
 
 ## Crash Reports
 

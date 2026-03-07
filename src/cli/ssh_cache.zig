@@ -95,24 +95,40 @@ pub fn runInner(
     }
 
     if (opts.add) |host| {
-        const result = cache.add(alloc, host) catch |err| switch (err) {
-            DiskCache.Error.HostnameIsInvalid => {
-                try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
-                try stderr.print("Expected format: hostname or user@hostname\n", .{});
-                return 1;
-            },
-            DiskCache.Error.CacheIsLocked => {
-                try stderr.print("Error: Cache is busy, try again\n", .{});
-                return 1;
-            },
-            else => {
-                try stderr.print(
-                    "Error: Unable to add '{s}' to cache. Error: {}\n",
-                    .{ host, err },
-                );
-                return 1;
-            },
-        };
+        const result = if (comptime @import("builtin").os.tag == .windows)
+            cache.add(alloc, host) catch |err| switch (err) {
+                error.HostnameIsInvalid => {
+                    try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
+                    try stderr.print("Expected format: hostname or user@hostname\n", .{});
+                    return 1;
+                },
+                else => {
+                    try stderr.print(
+                        "Error: Unable to add '{s}' to cache. Error: {}\n",
+                        .{ host, err },
+                    );
+                    return 1;
+                },
+            }
+        else
+            cache.add(alloc, host) catch |err| switch (err) {
+                error.HostnameIsInvalid => {
+                    try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
+                    try stderr.print("Expected format: hostname or user@hostname\n", .{});
+                    return 1;
+                },
+                error.CacheIsLocked => {
+                    try stderr.print("Error: Cache is busy, try again\n", .{});
+                    return 1;
+                },
+                else => {
+                    try stderr.print(
+                        "Error: Unable to add '{s}' to cache. Error: {}\n",
+                        .{ host, err },
+                    );
+                    return 1;
+                },
+            };
 
         switch (result) {
             .added => try stdout.print("Added '{s}' to cache.\n", .{host}),
@@ -122,24 +138,41 @@ pub fn runInner(
     }
 
     if (opts.remove) |host| {
-        cache.remove(alloc, host) catch |err| switch (err) {
-            DiskCache.Error.HostnameIsInvalid => {
-                try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
-                try stderr.print("Expected format: hostname or user@hostname\n", .{});
-                return 1;
-            },
-            DiskCache.Error.CacheIsLocked => {
-                try stderr.print("Error: Cache is busy, try again\n", .{});
-                return 1;
-            },
-            else => {
-                try stderr.print(
-                    "Error: Unable to remove '{s}' from cache. Error: {}\n",
-                    .{ host, err },
-                );
-                return 1;
-            },
-        };
+        if (comptime @import("builtin").os.tag == .windows) {
+            cache.remove(alloc, host) catch |err| switch (err) {
+                error.HostnameIsInvalid => {
+                    try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
+                    try stderr.print("Expected format: hostname or user@hostname\n", .{});
+                    return 1;
+                },
+                else => {
+                    try stderr.print(
+                        "Error: Unable to remove '{s}' from cache. Error: {}\n",
+                        .{ host, err },
+                    );
+                    return 1;
+                },
+            };
+        } else {
+            cache.remove(alloc, host) catch |err| switch (err) {
+                error.HostnameIsInvalid => {
+                    try stderr.print("Error: Invalid hostname format '{s}'\n", .{host});
+                    try stderr.print("Expected format: hostname or user@hostname\n", .{});
+                    return 1;
+                },
+                error.CacheIsLocked => {
+                    try stderr.print("Error: Cache is busy, try again\n", .{});
+                    return 1;
+                },
+                else => {
+                    try stderr.print(
+                        "Error: Unable to remove '{s}' from cache. Error: {}\n",
+                        .{ host, err },
+                    );
+                    return 1;
+                },
+            };
+        }
         try stdout.print("Removed '{s}' from cache.\n", .{host});
         return 0;
     }

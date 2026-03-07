@@ -44,7 +44,9 @@ const DisplayLink = switch (builtin.os.tag) {
 
 const log = std.log.scoped(.generic_renderer);
 const software_renderer_cpu_effective =
-    if (build_config.renderer == .software)
+    if (build_config.renderer == .d3d12)
+        true
+    else if (build_config.renderer == .software)
         (if (@hasDecl(build_config, "software_renderer_cpu_effective"))
             build_config.software_renderer_cpu_effective
         else
@@ -2127,7 +2129,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (software_cpu_route_diagnostic_logged) return;
             software_cpu_route_diagnostic_logged = true;
 
-            if (comptime build_config.renderer != .software) return;
+            if (comptime build_config.renderer != .software and build_config.renderer != .d3d12) return;
             if (!comptime build_config.software_renderer_cpu_mvp) return;
 
             const cpu_min_macos_major = comptime if (@hasDecl(build_config, "software_renderer_cpu_min_macos_major"))
@@ -2678,6 +2680,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn softwareCpuRouteDecisionInput(self: *Self) SoftwareCpuRouteDecisionInput {
+            const force_software_cpu_route =
+                comptime @hasDecl(GraphicsAPI, "force_software_cpu_route") and
+                GraphicsAPI.force_software_cpu_route;
             const cpu_route_target_os_supported = buildCpuRouteTargetOsSupported(builtin.target.os.tag);
             const cpu_route_build_source = buildCpuRouteAvailabilitySource(
                 software_renderer_cpu_effective,
@@ -2724,10 +2729,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .cpu_route_build_source = cpu_route_build_source,
                 .cpu_route_target_os_supported = cpu_route_target_os_supported,
                 .cpu_route_allow_legacy_os = build_config.software_renderer_cpu_allow_legacy_os,
-                .renderer_is_software = build_config.renderer == .software,
+                .renderer_is_software = build_config.renderer == .software or
+                    force_software_cpu_route,
                 .software_frame_publishing = self.software_frame_publishing,
-                .software_renderer_experimental = self.config.software_renderer_experimental,
-                .software_renderer_presenter = self.config.software_renderer_presenter,
+                .software_renderer_experimental = if (force_software_cpu_route)
+                    true
+                else
+                    self.config.software_renderer_experimental,
+                .software_renderer_presenter = if (force_software_cpu_route and
+                    self.config.software_renderer_presenter == .@"legacy-gl")
+                    .auto
+                else
+                    self.config.software_renderer_presenter,
                 .custom_shaders_active = self.has_custom_shaders,
                 .custom_shader_execution_capability_observed = custom_shader_capability_observed,
                 .custom_shader_execution_available = custom_shader_available,
@@ -3827,7 +3840,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
-            const use_software_cpu_path = self.shouldUseSoftwareCpuFramePath();
+            const force_software_cpu_route =
+                comptime @hasDecl(GraphicsAPI, "force_software_cpu_route") and
+                GraphicsAPI.force_software_cpu_route;
+            const use_software_cpu_path = if (force_software_cpu_route)
+                true
+            else
+                self.shouldUseSoftwareCpuFramePath();
             if (!use_software_cpu_path) {
                 clearCpuRouteTransientStateForPlatformRoute(
                     &self.cpu_publish_pending,
@@ -3873,6 +3892,66 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 return;
             }
             self.cells_rebuilt = false;
+
+            if (comptime force_software_cpu_route) {
+                if (self.bg_image) |bg_image| {
+                    if (!bg_image.isUnloading() and
+                        imageCpuPixels(bg_image) == null and
+                        self.config.bg_image != null)
+                    {
+                        self.prepBackgroundImage() catch |err| {
+                            log.warn(
+                                "error preparing background image for forced cpu route err={}",
+                                .{err},
+                            );
+                        };
+                    }
+                }
+
+                const publish_start = std.time.Instant.now() catch null;
+                const publish_result = try self.publishCpuSoftwareFrame(
+                    surface_size,
+                    force_full_cpu_damage,
+                );
+                switch (publish_result) {
+                    .retry => |reason| {
+                        _ = applyCpuPublishResultState(
+                            self.alloc,
+                            &self.bg_image,
+                            self.config.bg_image != null,
+                            &self.cpu_publish_pending,
+                            &self.cells_rebuilt,
+                            .{ .retry = reason },
+                        );
+                        self.cpu_route_diagnostics.recordPublishRetryReason(reason);
+                        logCpuPublishRetryKv(
+                            self.cpu_route_diagnostics.snapshot(),
+                            self.cpu_publish_pending,
+                        );
+                    },
+                    .published => {
+                        _ = applyCpuPublishResultState(
+                            self.alloc,
+                            &self.bg_image,
+                            self.config.bg_image != null,
+                            &self.cpu_publish_pending,
+                            &self.cells_rebuilt,
+                            .published,
+                        );
+                        if (publish_start) |start| {
+                            const publish_end = std.time.Instant.now() catch null;
+                            if (publish_end) |end| {
+                                self.cpu_route_diagnostics.recordCpuFramePublished(end.since(start));
+                                logCpuPublishSuccessKv(
+                                    self.cpu_route_diagnostics.snapshot(),
+                                    self.cpu_publish_pending,
+                                );
+                            }
+                        }
+                    },
+                }
+                return;
+            }
 
             if (use_software_cpu_path) {
                 if (self.bg_image) |bg_image| {

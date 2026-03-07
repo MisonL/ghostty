@@ -237,6 +237,14 @@ pub const Face = struct {
         return f;
     }
 
+    /// Return a new face that references the same underlying font data
+    /// but applies fresh sizing/options to the cloned handle.
+    pub fn clone(self: *const Face, opts: font.face.Options) !Face {
+        self.face.ref();
+        errdefer self.face.deinit();
+        return try initFace(self.lib, self.face, opts);
+    }
+
     /// Resize the font in-place. If this succeeds, the caller is responsible
     /// for clearing any glyph caches, font atlas data, etc.
     pub fn setSize(self: *Face, opts: font.face.Options) !void {

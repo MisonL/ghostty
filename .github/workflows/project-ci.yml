@@ -113,6 +113,32 @@ jobs:
           path: ci-logs/
           if-no-files-found: error
 
+  linux-libghostty-software-host:
+    name: Linux libghostty Software Host Smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build and run libghostty software-host demo
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          cd example/c-libghostty-software-host
+          nix --accept-flake-config develop -c zig build run 2>&1 | tee ../../ci-logs/linux-libghostty-software-host.log
+
+      - name: Upload libghostty software-host logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: linux-libghostty-software-host-logs
+          path: ci-logs/
+          if-no-files-found: error
+
   macos-core-tests:
     name: macOS Core Tests
     runs-on: macos-15
@@ -246,5 +272,39 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: macos-software-renderer-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  windows-win32-d3d12-smoke:
+    name: Windows Win32 D3D12 Smoke
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Zig
+        shell: pwsh
+        run: |
+          $fileContent = Get-Content -Path "build.zig.zon" -Raw
+          $pattern = 'minimum_zig_version\s*=\s*"([^"]+)"'
+          $zigVersion = [regex]::Match($fileContent, $pattern).Groups[1].Value
+          $version = "zig-x86_64-windows-$zigVersion"
+          $uri = "https://ziglang.org/download/$zigVersion/$version.zip"
+          Invoke-WebRequest -Uri "$uri" -OutFile ".\zig-windows.zip"
+          Expand-Archive -Path ".\zig-windows.zip" -DestinationPath ".\" -Force
+          Remove-Item -Path ".\zig-windows.zip"
+          Rename-Item -Path ".\$version" -NewName ".\zig"
+          .\zig\zig.exe version
+
+      - name: Run Windows Win32 D3D12 smoke
+        shell: pwsh
+        run: .\.github\scripts\windows-win32-d3d12-smoke.ps1
+
+      - name: Upload Windows smoke logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-smoke-logs
           path: ci-logs/
           if-no-files-found: error

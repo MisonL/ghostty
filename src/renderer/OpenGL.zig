@@ -196,6 +196,12 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
         apprt.gtk,
         => try prepareContext(null),
 
+        apprt.win32 => {
+            // Win32 runtime scaffold does not yet own a GL context. This
+            // branch exists so the runtime can be compiled and iterated on
+            // behind explicit opt-in builds.
+        },
+
         apprt.embedded => {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
@@ -235,6 +241,8 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
             // on the main thread. As such, we don't do anything here.
         },
 
+        apprt.win32 => {},
+
         apprt.embedded => {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
@@ -254,6 +262,8 @@ pub fn threadExit(self: *const OpenGL) void {
             // We don't need to do any unloading for GTK because we may
             // be sharing the global bindings with other windows.
         },
+
+        apprt.win32 => {},
 
         apprt.embedded => {
             // TODO: see threadEnter

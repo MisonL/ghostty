@@ -110,6 +110,7 @@ pub fn add(
     // correct to always match our step.
     const target = step.root_module.resolved_target.?;
     const optimize = step.root_module.optimize.?;
+    const effective_renderer = self.config.renderer.effective(target.result);
 
     // We maintain a list of our static libraries and return it so that
     // we can build a single fat static library for the final app.
@@ -207,6 +208,10 @@ pub fn add(
                 );
             }
         }
+    }
+
+    if (self.config.font_backend.hasDirectwrite() and target.result.os.tag == .windows) {
+        step.linkSystemLibrary2("dwrite", dynamic_link_opts);
     }
 
     // Libpng - Ghostty doesn't actually use this directly, its only used
@@ -450,9 +455,13 @@ pub fn add(
             );
         }
 
-        const effective_renderer = self.config.renderer.effective(target.result);
         if (effective_renderer == .opengl and target.result.os.tag == .macos) {
             step.linkFramework("OpenGL");
+        }
+        if (effective_renderer == .d3d12 and target.result.os.tag == .windows) {
+            step.linkSystemLibrary2("d3d12", dynamic_link_opts);
+            step.linkSystemLibrary2("dxgi", dynamic_link_opts);
+            step.linkSystemLibrary2("dxguid", dynamic_link_opts);
         }
 
         // Apple platforms do not include libc libintl so we bundle it.
@@ -478,9 +487,12 @@ pub fn add(
         .freetype = true,
         .@"backend-metal" = target.result.os.tag.isDarwin(),
         .@"backend-osx" = target.result.os.tag == .macos,
+        // Keep Dear ImGui on its current backends until the Windows inspector
+        // is ported to native D3D12 as well.
+        .@"backend-dx12" = false,
         // OpenGL3 backend should only be built on non-Apple targets.
         // Apple platforms use Metal (and macOS may also use the OSX backend).
-        .@"backend-opengl3" = !target.result.os.tag.isDarwin(),
+        .@"backend-opengl3" = effective_renderer == .opengl and !target.result.os.tag.isDarwin(),
     })) |dep| {
         step.root_module.addImport("dcimgui", dep.module("dcimgui"));
         step.linkLibrary(dep.artifact("dcimgui"));
@@ -545,6 +557,7 @@ pub fn add(
         switch (self.config.app_runtime) {
             .none => {},
             .gtk => try self.addGtkNg(step),
+            .win32 => {},
         }
     }
 

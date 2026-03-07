@@ -49,8 +49,7 @@ pub const Clipboard = enum(Backing) {
             Clipboard,
             .{ .name = "GhosttyApprtClipboard" },
         ),
-
-        .none => void,
+        else => void,
     };
 };
 
@@ -83,8 +82,7 @@ pub const ClipboardRequest = union(ClipboardRequestType) {
             ClipboardRequest,
             .{ .name = "GhosttyClipboardRequest" },
         ),
-
-        .none => void,
+        else => void,
     };
 };
 

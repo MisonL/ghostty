@@ -128,8 +128,7 @@ pub const Message = union(enum) {
                 ChildExited,
                 .{ .name = "GhosttyApprtChildExited" },
             ),
-
-            .none => void,
+            else => void,
         };
     };
 

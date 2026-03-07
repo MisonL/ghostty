@@ -6,6 +6,7 @@
 const CodepointWidth = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Benchmark = @import("Benchmark.zig");
@@ -124,7 +125,10 @@ fn stepWcwidth(ptr: *anyopaque) Benchmark.Error!void {
             const cp_, const consumed = d.next(c);
             assert(consumed);
             if (cp_) |cp| {
-                std.mem.doNotOptimizeAway(wcwidth(cp));
+                std.mem.doNotOptimizeAway(if (builtin.os.tag == .windows)
+                    simd.codepointWidth(cp)
+                else
+                    wcwidth(cp));
             }
         }
     }

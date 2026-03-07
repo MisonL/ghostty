@@ -121,13 +121,13 @@ pub const ExpandError = error{
 /// than `buf.len`.
 pub fn expandHome(path: []const u8, buf: []u8) ExpandError![]const u8 {
     return switch (builtin.os.tag) {
-        .linux, .freebsd, .macos => try expandHomeUnix(path, buf),
+        .linux, .freebsd, .macos, .windows => try expandHomeAny(path, buf),
         .ios => return path,
         else => @compileError("unimplemented"),
     };
 }
 
-fn expandHomeUnix(path: []const u8, buf: []u8) ExpandError![]const u8 {
+fn expandHomeAny(path: []const u8, buf: []u8) ExpandError![]const u8 {
     if (!std.mem.startsWith(u8, path, "~/")) return path;
     const home_dir: []const u8 = if (home(buf)) |home_|
         home_ orelse return error.HomeDetectionFailed
@@ -138,34 +138,48 @@ fn expandHomeUnix(path: []const u8, buf: []u8) ExpandError![]const u8 {
 
     if (expanded_len > buf.len) return Error.BufferTooSmall;
     @memcpy(buf[home_dir.len..expanded_len], rest);
+    if (builtin.os.tag == .windows) {
+        for (buf[home_dir.len..expanded_len]) |*c| {
+            if (c.* == '/') c.* = '\\';
+        }
+    }
 
     return buf[0..expanded_len];
 }
 
-test "expandHomeUnix" {
+test "expandHomeAny" {
     const testing = std.testing;
     const allocator = testing.allocator;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const home_dir = try expandHomeUnix("~/", &buf);
+    const home_dir = try expandHomeAny("~/", &buf);
     // Joining the home directory `~` with the path `/`
     // the result should end with a separator here. (e.g. `/home/user/`)
     try testing.expect(home_dir[home_dir.len - 1] == std.fs.path.sep);
 
-    const downloads = try expandHomeUnix("~/Downloads/shader.glsl", &buf);
+    const downloads = try expandHomeAny("~/Downloads/shader.glsl", &buf);
     const expected_downloads = try std.mem.concat(allocator, u8, &[_][]const u8{ home_dir, "Downloads/shader.glsl" });
     defer allocator.free(expected_downloads);
-    try testing.expectEqualStrings(expected_downloads, downloads);
+    if (builtin.os.tag == .windows) {
+        const expected_windows = try std.mem.dupe(allocator, u8, expected_downloads);
+        defer allocator.free(expected_windows);
+        for (expected_windows[home_dir.len..]) |*c| {
+            if (c.* == '/') c.* = '\\';
+        }
+        try testing.expectEqualStrings(expected_windows, downloads);
+    } else {
+        try testing.expectEqualStrings(expected_downloads, downloads);
+    }
 
-    try testing.expectEqualStrings("~", try expandHomeUnix("~", &buf));
-    try testing.expectEqualStrings("~abc/", try expandHomeUnix("~abc/", &buf));
-    try testing.expectEqualStrings("/home/user", try expandHomeUnix("/home/user", &buf));
-    try testing.expectEqualStrings("", try expandHomeUnix("", &buf));
+    try testing.expectEqualStrings("~", try expandHomeAny("~", &buf));
+    try testing.expectEqualStrings("~abc/", try expandHomeAny("~abc/", &buf));
+    try testing.expectEqualStrings("/home/user", try expandHomeAny("/home/user", &buf));
+    try testing.expectEqualStrings("", try expandHomeAny("", &buf));
 
     // Expect an error if the buffer is large enough to hold the home directory,
     // but not the expanded path
     var small_buf = try allocator.alloc(u8, home_dir.len);
     defer allocator.free(small_buf);
-    try testing.expectError(error.BufferTooSmall, expandHomeUnix(
+    try testing.expectError(error.BufferTooSmall, expandHomeAny(
         "~/Downloads",
         small_buf[0..],
     ));

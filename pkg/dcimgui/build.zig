@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const freetype = b.option(bool, "freetype", "Use Freetype") orelse false;
     const backend_opengl3 = b.option(bool, "backend-opengl3", "OpenGL3 backend") orelse false;
+    const backend_dx12 = b.option(bool, "backend-dx12", "DirectX12 backend") orelse false;
     const backend_metal = b.option(bool, "backend-metal", "Metal backend") orelse false;
     const backend_osx = b.option(bool, "backend-osx", "OSX backend") orelse false;
 
@@ -13,6 +14,7 @@ pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     options.addOption(bool, "freetype", freetype);
     options.addOption(bool, "backend_opengl3", backend_opengl3);
+    options.addOption(bool, "backend_dx12", backend_dx12);
     options.addOption(bool, "backend_metal", backend_metal);
     options.addOption(bool, "backend_osx", backend_osx);
 
@@ -152,6 +154,21 @@ pub fn build(b: *std.Build) !void {
                 "",
                 .{ .include_extensions = &.{"imgui_impl_opengl3.h"} },
             );
+        }
+        if (backend_dx12) {
+            lib.addCSourceFiles(.{
+                .root = upstream.path("backends"),
+                .files = &.{"imgui_impl_dx12.cpp"},
+                .flags = flags.items,
+            });
+            lib.installHeadersDirectory(
+                upstream.path("backends"),
+                "",
+                .{ .include_extensions = &.{"imgui_impl_dx12.h"} },
+            );
+            lib.linkSystemLibrary2("d3d12", dynamic_link_opts);
+            lib.linkSystemLibrary2("dxgi", dynamic_link_opts);
+            lib.linkSystemLibrary2("d3dcompiler", dynamic_link_opts);
         }
     }
 

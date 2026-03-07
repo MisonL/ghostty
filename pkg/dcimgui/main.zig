@@ -26,6 +26,19 @@ pub extern fn ImGui_ImplMetal_Shutdown() callconv(.c) void;
 pub extern fn ImGui_ImplMetal_NewFrame(render_pass_descriptor: *anyopaque) callconv(.c) void;
 pub extern fn ImGui_ImplMetal_RenderDrawData(draw_data: *c.ImDrawData, command_buffer: *anyopaque, command_encoder: *anyopaque) callconv(.c) void;
 
+// DX12 backend
+pub extern fn ImGui_ImplDX12_Init(
+    device: *anyopaque,
+    num_frames_in_flight: c_uint,
+    rtv_format: c_uint,
+    srv_desc_heap: *anyopaque,
+    font_srv_cpu_desc_handle: u64,
+    font_srv_gpu_desc_handle: u64,
+) callconv(.c) bool;
+pub extern fn ImGui_ImplDX12_Shutdown() callconv(.c) void;
+pub extern fn ImGui_ImplDX12_NewFrame() callconv(.c) void;
+pub extern fn ImGui_ImplDX12_RenderDrawData(draw_data: *c.ImDrawData, command_list: *anyopaque) callconv(.c) void;
+
 // OSX
 pub extern fn ImGui_ImplOSX_Init(*anyopaque) callconv(.c) bool;
 pub extern fn ImGui_ImplOSX_Shutdown() callconv(.c) void;

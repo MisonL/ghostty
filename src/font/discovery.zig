@@ -1,12 +1,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = @import("../quirks.zig").inlineAssert;
+const builtin = @import("builtin");
 const fontconfig = @import("fontconfig");
+const freetype = @import("freetype");
 const macos = @import("macos");
+const internal_os = @import("../os/main.zig");
+const winos = internal_os.windows;
 const opentype = @import("opentype.zig");
 const options = @import("main.zig").options;
 const Collection = @import("main.zig").Collection;
 const DeferredFace = @import("main.zig").DeferredFace;
+const Face = @import("main.zig").Face;
+const Library = @import("main.zig").Library;
 const Variation = @import("main.zig").face.Variation;
 
 const log = std.log.scoped(.discovery);
@@ -15,12 +21,424 @@ const log = std.log.scoped(.discovery);
 pub const Discover = switch (options.backend) {
     .freetype => void, // no discovery
     .fontconfig_freetype => Fontconfig,
+    .directwrite => DirectWrite,
     .web_canvas => void, // no discovery
     .coretext,
     .coretext_freetype,
     .coretext_harfbuzz,
     .coretext_noshape,
     => CoreText,
+};
+
+pub const DirectWrite = struct {
+    factory: ?*winos.graphics.IDWriteFactory = null,
+    com_uninit_required: bool = false,
+
+    const FontPathEntry = struct {
+        path: [:0]const u8,
+        face_index: i32 = 0,
+    };
+
+    pub fn init() DirectWrite {
+        var result: DirectWrite = .{};
+        if (comptime builtin.target.os.tag != .windows) return result;
+
+        result.com_uninit_required = winos.com.initApartmentThreaded() catch |err| {
+            log.warn("directwrite discovery COM init failed err={}", .{err});
+            return result;
+        };
+
+        var raw_factory: ?*winos.graphics.IUnknown = null;
+        if (winos.graphics.DWriteCreateFactory(
+            .shared,
+            &winos.graphics.IID_IDWriteFactory,
+            &raw_factory,
+        ) == winos.S_OK and raw_factory != null) {
+            result.factory = @ptrCast(raw_factory);
+        } else {
+            log.warn("directwrite discovery factory init failed; using filesystem fallback", .{});
+        }
+
+        return result;
+    }
+
+    pub fn deinit(self: *DirectWrite) void {
+        winos.graphics.release(@ptrCast(self.factory));
+        winos.com.uninitIfOwned(self.com_uninit_required);
+        self.* = undefined;
+    }
+
+    pub fn discover(
+        self: *const DirectWrite,
+        alloc: Allocator,
+        desc: Descriptor,
+    ) !DiscoverIterator {
+        return try self.discoverIterator(alloc, desc);
+    }
+
+    pub fn discoverFallback(
+        self: *const DirectWrite,
+        alloc: Allocator,
+        collection: *Collection,
+        desc: Descriptor,
+    ) !DiscoverIterator {
+        _ = collection;
+        return try self.discoverIterator(alloc, desc);
+    }
+
+    fn discoverIterator(
+        self: *const DirectWrite,
+        alloc: Allocator,
+        desc: Descriptor,
+    ) !DiscoverIterator {
+        var desc_copy = try desc.clone(alloc);
+        errdefer deinitDescriptorClone(alloc, &desc_copy);
+
+        const entries = self.collectFontEntries(alloc) catch |err| fallback: {
+            log.warn(
+                "directwrite discovery falling back to %WINDIR%\\\\Fonts scan err={}",
+                .{err},
+            );
+            break :fallback try collectFallbackFontEntries(alloc);
+        };
+
+        return .{
+            .alloc = alloc,
+            .desc = desc_copy,
+            .entries = entries,
+        };
+    }
+
+    pub const DiscoverIterator = struct {
+        alloc: Allocator,
+        desc: Descriptor,
+        entries: []const FontPathEntry,
+        i: usize = 0,
+
+        pub fn deinit(self: *DiscoverIterator) void {
+            for (self.entries) |entry| self.alloc.free(entry.path);
+            self.alloc.free(self.entries);
+            deinitDescriptorClone(self.alloc, &self.desc);
+            self.* = undefined;
+        }
+
+        pub fn next(self: *DiscoverIterator) !?DeferredFace {
+            while (self.i < self.entries.len) {
+                const entry = self.entries[self.i];
+                self.i += 1;
+                const probe_opts = directwriteProbeFaceOptions(self.desc);
+
+                var lib = try Library.init(self.alloc);
+                var face = Face.initFile(lib, entry.path, entry.face_index, probe_opts) catch |err| {
+                    lib.deinit();
+                    log.debug(
+                        "directwrite discovery skipped unreadable font path={s} face_index={} err={}",
+                        .{ entry.path, entry.face_index, err },
+                    );
+                    continue;
+                };
+
+                if (self.desc.variations.len > 0) {
+                    face.setVariations(self.desc.variations, probe_opts) catch |err| {
+                        log.debug(
+                            "directwrite discovery skipped font with invalid variations path={s} face_index={} err={}",
+                            .{ entry.path, entry.face_index, err },
+                        );
+                        face.deinit();
+                        lib.deinit();
+                        continue;
+                    };
+                }
+
+                if (!directwriteFaceMatches(self.desc, &face)) {
+                    face.deinit();
+                    lib.deinit();
+                    continue;
+                }
+
+                const owned_path = try self.alloc.dupeZ(u8, entry.path);
+                errdefer self.alloc.free(owned_path);
+                const variations = try self.alloc.dupe(Variation, self.desc.variations);
+                errdefer self.alloc.free(variations);
+
+                return DeferredFace{
+                    .dw = .{
+                        .alloc = self.alloc,
+                        .lib = lib,
+                        .probe_face = face,
+                        .path = owned_path,
+                        .face_index = entry.face_index,
+                        .variations = variations,
+                    },
+                };
+            }
+
+            return null;
+        }
+    };
+
+    fn collectFontEntries(self: *const DirectWrite, alloc: Allocator) ![]const FontPathEntry {
+        if (comptime builtin.target.os.tag != .windows) return try alloc.alloc(FontPathEntry, 0);
+
+        const factory = self.factory orelse return error.DirectWriteUnavailable;
+        return try collectSystemFontEntries(alloc, factory);
+    }
+
+    fn collectSystemFontEntries(
+        alloc: Allocator,
+        factory: *winos.graphics.IDWriteFactory,
+    ) ![]const FontPathEntry {
+        var collection: ?*winos.graphics.IDWriteFontCollection = null;
+        if (!winos.graphics.succeeded(factory.lpVtbl.GetSystemFontCollection(
+            factory,
+            &collection,
+            winos.FALSE,
+        )) or collection == null) {
+            return error.DirectWriteEnumerationFailed;
+        }
+        defer winos.graphics.release(@ptrCast(collection));
+
+        var entries: std.ArrayList(FontPathEntry) = try .initCapacity(alloc, 0);
+        errdefer {
+            for (entries.items) |entry| alloc.free(entry.path);
+            entries.deinit(alloc);
+        }
+
+        const family_count = collection.?.lpVtbl.GetFontFamilyCount(collection.?);
+        var family_index: u32 = 0;
+        while (family_index < family_count) : (family_index += 1) {
+            var family: ?*winos.graphics.IDWriteFontFamily = null;
+            if (!winos.graphics.succeeded(collection.?.lpVtbl.GetFontFamily(
+                collection.?,
+                family_index,
+                &family,
+            )) or family == null) {
+                return error.DirectWriteEnumerationFailed;
+            }
+            defer winos.graphics.release(@ptrCast(family));
+
+            const font_count = family.?.lpVtbl.GetFontCount(family.?);
+            var font_index: u32 = 0;
+            while (font_index < font_count) : (font_index += 1) {
+                var font_face: ?*winos.graphics.IDWriteFont = null;
+                if (!winos.graphics.succeeded(family.?.lpVtbl.GetFont(
+                    family.?,
+                    font_index,
+                    &font_face,
+                )) or font_face == null) {
+                    return error.DirectWriteEnumerationFailed;
+                }
+                defer winos.graphics.release(@ptrCast(font_face));
+
+                const entry = try directwriteFontPathEntry(alloc, font_face.?);
+                if (entry) |value| try entries.append(alloc, value);
+            }
+        }
+
+        return try entries.toOwnedSlice(alloc);
+    }
+
+    fn directwriteFontPathEntry(
+        alloc: Allocator,
+        font_face: *winos.graphics.IDWriteFont,
+    ) !?FontPathEntry {
+        var raw_face: ?*winos.graphics.IDWriteFontFace = null;
+        if (!winos.graphics.succeeded(font_face.lpVtbl.CreateFontFace(
+            font_face,
+            &raw_face,
+        )) or raw_face == null) {
+            return null;
+        }
+        defer winos.graphics.release(@ptrCast(raw_face));
+
+        var file_count: u32 = 0;
+        if (!winos.graphics.succeeded(raw_face.?.lpVtbl.GetFiles(
+            raw_face.?,
+            &file_count,
+            null,
+        )) or file_count == 0) {
+            return null;
+        }
+
+        const files = try alloc.alloc(?*winos.graphics.IDWriteFontFile, file_count);
+        defer {
+            for (files[0..file_count]) |font_file| {
+                if (font_file) |file| winos.graphics.release(@ptrCast(file));
+            }
+            alloc.free(files);
+        }
+        @memset(files, null);
+
+        if (!winos.graphics.succeeded(raw_face.?.lpVtbl.GetFiles(
+            raw_face.?,
+            &file_count,
+            files.ptr,
+        ))) {
+            return null;
+        }
+
+        const face_index_u32 = raw_face.?.lpVtbl.GetIndex(raw_face.?);
+        const face_index = std.math.cast(i32, face_index_u32) orelse return null;
+
+        for (files[0..file_count]) |font_file| {
+            const file = font_file orelse continue;
+            const path = try directwriteFontFilePath(alloc, file) orelse continue;
+            return .{
+                .path = path,
+                .face_index = face_index,
+            };
+        }
+
+        return null;
+    }
+
+    fn directwriteFontFilePath(
+        alloc: Allocator,
+        font_file: *winos.graphics.IDWriteFontFile,
+    ) !?[:0]const u8 {
+        var key_size: u32 = 0;
+        const key = font_file.lpVtbl.GetReferenceKey(font_file, &key_size);
+        if (key == null or key_size == 0) return null;
+
+        var loader: ?*winos.graphics.IDWriteFontFileLoader = null;
+        if (!winos.graphics.succeeded(font_file.lpVtbl.GetLoader(font_file, &loader)) or loader == null) {
+            return null;
+        }
+        defer winos.graphics.release(@ptrCast(loader));
+
+        const local_loader = directwriteLocalFontFileLoader(loader.?) orelse return null;
+        defer winos.graphics.release(@ptrCast(local_loader));
+
+        var path_len: u32 = 0;
+        if (!winos.graphics.succeeded(local_loader.lpVtbl.GetFilePathLengthFromKey(
+            local_loader,
+            key,
+            key_size,
+            &path_len,
+        ))) {
+            return null;
+        }
+
+        const wide_path = try alloc.allocSentinel(u16, @intCast(path_len), 0);
+        defer alloc.free(wide_path);
+
+        if (!winos.graphics.succeeded(local_loader.lpVtbl.GetFilePathFromKey(
+            local_loader,
+            key,
+            key_size,
+            @ptrCast(wide_path.ptr),
+            path_len + 1,
+        ))) {
+            return null;
+        }
+
+        return try std.unicode.utf16LeToUtf8AllocZ(alloc, wide_path);
+    }
+
+    fn directwriteLocalFontFileLoader(
+        loader: *winos.graphics.IDWriteFontFileLoader,
+    ) ?*winos.graphics.IDWriteLocalFontFileLoader {
+        var raw_loader: ?*anyopaque = null;
+        const unknown: *winos.graphics.IUnknown = @ptrCast(@alignCast(loader));
+        if (!winos.graphics.succeeded(unknown.lpVtbl.QueryInterface(
+            unknown,
+            &winos.graphics.IID_IDWriteLocalFontFileLoader,
+            &raw_loader,
+        )) or raw_loader == null) {
+            return null;
+        }
+
+        return @ptrCast(@alignCast(raw_loader.?));
+    }
+
+    fn collectFallbackFontEntries(alloc: Allocator) ![]const FontPathEntry {
+        if (comptime builtin.target.os.tag != .windows) return try alloc.alloc(FontPathEntry, 0);
+
+        const win_dir = try std.process.getEnvVarOwned(alloc, "WINDIR");
+        defer alloc.free(win_dir);
+        const fonts_dir_path = try std.fs.path.join(alloc, &.{ win_dir, "Fonts" });
+        defer alloc.free(fonts_dir_path);
+
+        var dir = try std.fs.openDirAbsolute(fonts_dir_path, .{ .iterate = true });
+        defer dir.close();
+
+        var entries: std.ArrayList(FontPathEntry) = try .initCapacity(alloc, 0);
+        errdefer {
+            for (entries.items) |entry| alloc.free(entry.path);
+            entries.deinit(alloc);
+        }
+
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!isFontFile(entry.name)) continue;
+            try entries.append(alloc, .{
+                .path = try std.fs.path.joinZ(alloc, &.{ fonts_dir_path, entry.name }),
+                .face_index = 0,
+            });
+        }
+
+        return try entries.toOwnedSlice(alloc);
+    }
+
+    fn isFontFile(name: []const u8) bool {
+        return std.ascii.endsWithIgnoreCase(name, ".ttf") or
+            std.ascii.endsWithIgnoreCase(name, ".otf") or
+            std.ascii.endsWithIgnoreCase(name, ".ttc") or
+            std.ascii.endsWithIgnoreCase(name, ".otc");
+    }
+
+    fn directwriteProbeFaceOptions(desc: Descriptor) @import("main.zig").face.Options {
+        return .{
+            .size = .{
+                .points = if (desc.size > 0) desc.size else 12,
+                .xdpi = 96,
+                .ydpi = 96,
+            },
+        };
+    }
+
+    fn directwriteFaceMatches(desc: Descriptor, face: *const Face) bool {
+        const face_flags = face.face.handle.*.face_flags;
+        const style_flags = face.face.handle.*.style_flags;
+
+        if (desc.family) |family| {
+            if (!std.ascii.eqlIgnoreCase(family, "monospace")) {
+                var buf: [1024]u8 = undefined;
+                const actual_family = face.name(&buf) catch return false;
+                if (!std.ascii.eqlIgnoreCase(family, actual_family)) return false;
+            }
+        }
+
+        if (desc.style) |style| {
+            const actual_style = directwriteStyleName(face);
+            if (actual_style.len == 0 or !std.ascii.eqlIgnoreCase(style, actual_style)) return false;
+        }
+
+        if (desc.monospace or
+            (desc.family != null and std.ascii.eqlIgnoreCase(desc.family.?, "monospace")))
+        {
+            if (face_flags & freetype.c.FT_FACE_FLAG_FIXED_WIDTH == 0) return false;
+        }
+
+        if (desc.bold and style_flags & freetype.c.FT_STYLE_FLAG_BOLD == 0) return false;
+        if (desc.italic and style_flags & freetype.c.FT_STYLE_FLAG_ITALIC == 0) return false;
+        if (desc.codepoint > 0 and face.glyphIndex(desc.codepoint) == null) return false;
+
+        return true;
+    }
+
+    fn directwriteStyleName(face: *const Face) []const u8 {
+        const style_name = face.face.handle.*.style_name orelse return "";
+        return std.mem.sliceTo(style_name, 0);
+    }
+
+    fn deinitDescriptorClone(alloc: Allocator, desc: *Descriptor) void {
+        if (desc.family) |family| alloc.free(family);
+        if (desc.style) |style| alloc.free(style);
+        alloc.free(desc.variations);
+        desc.* = undefined;
+    }
 };
 
 /// Descriptor is used to search for fonts. The only required field

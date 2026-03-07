@@ -26,6 +26,10 @@ fc: if (options.backend == .fontconfig_freetype) ?Fontconfig else void =
 ct: if (font.Discover == font.discovery.CoreText) ?CoreText else void =
     if (font.Discover == font.discovery.CoreText) null else {},
 
+/// DirectWrite
+dw: if (options.backend == .directwrite) ?DirectWrite else void =
+    if (options.backend == .directwrite) null else {},
+
 /// Canvas
 wc: if (options.backend == .web_canvas) ?WebCanvas else void =
     if (options.backend == .web_canvas) null else {},
@@ -67,6 +71,26 @@ pub const CoreText = struct {
     }
 };
 
+/// DirectWrite specific data. Today this owns a lightweight probe face plus
+/// enough file metadata to load a fresh face through the shared collection
+/// library when the face is promoted from deferred to loaded.
+pub const DirectWrite = struct {
+    alloc: Allocator,
+    lib: Library,
+    probe_face: Face,
+    path: [:0]const u8,
+    face_index: i32,
+    variations: []const font.face.Variation,
+
+    pub fn deinit(self: *DirectWrite) void {
+        self.probe_face.deinit();
+        self.lib.deinit();
+        self.alloc.free(self.path);
+        self.alloc.free(self.variations);
+        self.* = undefined;
+    }
+};
+
 /// WebCanvas specific data. This is only present when building with canvas.
 pub const WebCanvas = struct {
     /// The allocator to use for fonts
@@ -87,6 +111,7 @@ pub const WebCanvas = struct {
 pub fn deinit(self: *DeferredFace) void {
     switch (options.backend) {
         .fontconfig_freetype => if (self.fc) |*fc| fc.deinit(),
+        .directwrite => if (self.dw) |*dw| dw.deinit(),
         .freetype => {},
         .web_canvas => if (self.wc) |*wc| wc.deinit(),
         .coretext,
@@ -101,6 +126,7 @@ pub fn deinit(self: *DeferredFace) void {
 /// Returns the family name of the font.
 pub fn familyName(self: DeferredFace, buf: []u8) ![]const u8 {
     switch (options.backend) {
+        .directwrite => if (self.dw) |dw| return try dw.probe_face.name(buf),
         .freetype => {},
 
         .fontconfig_freetype => if (self.fc) |fc|
@@ -129,6 +155,7 @@ pub fn familyName(self: DeferredFace, buf: []u8) ![]const u8 {
 /// face so it doesn't have to be freed.
 pub fn name(self: DeferredFace, buf: []u8) ![]const u8 {
     switch (options.backend) {
+        .directwrite => if (self.dw) |dw| return try dw.probe_face.name(buf),
         .freetype => {},
 
         .fontconfig_freetype => if (self.fc) |fc|
@@ -164,6 +191,7 @@ pub fn load(
 ) !Face {
     return switch (options.backend) {
         .fontconfig_freetype => try self.loadFontconfig(lib, opts),
+        .directwrite => try self.loadDirectWrite(lib, opts),
         .coretext, .coretext_harfbuzz, .coretext_noshape => try self.loadCoreText(lib, opts),
         .coretext_freetype => try self.loadCoreTextFreetype(lib, opts),
         .web_canvas => try self.loadWebCanvas(opts),
@@ -248,6 +276,18 @@ fn loadCoreTextFreetype(
     return face;
 }
 
+fn loadDirectWrite(
+    self: *DeferredFace,
+    lib: Library,
+    opts: font.face.Options,
+) !Face {
+    const dw = self.dw.?;
+    var face = try Face.initFile(lib, dw.path, dw.face_index, opts);
+    errdefer face.deinit();
+    try face.setVariations(dw.variations, opts);
+    return face;
+}
+
 fn loadWebCanvas(
     self: *DeferredFace,
     opts: font.face.Options,
@@ -315,6 +355,14 @@ pub fn hasCodepoint(self: DeferredFace, cp: u32, p: ?Presentation) bool {
                 var glyphs = [2]macos.graphics.Glyph{ 0, 0 };
                 return ct.font.getGlyphsForCharacters(unichars[0..len], glyphs[0..len]);
             }
+        },
+
+        .directwrite => if (self.dw) |dw| {
+            if (p) |desired| {
+                const actual: Presentation = if (dw.probe_face.hasColor()) .emoji else .text;
+                if (actual != desired) return false;
+            }
+            return dw.probe_face.glyphIndex(cp) != null;
         },
 
         // Canvas always has the codepoint because we have no way of

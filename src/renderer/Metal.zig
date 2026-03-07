@@ -109,12 +109,16 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
 
     // Get the metadata about our underlying view that we'll be rendering to.
     const info: ViewInfo = switch (apprt.runtime) {
-        apprt.embedded => .{
-            .scaleFactor = @floatCast(opts.rt_surface.content_scale.x),
-            .view = switch (opts.rt_surface.platform) {
+        apprt.embedded => embedded: {
+            const view = switch (opts.rt_surface.platform) {
                 .macos => |v| v.nsview,
                 .ios => |v| v.uiview,
-            },
+                .software_host => return error.UnsupportedPlatform,
+            };
+            break :embedded .{
+                .scaleFactor = @floatCast(opts.rt_surface.content_scale.x),
+                .view = view,
+            };
         },
 
         else => @compileError("unsupported apprt for metal"),

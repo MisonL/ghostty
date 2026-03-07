@@ -111,6 +111,7 @@ fn softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(
     const os_tag: std.Target.Os.Tag = switch (platform_tag) {
         .macos => .macos,
         .ios => .ios,
+        .software_host => builtin.target.os.tag,
     };
     return switch (renderer.Backend.softwareRouteForOsTag(os_tag)) {
         .metal => .native_texture_handle,
@@ -660,6 +661,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    software_host: SoftwareHost,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -673,6 +675,8 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    pub const SoftwareHost = struct {};
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -682,6 +686,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        software_host: extern struct {
+            reserved: ?*anyopaque,
         },
     };
 
@@ -702,6 +710,11 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .software_host => {
+                _ = c_platform.software_host;
+                return .{ .software_host = .{} };
+            },
         };
     }
 };
@@ -712,6 +725,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    software_host = 3,
 };
 
 pub const EnvVar = extern struct {
@@ -930,6 +944,7 @@ pub const Surface = struct {
         const platform_tag: PlatformTag = switch (self.platform) {
             .macos => .macos,
             .ios => .ios,
+            .software_host => .software_host,
         };
 
         var state = EmbeddedSoftwarePresenterState.fromSurface(self);
@@ -3600,6 +3615,14 @@ fn testUnsupportedStorageSupportMaskForIos() u32 {
     return testUnsupportedStorageSupportMaskForPlatform(.ios);
 }
 
+fn testRequiredStorageSupportMaskForSoftwareHost() u32 {
+    return testRequiredStorageSupportMaskForPlatform(.software_host);
+}
+
+fn testUnsupportedStorageSupportMaskForSoftwareHost() u32 {
+    return testUnsupportedStorageSupportMaskForPlatform(.software_host);
+}
+
 test "software presenter required storage for embedded runtime uses effective CPU switch instead of raw mvp toggle" {
     try std.testing.expectEqual(
         apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
@@ -3654,6 +3677,19 @@ test "software presenter required storage for embedded runtime on iOS uses nativ
     try std.testing.expectEqual(
         apprt.surface.Message.SoftwareFrameStorage.native_texture_handle,
         softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.ios, .{
+            .mvp = false,
+            .effective = false,
+        }, .auto),
+    );
+}
+
+test "software presenter required storage for embedded runtime on software host matches current build target route" {
+    try std.testing.expectEqual(
+        testRequiredStorageForOsTagWithCpuFlags(builtin.target.os.tag, .{
+            .mvp = false,
+            .effective = false,
+        }, .auto),
+        softwarePresenterRequiredStorageForEmbeddedConfigWithCpuFlags(.software_host, .{
             .mvp = false,
             .effective = false,
         }, .auto),
@@ -3974,6 +4010,58 @@ test "software presenter decision for embedded runtime applies runtime_failed_se
         decision.selected,
     );
     try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime selects snapshot on software host with callback and required storage support" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .software_host,
+        &testSoftwareFrameCallbackSuccess,
+        testRequiredStorageSupportMaskForSoftwareHost(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.snapshot_selected,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.snapshot,
+        decision.selected,
+    );
+    try std.testing.expect(decision.can_publish_software_frame);
+}
+
+test "software presenter decision for embedded runtime returns runtime_capability_missing on software host when required storage support is absent" {
+    const decision = softwarePresenterDecisionForEmbeddedConfig(
+        true,
+        true,
+        .snapshot,
+        .software_host,
+        &testSoftwareFrameCallbackSuccess,
+        testUnsupportedStorageSupportMaskForSoftwareHost(),
+        false,
+    );
+
+    try std.testing.expectEqual(
+        software_presenter.Reason.runtime_capability_missing,
+        decision.reason,
+    );
+    try std.testing.expectEqual(
+        Config.SoftwareRendererPresenter.@"legacy-gl",
+        decision.selected,
+    );
+    try std.testing.expect(!decision.can_publish_software_frame);
+}
+
+test "embedded platform init accepts software host without native view" {
+    const platform = try Platform.init(@intFromEnum(PlatformTag.software_host), .{
+        .software_host = .{ .reserved = null },
+    });
+
+    try std.testing.expectEqual(PlatformTag.software_host, std.meta.activeTag(platform));
 }
 
 test "shouldResetSoftwareSnapshotRuntimeFallback for embedded resets when experimental is disabled" {

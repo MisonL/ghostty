@@ -1,0 +1,14 @@
+.{
+    .name = .c_libghostty_software_host,
+    .version = "0.0.0",
+    .fingerprint = 0xcf50432fb21bd1b5,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .ghostty = .{ .path = "../../" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

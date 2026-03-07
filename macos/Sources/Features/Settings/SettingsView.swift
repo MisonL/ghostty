@@ -2,30 +2,173 @@ import AppKit
 import SwiftUI
 import GhosttyKit
 
+struct ManagedSettingsDraft: Equatable {
+    var focusFollowsMouse: Bool = false
+    var windowStepResize: Bool = false
+    var windowShadow: Bool = false
+    var autoSecureInput: Bool = false
+    var secureInputIndication: Bool = false
+    var scrollbar: Ghostty.Config.Scrollbar = .system
+    var windowSaveState: String = "default"
+    var backgroundOpacity: Double = 1.0
+    var quickTerminalPosition: QuickTerminalPosition = .top
+    var quickTerminalScreen: QuickTerminalScreen = .main
+    var quickTerminalAutoHide: Bool = true
+    var quickTerminalSpaceBehavior: QuickTerminalSpaceBehavior = .move
+    var quickTerminalAnimationDuration: Double = 0.2
+    var resizeOverlay: Ghostty.Config.ResizeOverlay = .after_first
+    var resizeOverlayPosition: Ghostty.Config.ResizeOverlayPosition = .center
+    var resizeOverlayDurationMilliseconds: Double = 750
+    var notifyOnCommandFinish: Ghostty.Config.NotifyOnCommandFinish = .never
+    var notifyActionBell: Bool = true
+    var notifyActionNotify: Bool = false
+    var notifyOnCommandFinishAfterSeconds: Double = 5
+    var macosShortcuts: Ghostty.Config.MacShortcuts = .ask
+    var autoUpdateChannel: Ghostty.AutoUpdateChannel = .stable
+
+    static func from(config: Ghostty.Config) -> Self {
+        let action = config.notifyOnCommandFinishAction
+        return .init(
+            focusFollowsMouse: config.focusFollowsMouse,
+            windowStepResize: config.windowStepResize,
+            windowShadow: config.macosWindowShadow,
+            autoSecureInput: config.autoSecureInput,
+            secureInputIndication: config.secureInputIndication,
+            scrollbar: config.scrollbar,
+            windowSaveState: config.windowSaveState.isEmpty ? "default" : config.windowSaveState,
+            backgroundOpacity: config.backgroundOpacity,
+            quickTerminalPosition: config.quickTerminalPosition,
+            quickTerminalScreen: config.quickTerminalScreen,
+            quickTerminalAutoHide: config.quickTerminalAutoHide,
+            quickTerminalSpaceBehavior: config.quickTerminalSpaceBehavior,
+            quickTerminalAnimationDuration: config.quickTerminalAnimationDuration,
+            resizeOverlay: config.resizeOverlay,
+            resizeOverlayPosition: config.resizeOverlayPosition,
+            resizeOverlayDurationMilliseconds: Double(config.resizeOverlayDuration),
+            notifyOnCommandFinish: config.notifyOnCommandFinish,
+            notifyActionBell: action.contains(.bell),
+            notifyActionNotify: action.contains(.notify),
+            notifyOnCommandFinishAfterSeconds: config.notifyOnCommandFinishAfter.timeInterval,
+            macosShortcuts: config.macosShortcuts,
+            autoUpdateChannel: config.autoUpdateChannel
+        )
+    }
+
+    func managedBlockContents() -> String {
+        [
+            ManagedSettingsFile.blockStart,
+            "# This block is written by Ghostty's macOS settings window.",
+            "# It overrides earlier definitions of the same keys.",
+            "focus-follows-mouse = \(focusFollowsMouse)",
+            "window-step-resize = \(windowStepResize)",
+            "macos-window-shadow = \(windowShadow)",
+            "macos-auto-secure-input = \(autoSecureInput)",
+            "macos-secure-input-indication = \(secureInputIndication)",
+            "scrollbar = \(scrollbar.rawValue)",
+            "window-save-state = \(windowSaveState)",
+            String(format: "background-opacity = %.2f", backgroundOpacity),
+            "quick-terminal-position = \(quickTerminalPosition.rawValue)",
+            "quick-terminal-screen = \(Self.encode(quickTerminalScreen))",
+            "quick-terminal-autohide = \(quickTerminalAutoHide)",
+            "quick-terminal-space-behavior = \(Self.encode(quickTerminalSpaceBehavior))",
+            String(format: "quick-terminal-animation-duration = %.2fs", quickTerminalAnimationDuration),
+            "resize-overlay = \(resizeOverlay.rawValue)",
+            "resize-overlay-position = \(resizeOverlayPosition.rawValue)",
+            "resize-overlay-duration = \(Int(resizeOverlayDurationMilliseconds.rounded()))ms",
+            "notify-on-command-finish = \(notifyOnCommandFinish.rawValue)",
+            "notify-on-command-finish-action = \(encodeNotifyAction())",
+            "notify-on-command-finish-after = \(formatSeconds(notifyOnCommandFinishAfterSeconds))",
+            "macos-shortcuts = \(macosShortcuts.rawValue)",
+            "auto-update-channel = \(autoUpdateChannel.rawValue)",
+            ManagedSettingsFile.blockEnd,
+        ].joined(separator: "\n")
+    }
+
+    private func encodeNotifyAction() -> String {
+        [
+            notifyActionBell ? "bell" : "no-bell",
+            notifyActionNotify ? "notify" : "no-notify",
+        ].joined(separator: ",")
+    }
+
+    private static func encode(_ value: QuickTerminalScreen) -> String {
+        switch value {
+        case .main:
+            return "main"
+        case .mouse:
+            return "mouse"
+        case .menuBar:
+            return "macos-menu-bar"
+        }
+    }
+
+    private static func encode(_ value: QuickTerminalSpaceBehavior) -> String {
+        switch value {
+        case .move:
+            return "move"
+        case .remain:
+            return "remain"
+        }
+    }
+
+    private func formatSeconds(_ seconds: Double) -> String {
+        let milliseconds = Int((seconds * 1000).rounded())
+        if milliseconds % 1000 == 0 {
+            return "\(milliseconds / 1000)s"
+        }
+        return "\(milliseconds)ms"
+    }
+}
+
+enum ManagedSettingsFile {
+    static let blockStart = "# BEGIN Ghostty macOS Settings (managed)"
+    static let blockEnd = "# END Ghostty macOS Settings (managed)"
+
+    static func hasManagedBlock(in path: String) -> Bool {
+        guard !path.isEmpty,
+              let contents = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+        else { return false }
+        return contents.contains(blockStart) && contents.contains(blockEnd)
+    }
+
+    static func replacingManagedBlock(in contents: String, with block: String?) -> String {
+        guard let start = contents.range(of: blockStart),
+              let end = contents.range(of: blockEnd, range: start.lowerBound..<contents.endIndex)
+        else {
+            guard let block else { return contents }
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "\(block)\n" : "\(trimmed)\n\n\(block)\n"
+        }
+
+        let before = contents[..<start.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        let after = contents[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        let middle = block?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var sections: [String] = []
+        if !before.isEmpty { sections.append(String(before)) }
+        if let middle, !middle.isEmpty { sections.append(middle) }
+        if !after.isEmpty { sections.append(String(after)) }
+        return sections.joined(separator: "\n\n") + (sections.isEmpty ? "" : "\n")
+    }
+}
+
 @MainActor
 final class SettingsModel: ObservableObject {
-    private static let managedBlockStart = "# BEGIN Ghostty macOS Settings (managed)"
-    private static let managedBlockEnd = "# END Ghostty macOS Settings (managed)"
-
     @Published private(set) var config: Ghostty.Config
     @Published private(set) var configPath: String
-    @Published var managedFocusFollowsMouse: Bool = false
-    @Published var managedWindowStepResize: Bool = false
-    @Published var managedWindowShadow: Bool = false
-    @Published var managedAutoSecureInput: Bool = false
-    @Published var managedSecureInputIndication: Bool = false
-    @Published var managedScrollbar: Ghostty.Config.Scrollbar = .system
-    @Published var managedWindowSaveState: String = "default"
-    @Published var managedBackgroundOpacity: Double = 1.0
-    @Published var managedQuickTerminalPosition: QuickTerminalPosition = .top
-    @Published var managedQuickTerminalScreen: QuickTerminalScreen = .main
-    @Published var managedQuickTerminalAutoHide: Bool = true
-    @Published var managedQuickTerminalSpaceBehavior: QuickTerminalSpaceBehavior = .move
-    @Published var managedAutoUpdateChannel: Ghostty.AutoUpdateChannel = .stable
+    @Published var managedDraft: ManagedSettingsDraft = .init() {
+        didSet {
+            if managedDraft != loadedManagedDraft {
+                saveMessage = nil
+                saveMessageIsError = false
+            }
+        }
+    }
     @Published private(set) var hasManagedOverrides: Bool = false
     @Published private(set) var saveMessage: String?
     @Published private(set) var saveMessageIsError: Bool = false
 
+    private var loadedManagedDraft: ManagedSettingsDraft = .init()
     private var configObserver: NSObjectProtocol?
 
     init(config: Ghostty.Config? = nil) {
@@ -61,6 +204,8 @@ final class SettingsModel: ObservableObject {
     }
 
     var diagnosticsCount: Int { config.errors.count }
+    var hasUnsavedManagedChanges: Bool { managedDraft != loadedManagedDraft }
+    var canSaveManagedSettings: Bool { !hasManagedOverrides || hasUnsavedManagedChanges }
 
     func refresh() {
         if let appDelegate = NSApp.delegate as? AppDelegate,
@@ -92,13 +237,14 @@ final class SettingsModel: ObservableObject {
         do {
             let path = try ensureConfigPath()
             let contents = try readConfigFile(at: path)
-            let updated = Self.replacingManagedBlock(
+            let updated = ManagedSettingsFile.replacingManagedBlock(
                 in: contents,
-                with: managedBlockContents(),
+                with: managedDraft.managedBlockContents(),
             )
             try writeConfigFile(updated, to: path)
 
             hasManagedOverrides = true
+            loadedManagedDraft = managedDraft
             saveMessage = "Saved managed settings to the config file and requested a reload."
             saveMessageIsError = false
             reloadConfig()
@@ -112,7 +258,7 @@ final class SettingsModel: ObservableObject {
         do {
             let path = try ensureConfigPath()
             let contents = try readConfigFile(at: path)
-            let updated = Self.replacingManagedBlock(in: contents, with: nil)
+            let updated = ManagedSettingsFile.replacingManagedBlock(in: contents, with: nil)
             try writeConfigFile(updated, to: path)
 
             hasManagedOverrides = false
@@ -125,67 +271,22 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    func revertManagedSettings() {
+        managedDraft = loadedManagedDraft
+        saveMessage = "Reverted pending settings changes."
+        saveMessageIsError = false
+    }
+
     private static func resolveConfigPath() -> String {
         Ghostty.AllocatedString(ghostty_config_open_path()).string
     }
 
     private func refreshDraftFromConfig() {
-        managedFocusFollowsMouse = config.focusFollowsMouse
-        managedWindowStepResize = config.windowStepResize
-        managedWindowShadow = config.macosWindowShadow
-        managedAutoSecureInput = config.autoSecureInput
-        managedSecureInputIndication = config.secureInputIndication
-        managedScrollbar = config.scrollbar
-        managedWindowSaveState = config.windowSaveState.isEmpty ? "default" : config.windowSaveState
-        managedBackgroundOpacity = config.backgroundOpacity
-        managedQuickTerminalPosition = config.quickTerminalPosition
-        managedQuickTerminalScreen = config.quickTerminalScreen
-        managedQuickTerminalAutoHide = config.quickTerminalAutoHide
-        managedQuickTerminalSpaceBehavior = config.quickTerminalSpaceBehavior
-        managedAutoUpdateChannel = config.autoUpdateChannel
-        hasManagedOverrides = Self.hasManagedBlock(in: configPath)
-    }
-
-    private func managedBlockContents() -> String {
-        [
-            Self.managedBlockStart,
-            "# This block is written by Ghostty's macOS settings window.",
-            "# It overrides earlier definitions of the same keys.",
-            "focus-follows-mouse = \(managedFocusFollowsMouse)",
-            "window-step-resize = \(managedWindowStepResize)",
-            "macos-window-shadow = \(managedWindowShadow)",
-            "macos-auto-secure-input = \(managedAutoSecureInput)",
-            "macos-secure-input-indication = \(managedSecureInputIndication)",
-            "scrollbar = \(managedScrollbar.rawValue)",
-            "window-save-state = \(managedWindowSaveState)",
-            String(format: "background-opacity = %.2f", managedBackgroundOpacity),
-            "quick-terminal-position = \(managedQuickTerminalPosition.rawValue)",
-            "quick-terminal-screen = \(encode(managedQuickTerminalScreen))",
-            "quick-terminal-autohide = \(managedQuickTerminalAutoHide)",
-            "quick-terminal-space-behavior = \(encode(managedQuickTerminalSpaceBehavior))",
-            "auto-update-channel = \(managedAutoUpdateChannel.rawValue)",
-            Self.managedBlockEnd,
-        ].joined(separator: "\n")
-    }
-
-    private func encode(_ value: QuickTerminalScreen) -> String {
-        switch value {
-        case .main:
-            return "main"
-        case .mouse:
-            return "mouse"
-        case .menuBar:
-            return "macos-menu-bar"
-        }
-    }
-
-    private func encode(_ value: QuickTerminalSpaceBehavior) -> String {
-        switch value {
-        case .move:
-            return "move"
-        case .remain:
-            return "remain"
-        }
+        loadedManagedDraft = ManagedSettingsDraft.from(config: config)
+        managedDraft = loadedManagedDraft
+        hasManagedOverrides = ManagedSettingsFile.hasManagedBlock(in: configPath)
+        saveMessage = nil
+        saveMessageIsError = false
     }
 
     private func ensureConfigPath() throws -> String {
@@ -219,33 +320,6 @@ final class SettingsModel: ObservableObject {
             atomically: true,
             encoding: .utf8
         )
-    }
-
-    private static func hasManagedBlock(in path: String) -> Bool {
-        guard !path.isEmpty,
-              let contents = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
-        else { return false }
-        return contents.contains(managedBlockStart) && contents.contains(managedBlockEnd)
-    }
-
-    private static func replacingManagedBlock(in contents: String, with block: String?) -> String {
-        guard let start = contents.range(of: managedBlockStart),
-              let end = contents.range(of: managedBlockEnd, range: start.lowerBound..<contents.endIndex)
-        else {
-            guard let block else { return contents }
-            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "\(block)\n" : "\(trimmed)\n\n\(block)\n"
-        }
-
-        let before = contents[..<start.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        let after = contents[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        let middle = block?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var sections: [String] = []
-        if !before.isEmpty { sections.append(String(before)) }
-        if let middle, !middle.isEmpty { sections.append(middle) }
-        if !after.isEmpty { sections.append(String(after)) }
-        return sections.joined(separator: "\n\n") + (sections.isEmpty ? "" : "\n")
     }
 }
 
@@ -421,18 +495,18 @@ struct SettingsView: View {
                     .foregroundStyle(model.saveMessageIsError ? .red : .secondary)
             }
 
-            Toggle("Focus Follows Mouse", isOn: $model.managedFocusFollowsMouse)
-            Toggle("Window Step Resize", isOn: $model.managedWindowStepResize)
-            Toggle("macOS Window Shadow", isOn: $model.managedWindowShadow)
-            Toggle("Auto Secure Input", isOn: $model.managedAutoSecureInput)
-            Toggle("Secure Input Indicator", isOn: $model.managedSecureInputIndication)
-            Toggle("Quick Terminal Auto Hide", isOn: $model.managedQuickTerminalAutoHide)
+            Toggle("Focus Follows Mouse", isOn: $model.managedDraft.focusFollowsMouse)
+            Toggle("Window Step Resize", isOn: $model.managedDraft.windowStepResize)
+            Toggle("macOS Window Shadow", isOn: $model.managedDraft.windowShadow)
+            Toggle("Auto Secure Input", isOn: $model.managedDraft.autoSecureInput)
+            Toggle("Secure Input Indicator", isOn: $model.managedDraft.secureInputIndication)
+            Toggle("Quick Terminal Auto Hide", isOn: $model.managedDraft.quickTerminalAutoHide)
 
             HStack(spacing: 12) {
                 Text("Scrollbar")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Scrollbar", selection: $model.managedScrollbar) {
+                Picker("Scrollbar", selection: $model.managedDraft.scrollbar) {
                     Text("system").tag(Ghostty.Config.Scrollbar.system)
                     Text("never").tag(Ghostty.Config.Scrollbar.never)
                 }
@@ -443,7 +517,7 @@ struct SettingsView: View {
                 Text("Window Save State")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Window Save State", selection: $model.managedWindowSaveState) {
+                Picker("Window Save State", selection: $model.managedDraft.windowSaveState) {
                     Text("default").tag("default")
                     Text("never").tag("never")
                     Text("always").tag("always")
@@ -455,8 +529,8 @@ struct SettingsView: View {
                 Text("Background Opacity")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Slider(value: $model.managedBackgroundOpacity, in: 0.20...1.0, step: 0.05)
-                Text(String(format: "%.2f", model.managedBackgroundOpacity))
+                Slider(value: $model.managedDraft.backgroundOpacity, in: 0.20...1.0, step: 0.05)
+                Text(String(format: "%.2f", model.managedDraft.backgroundOpacity))
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 48, alignment: .trailing)
             }
@@ -465,7 +539,7 @@ struct SettingsView: View {
                 Text("Quick Terminal Position")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Quick Terminal Position", selection: $model.managedQuickTerminalPosition) {
+                Picker("Quick Terminal Position", selection: $model.managedDraft.quickTerminalPosition) {
                     Text("top").tag(QuickTerminalPosition.top)
                     Text("bottom").tag(QuickTerminalPosition.bottom)
                     Text("left").tag(QuickTerminalPosition.left)
@@ -479,7 +553,7 @@ struct SettingsView: View {
                 Text("Quick Terminal Screen")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Quick Terminal Screen", selection: $model.managedQuickTerminalScreen) {
+                Picker("Quick Terminal Screen", selection: $model.managedDraft.quickTerminalScreen) {
                     Text("main").tag(QuickTerminalScreen.main)
                     Text("mouse").tag(QuickTerminalScreen.mouse)
                     Text("menu-bar").tag(QuickTerminalScreen.menuBar)
@@ -491,9 +565,94 @@ struct SettingsView: View {
                 Text("Quick Terminal Space Behavior")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Quick Terminal Space Behavior", selection: $model.managedQuickTerminalSpaceBehavior) {
+                Picker("Quick Terminal Space Behavior", selection: $model.managedDraft.quickTerminalSpaceBehavior) {
                     Text("move").tag(QuickTerminalSpaceBehavior.move)
                     Text("remain").tag(QuickTerminalSpaceBehavior.remain)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 12) {
+                Text("Quick Terminal Animation")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Slider(value: $model.managedDraft.quickTerminalAnimationDuration, in: 0...1.5, step: 0.05)
+                Text(formatSeconds(model.managedDraft.quickTerminalAnimationDuration))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 72, alignment: .trailing)
+            }
+
+            HStack(spacing: 12) {
+                Text("Resize Overlay")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Resize Overlay", selection: $model.managedDraft.resizeOverlay) {
+                    Text("always").tag(Ghostty.Config.ResizeOverlay.always)
+                    Text("after-first").tag(Ghostty.Config.ResizeOverlay.after_first)
+                    Text("never").tag(Ghostty.Config.ResizeOverlay.never)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            HStack(spacing: 12) {
+                Text("Resize Overlay Position")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Resize Overlay Position", selection: $model.managedDraft.resizeOverlayPosition) {
+                    Text("center").tag(Ghostty.Config.ResizeOverlayPosition.center)
+                    Text("top-left").tag(Ghostty.Config.ResizeOverlayPosition.top_left)
+                    Text("top-center").tag(Ghostty.Config.ResizeOverlayPosition.top_center)
+                    Text("top-right").tag(Ghostty.Config.ResizeOverlayPosition.top_right)
+                    Text("bottom-left").tag(Ghostty.Config.ResizeOverlayPosition.bottom_left)
+                    Text("bottom-center").tag(Ghostty.Config.ResizeOverlayPosition.bottom_center)
+                    Text("bottom-right").tag(Ghostty.Config.ResizeOverlayPosition.bottom_right)
+                }
+                .pickerStyle(.menu)
+            }
+
+            HStack(spacing: 12) {
+                Text("Resize Overlay Duration")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Slider(value: $model.managedDraft.resizeOverlayDurationMilliseconds, in: 100...5000, step: 50)
+                Text("\(Int(model.managedDraft.resizeOverlayDurationMilliseconds.rounded())) ms")
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 72, alignment: .trailing)
+            }
+
+            HStack(spacing: 12) {
+                Text("Notify on Command Finish")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("Notify on Command Finish", selection: $model.managedDraft.notifyOnCommandFinish) {
+                    Text("never").tag(Ghostty.Config.NotifyOnCommandFinish.never)
+                    Text("unfocused").tag(Ghostty.Config.NotifyOnCommandFinish.unfocused)
+                    Text("always").tag(Ghostty.Config.NotifyOnCommandFinish.always)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Toggle("Command Finished Bell", isOn: $model.managedDraft.notifyActionBell)
+            Toggle("Command Finished Notification", isOn: $model.managedDraft.notifyActionNotify)
+
+            HStack(spacing: 12) {
+                Text("Notify After")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Slider(value: $model.managedDraft.notifyOnCommandFinishAfterSeconds, in: 0...120, step: 1)
+                Text(formatSeconds(model.managedDraft.notifyOnCommandFinishAfterSeconds))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 72, alignment: .trailing)
+            }
+
+            HStack(spacing: 12) {
+                Text("macOS Shortcuts")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 220, alignment: .leading)
+                Picker("macOS Shortcuts", selection: $model.managedDraft.macosShortcuts) {
+                    Text("ask").tag(Ghostty.Config.MacShortcuts.ask)
+                    Text("allow").tag(Ghostty.Config.MacShortcuts.allow)
+                    Text("deny").tag(Ghostty.Config.MacShortcuts.deny)
                 }
                 .pickerStyle(.segmented)
             }
@@ -502,7 +661,7 @@ struct SettingsView: View {
                 Text("Auto Update Channel")
                     .foregroundStyle(.secondary)
                     .frame(width: 220, alignment: .leading)
-                Picker("Auto Update Channel", selection: $model.managedAutoUpdateChannel) {
+                Picker("Auto Update Channel", selection: $model.managedDraft.autoUpdateChannel) {
                     Text("stable").tag(Ghostty.AutoUpdateChannel.stable)
                     Text("tip").tag(Ghostty.AutoUpdateChannel.tip)
                 }
@@ -512,6 +671,9 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Button("Save and Reload") { model.saveManagedSettings() }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!model.canSaveManagedSettings)
+                Button("Revert Changes") { model.revertManagedSettings() }
+                    .disabled(!model.hasUnsavedManagedChanges)
                 Button("Remove Managed Overrides") { model.removeManagedSettings() }
                     .disabled(!model.hasManagedOverrides)
                 Spacer()
@@ -597,6 +759,13 @@ struct SettingsView: View {
         case .pixels(let pixels):
             return "\(pixels) px"
         }
+    }
+
+    private func formatSeconds(_ seconds: Double) -> String {
+        if seconds < 1 {
+            return "\(Int((seconds * 1000).rounded())) ms"
+        }
+        return String(format: "%.2f s", seconds)
     }
 }
 

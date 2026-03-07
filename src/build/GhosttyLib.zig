@@ -10,6 +10,9 @@ const LipoStep = @import("LipoStep.zig");
 /// The step that generates the file.
 step: *std.Build.Step,
 
+/// Install artifact retained so downstream dependency builds can link it.
+artifact: ?*std.Build.Step.InstallArtifact,
+
 /// The final static library file
 output: std.Build.LazyPath,
 dsym: ?std.Build.LazyPath,
@@ -33,6 +36,10 @@ pub fn initStatic(
         .use_llvm = true,
     });
     lib.linkLibC();
+    lib.installHeader(b.path("include/ghostty.h"), "ghostty.h");
+    if (deps.config.target.result.os.tag.isDarwin()) {
+        lib.linkFramework("Metal");
+    }
 
     // These must be bundled since we're compiling into a static lib.
     // Otherwise, you get undefined symbol errors.
@@ -46,6 +53,7 @@ pub fn initStatic(
 
     if (!deps.config.target.result.os.tag.isDarwin()) return .{
         .step = &lib.step,
+        .artifact = b.addInstallArtifact(lib, .{}),
         .output = lib.getEmittedBin(),
         .dsym = null,
     };
@@ -60,6 +68,7 @@ pub fn initStatic(
 
     return .{
         .step = libtool.step,
+        .artifact = null,
         .output = libtool.output,
 
         // Static libraries cannot have dSYMs because they aren't linked.
@@ -87,6 +96,10 @@ pub fn initShared(
         .use_llvm = true,
     });
     _ = try deps.add(lib);
+    lib.installHeader(b.path("include/ghostty.h"), "ghostty.h");
+    if (deps.config.target.result.os.tag.isDarwin()) {
+        lib.linkFramework("Metal");
+    }
 
     // Get our debug symbols
     const dsymutil: ?std.Build.LazyPath = dsymutil: {
@@ -104,6 +117,7 @@ pub fn initShared(
 
     return .{
         .step = &lib.step,
+        .artifact = b.addInstallArtifact(lib, .{}),
         .output = lib.getEmittedBin(),
         .dsym = dsymutil,
     };
@@ -131,6 +145,7 @@ pub fn initMacOSUniversal(
 
     return .{
         .step = universal.step,
+        .artifact = null,
         .output = universal.output,
 
         // You can't run dsymutil on a universal binary, you have to
