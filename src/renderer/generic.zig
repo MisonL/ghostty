@@ -7520,6 +7520,13 @@ fn initDrawFrameSmokeRenderer(
             .padding = .{},
         },
         .focused = true,
+        .scrollbar = .zero,
+        .scrollbar_dirty = false,
+        .last_bottom_node = null,
+        .last_bottom_y = 0,
+        .search_matches = null,
+        .search_selected_match = null,
+        .search_matches_dirty = false,
         .cells = .{},
         .uniforms = .{
             .projection_matrix = undefined,

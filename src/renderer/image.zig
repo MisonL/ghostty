@@ -1086,6 +1086,10 @@ fn fakeReadyDefaultTexture() DefaultTexture {
     inline for (@typeInfo(DefaultTexture).@"struct".fields) |field| {
         switch (@typeInfo(field.type)) {
             .pointer, .optional => @field(texture, field.name) = undefined,
+            .@"enum" => |info| @field(texture, field.name) = @field(
+                field.type,
+                info.fields[0].name,
+            ),
             else => @field(texture, field.name) = std.mem.zeroes(field.type),
         }
     }
