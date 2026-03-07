@@ -16,13 +16,21 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
         const Module = @This();
 
         fn pendingPixelFormatBpp(pixel_format: anytype) usize {
-            return switch (pixel_format) {
-                .gray => 1,
-                .gray_alpha => 2,
-                .rgb, .bgr => 3,
-                .rgba, .bgra => 4,
-                else => unreachable,
+            return switch (@typeInfo(@TypeOf(pixel_format))) {
+                .@"enum" => pixel_format.bpp(),
+                .enum_literal => switch (pixel_format) {
+                    .gray => 1,
+                    .gray_alpha => 2,
+                    .rgb, .bgr => 3,
+                    .rgba, .bgra => 4,
+                    else => unreachable,
+                },
+                else => comptime unreachable,
             };
+        }
+
+        fn imagePendingPixelFormat(pixel_format: anytype) Module.Image.Pending.PixelFormat {
+            return @field(Module.Image.Pending.PixelFormat, @tagName(pixel_format));
         }
 
         fn pendingDataSlice(pending: anytype) []const u8 {
@@ -634,7 +642,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 // put into the map immediately below and our errdefer to
                 // handle our map state will fix this up.
 
-                const pixel_format: Module.Image.Pending.PixelFormat = pending.pixel_format;
+                const pixel_format = imagePendingPixelFormat(pending.pixel_format);
 
                 // Store it in the map
                 const new_image: Module.Image = .{
