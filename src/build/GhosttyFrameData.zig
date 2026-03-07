@@ -63,7 +63,10 @@ pub fn distResources(b: *std.Build) struct {
     }
 
     const run = b.addRunArtifact(exe);
-    run.addDirectoryArg(b.path("src/build/framegen/frames"));
+    // Use a repository-relative path instead of a LazyPath here because
+    // Zig's native Windows run step currently asserts on absolute child
+    // path arguments during configure.
+    run.addArg("src/build/framegen/frames");
     const compressed_file = run.addOutputFileArg("framedata.compressed");
 
     return .{
