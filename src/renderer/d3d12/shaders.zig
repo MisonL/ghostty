@@ -417,26 +417,26 @@ const common_hlsl =
     \\    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
     \\}
     \\
-    \\float4 unlinearize(float4 linear) {
-    \\    bool3 cutoff = linear.rgb <= 0.0031308;
-    \\    float3 lower = linear.rgb * 12.92;
-    \\    float3 higher = pow(linear.rgb, 1.0 / 2.4) * 1.055 - 0.055;
-    \\    return float4(lerp(higher, lower, cutoff), linear.a);
+    \\float4 unlinearize(float4 linear_color) {
+    \\    bool3 cutoff = linear_color.rgb <= 0.0031308;
+    \\    float3 lower = linear_color.rgb * 12.92;
+    \\    float3 higher = pow(linear_color.rgb, 1.0 / 2.4) * 1.055 - 0.055;
+    \\    return float4(lerp(higher, lower, cutoff), linear_color.a);
     \\}
     \\
     \\float unlinearize_scalar(float v) {
     \\    return v <= 0.0031308 ? v * 12.92 : pow(v, 1.0 / 2.4) * 1.055 - 0.055;
     \\}
     \\
-    \\float4 load_color_u4(uint4 in_color, bool linear) {
+    \\float4 load_color_u4(uint4 in_color, bool want_linear) {
     \\    float4 color = float4(in_color) / 255.0f;
-    \\    if (linear) color = linearize(color);
+    \\    if (want_linear) color = linearize(color);
     \\    color.rgb *= color.a;
     \\    return color;
     \\}
     \\
-    \\float4 load_color_packed(uint packed, bool linear) {
-    \\    return load_color_u4(unpack4u8(packed), linear);
+    \\float4 load_color_packed(uint packed, bool want_linear) {
+    \\    return load_color_u4(unpack4u8(packed), want_linear);
     \\}
     \\
     \\struct FullScreenVertexOut {
