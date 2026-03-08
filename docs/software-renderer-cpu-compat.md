@@ -341,6 +341,18 @@ zig build test --system "$SYSTEM_PATH"
 
 ### 8.2.2 本地执行项目专属慢测与兼容脚本
 
+若只想走一条最小的本地项目验收，可直接执行：
+
+```bash
+scripts/local-project-smoke.sh
+```
+
+若只想跑快速项，可执行：
+
+```bash
+scripts/local-project-smoke.sh --quick
+```
+
 以下验证已从自动 `Project CI` 移出，默认建议在本地执行：
 
 Linux 核心测试：
