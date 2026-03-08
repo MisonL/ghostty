@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+echo "[software-renderer-ci] phase=init"
+
 decimal_exceeds_u64() {
   local value="$1"
   local max_u64="18446744073709551615"
@@ -440,9 +442,11 @@ print_compat_check_command() {
 }
 
 run_compat_check_command() {
+  echo "[software-renderer-ci] phase=compat-check-command-start"
   nix develop -c \
     ./.github/scripts/software-renderer-compat-check.sh \
     "$@"
+  echo "[software-renderer-ci] phase=compat-check-command-end"
 }
 
 run_runtime_diagnostics_smoke_slot() {
@@ -478,8 +482,9 @@ run_runtime_diagnostics_smoke_slot() {
     return 0
   fi
 
-  echo "[software-renderer-ci] $SR_CI_OS running runtime diagnostics smoke ${slot_name} filter=$test_filter"
+  echo "[software-renderer-ci] phase=runtime-diagnostics-smoke-${slot_name}-start filter=$test_filter"
   run_compat_check_command "${smoke_compat_args[@]}"
+  echo "[software-renderer-ci] phase=runtime-diagnostics-smoke-${slot_name}-end"
 }
 
 base_compat_args=(
@@ -570,6 +575,7 @@ if [[ -n "$expect_cpu_publish_success" ]]; then
 fi
 
 if [[ "$dry_run" == "true" ]]; then
+  echo "[software-renderer-ci] phase=dry-run"
   print_compat_check_command "dry-run compat-check command" "${compat_args[@]}"
   run_runtime_diagnostics_smoke_slot \
     "primary" \
@@ -595,7 +601,9 @@ if [[ "$dry_run" == "true" ]]; then
   exit 0
 fi
 
+echo "[software-renderer-ci] phase=compat-check-main-start"
 run_compat_check_command "${compat_args[@]}"
+echo "[software-renderer-ci] phase=compat-check-main-end"
 run_runtime_diagnostics_smoke_slot \
   "primary" \
   "$resolved_runtime_diagnostics_smoke_primary_test_filter" \
@@ -618,3 +626,5 @@ run_runtime_diagnostics_smoke_slot \
   "" \
   "" \
   "$resolved_runtime_diagnostics_smoke_published_expect_cpu_publish_success"
+
+echo "[software-renderer-ci] phase=success"

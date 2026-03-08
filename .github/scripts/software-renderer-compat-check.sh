@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+echo "[software-compat] phase=init"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -1032,12 +1034,14 @@ fi
 if [[ -n "$expect_software_route_backend" ]]; then
   echo "[software-compat] expect-software-route-backend=$expect_software_route_backend"
 fi
+echo "[software-compat] phase=build-command"
 print_cmd "${cmd[@]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
 trap 'rm -f "$log_file"; rm -rf "$cache_dir"; if [[ -n "$fake_swiftshader_hint_dir" ]]; then rm -rf "$fake_swiftshader_hint_dir"; fi; if [[ "$had_prev_vk_driver_files" == "true" ]]; then export VK_DRIVER_FILES="$prev_vk_driver_files"; else unset VK_DRIVER_FILES; fi' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
+  echo "[software-compat] phase=options-snapshot"
   if [[ -n "$expect_cpu_effective" || -n "$expect_cpu_shader_mode" || -n "$expect_cpu_shader_backend" || -n "$expect_cpu_shader_timeout_ms" || -n "$expect_cpu_shader_reprobe_interval_frames" || -n "$expect_cpu_shader_enable_minimal_runtime" || -n "$expect_cpu_frame_damage_mode" || -n "$expect_cpu_damage_rect_cap" || -n "$expect_cpu_publish_warning_threshold_ms" || -n "$expect_cpu_publish_warning_consecutive_limit" || -n "$expect_software_route_backend" ]]; then
     options_file=""
     options_candidates=()
@@ -1203,6 +1207,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_shader_capability_status" || -n "$expect_cpu_shader_capability_reason" || -n "$expect_cpu_shader_capability_hint_source" || -n "$expect_cpu_shader_capability_hint_readable" ]]; then
+    echo "[software-compat] phase=capability-assert"
     capability_line="$(grep -E 'software renderer cpu shader capability kv ' "$log_file" | tail -n 1 || true)"
     if [[ -z "$capability_line" ]]; then
       report_failure \
@@ -1253,6 +1258,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_damage_overflow" ]]; then
+    echo "[software-compat] phase=damage-assert"
     damage_lines="$(grep -E 'software renderer cpu damage kv ' "$log_file" || true)"
     if [[ "$expect_cpu_damage_overflow" == "0" ]]; then
       if [[ -n "$damage_lines" ]]; then
@@ -1308,6 +1314,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_publish_retry_reason" ]]; then
+    echo "[software-compat] phase=publish-retry-assert"
     publish_retry_lines="$(grep -E 'software renderer cpu publish retry kv ' "$log_file" || true)"
     if [[ -z "$publish_retry_lines" ]]; then
       report_failure \
@@ -1343,6 +1350,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_publish_warning" ]]; then
+    echo "[software-compat] phase=publish-warning-assert"
     publish_warning_line="$(grep -E 'software renderer cpu publish warning kv ' "$log_file" | tail -n 1 || true)"
     publish_warning_present="false"
     if [[ -n "$publish_warning_line" ]]; then
@@ -1368,6 +1376,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   fi
 
   if [[ -n "$expect_cpu_publish_success" ]]; then
+    echo "[software-compat] phase=publish-success-assert"
     publish_success_line="$(grep -E 'software renderer cpu publish success kv ' "$log_file" | tail -n 1 || true)"
     publish_success_present="false"
     publish_success_pending="unknown"
@@ -1418,6 +1427,7 @@ if "${cmd[@]}" 2>&1 | tee "$log_file"; then
     echo "[software-compat] cpu-publish-success assertion matched"
   fi
 
+  echo "[software-compat] phase=success"
   echo "[software-compat] success"
   exit 0
 fi
