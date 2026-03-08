@@ -49,6 +49,25 @@ const DeferredBufferRelease = struct {
     was_mapped: bool,
 };
 
+fn softwareFrameReleaseReadback(
+    ctx: ?*anyopaque,
+    data: ?[*]const u8,
+    data_len: usize,
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    _ = data;
+    _ = data_len;
+    _ = handle;
+    const raw = ctx orelse return;
+    const resource = nativePtr(*winos.c.ID3D12Resource, raw);
+    resource.lpVtbl[0].Unmap.?(
+        resource,
+        0,
+        null,
+    );
+    winos.graphics.release(@ptrCast(raw));
+}
+
 pub const Texture = struct {
     pub const Error = error{
         D3D12DescriptorHeapCreateFailed,
@@ -569,6 +588,7 @@ command_queue: ?*winos.graphics.ID3D12CommandQueue = null,
 rt_surface: ?*apprt.Surface = null,
 last_target: ?Target = null,
 last_present_generation: u64 = 0,
+software_generation: u64 = 0,
 has_native_present_path: bool = false,
 has_native_draw_path: bool = false,
 srv_descriptor_size: u32 = 0,
@@ -677,10 +697,95 @@ pub fn publishSoftwareFrame(
     target: *const Target,
     screen: rendererpkg.ScreenSize,
 ) !?apprt.surface.Message.SoftwareFrameReady {
-    _ = self;
-    _ = target;
     _ = screen;
-    return null;
+
+    if (target.width == 0 or target.height == 0) return null;
+    const command_list = self.currentCommandList() orelse return null;
+
+    const width_px = target.width;
+    const height_px = target.height;
+    const row_pitch = std.mem.alignForward(
+        u32,
+        width_px * 4,
+        winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+    );
+    const data_len = std.math.mul(
+        usize,
+        @as(usize, row_pitch),
+        @as(usize, height_px),
+    ) catch return error.OutOfMemory;
+
+    const readback = try self.createReadbackBuffer(data_len);
+    errdefer winos.graphics.release(@ptrCast(readback));
+
+    try self.transitionTextureState(
+        command_list,
+        target.texture.data,
+        @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_SOURCE),
+    );
+
+    const src_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = nativePtr(*winos.c.ID3D12Resource, target.texture.data.resource),
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        .unnamed_0 = .{ .SubresourceIndex = 0 },
+    };
+    const dst_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = nativePtr(*winos.c.ID3D12Resource, readback),
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .unnamed_0 = .{
+            .PlacedFootprint = .{
+                .Offset = 0,
+                .Footprint = .{
+                    .Format = target.texture.data.format,
+                    .Width = width_px,
+                    .Height = height_px,
+                    .Depth = 1,
+                    .RowPitch = row_pitch,
+                },
+            },
+        },
+    };
+    command_list.lpVtbl[0].CopyTextureRegion.?(
+        command_list,
+        &dst_location,
+        0,
+        0,
+        0,
+        &src_location,
+        null,
+    );
+
+    try self.executeRecordedCommands();
+    try self.waitForGpuIdle();
+    self.flushDeferredBufferReleases();
+
+    var mapped: ?*anyopaque = null;
+    const native = nativePtr(*winos.c.ID3D12Resource, readback);
+    if (native.lpVtbl[0].Map.?(
+        native,
+        0,
+        null,
+        &mapped,
+    ) != winos.S_OK or mapped == null) {
+        winos.graphics.release(@ptrCast(readback));
+        return error.Unexpected;
+    }
+
+    self.software_generation +%= 1;
+
+    return .{
+        .width_px = width_px,
+        .height_px = height_px,
+        .stride_bytes = row_pitch,
+        .generation = self.software_generation,
+        .pixel_format = .bgra8_premul,
+        .storage = .shared_cpu_bytes,
+        .data = @ptrCast(mapped),
+        .data_len = data_len,
+        .handle = null,
+        .release_ctx = @ptrCast(readback),
+        .release_fn = &softwareFrameReleaseReadback,
+    };
 }
 
 pub fn bufferOptions(self: *const D3D12) bufferpkg.Options {
@@ -1023,6 +1128,46 @@ fn uploadTextureRegion(
         texture,
         after_state,
     );
+}
+
+fn createReadbackBuffer(
+    self: *D3D12,
+    size_bytes: usize,
+) !*winos.graphics.ID3D12Resource {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+
+    var heap_props: winos.c.D3D12_HEAP_PROPERTIES =
+        std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
+    heap_props.Type = winos.c.D3D12_HEAP_TYPE_READBACK;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    var desc: winos.c.D3D12_RESOURCE_DESC =
+        std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
+    desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = size_bytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc = .{ .Count = 1, .Quality = 0 };
+    desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = winos.c.D3D12_RESOURCE_FLAG_NONE;
+
+    var raw_resource: ?*anyopaque = null;
+    if (device.lpVtbl[0].CreateCommittedResource.?(
+        device,
+        &heap_props,
+        winos.c.D3D12_HEAP_FLAG_NONE,
+        &desc,
+        @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST),
+        null,
+        &winos.c.IID_ID3D12Resource,
+        &raw_resource,
+    ) != winos.S_OK or raw_resource == null) {
+        return error.Unexpected;
+    }
+
+    return @ptrCast(raw_resource.?);
 }
 
 fn appendPresentCopy(self: *D3D12, target: Target) !void {
