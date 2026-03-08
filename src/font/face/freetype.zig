@@ -169,7 +169,10 @@ pub const Face = struct {
                     if (string.len > 1024) break :skip;
                     var tmp: [512]u16 = undefined;
                     const max = string.len / 2;
-                    for (@as([]const u16, @ptrCast(@alignCast(string))), 0..) |c, j| tmp[j] = @byteSwap(c);
+                    for (0..max) |j| {
+                        const off = j * 2;
+                        tmp[j] = (@as(u16, string[off]) << 8) | @as(u16, string[off + 1]);
+                    }
                     const len = std.unicode.utf16LeToUtf8(buf, tmp[0..max]) catch return string;
                     return buf[0..len];
                 }

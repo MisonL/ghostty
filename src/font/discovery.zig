@@ -339,7 +339,7 @@ pub const DirectWrite = struct {
         loader: *winos.graphics.IDWriteFontFileLoader,
     ) ?*winos.graphics.IDWriteLocalFontFileLoader {
         var raw_loader: ?*anyopaque = null;
-        const unknown: *winos.graphics.IUnknown = @ptrCast(@alignCast(loader));
+        const unknown: *winos.graphics.IUnknown = @ptrFromInt(@intFromPtr(loader));
         if (!winos.graphics.succeeded(unknown.lpVtbl.QueryInterface(
             unknown,
             &winos.graphics.IID_IDWriteLocalFontFileLoader,
@@ -348,7 +348,7 @@ pub const DirectWrite = struct {
             return null;
         }
 
-        return @ptrCast(@alignCast(raw_loader.?));
+        return @ptrFromInt(@intFromPtr(raw_loader.?));
     }
 
     fn collectFallbackFontEntries(alloc: Allocator) ![]const FontPathEntry {
