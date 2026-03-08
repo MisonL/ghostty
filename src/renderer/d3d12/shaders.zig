@@ -10,17 +10,23 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
         .{ "bg_color", .{
             .vertex_hlsl = full_screen_vertex_hlsl,
             .fragment_hlsl = bg_color_fragment_hlsl,
+            .vertex_entry = "full_screen_vertex",
+            .fragment_entry = "bg_color_fragment",
             .blending_enabled = false,
         } },
         .{ "cell_bg", .{
             .vertex_hlsl = full_screen_vertex_hlsl,
             .fragment_hlsl = cell_bg_fragment_hlsl,
+            .vertex_entry = "full_screen_vertex",
+            .fragment_entry = "cell_bg_fragment",
             .blending_enabled = true,
         } },
         .{ "cell_text", .{
             .vertex_attributes = CellText,
             .vertex_hlsl = cell_text_vertex_hlsl,
             .fragment_hlsl = cell_text_fragment_hlsl,
+            .vertex_entry = "cell_text_vertex",
+            .fragment_entry = "cell_text_fragment",
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
@@ -28,6 +34,8 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .vertex_attributes = Image,
             .vertex_hlsl = image_vertex_hlsl,
             .fragment_hlsl = image_fragment_hlsl,
+            .vertex_entry = "image_vertex",
+            .fragment_entry = "image_fragment",
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
@@ -35,6 +43,8 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .vertex_attributes = BgImage,
             .vertex_hlsl = bg_image_vertex_hlsl,
             .fragment_hlsl = bg_image_fragment_hlsl,
+            .vertex_entry = "bg_image_vertex",
+            .fragment_entry = "bg_image_fragment",
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
@@ -44,14 +54,18 @@ const PipelineDescription = struct {
     vertex_attributes: ?type = null,
     vertex_hlsl: [:0]const u8,
     fragment_hlsl: [:0]const u8,
+    vertex_entry: [:0]const u8,
+    fragment_entry: [:0]const u8,
     step_fn: Pipeline.StepFunction = .per_vertex,
     blending_enabled: bool = true,
 
     fn initPipeline(self: PipelineDescription, alloc: Allocator) !Pipeline {
         return try Pipeline.init(self.vertex_attributes, .{
             .alloc = alloc,
-            .vertex_fn = self.vertex_hlsl,
-            .fragment_fn = self.fragment_hlsl,
+            .vertex_source = self.vertex_hlsl,
+            .fragment_source = self.fragment_hlsl,
+            .vertex_entry = self.vertex_entry,
+            .fragment_entry = self.fragment_entry,
             .step_fn = self.step_fn,
             .blending_enabled = self.blending_enabled,
         });
@@ -158,8 +172,10 @@ fn initPostPipelines(
 fn initPostPipeline(alloc: Allocator, data: [:0]const u8) !Pipeline {
     return try Pipeline.init(null, .{
         .alloc = alloc,
-        .vertex_fn = full_screen_vertex_hlsl,
-        .fragment_fn = data,
+        .vertex_source = full_screen_vertex_hlsl,
+        .fragment_source = data,
+        .vertex_entry = "full_screen_vertex",
+        .fragment_entry = "main",
     });
 }
 

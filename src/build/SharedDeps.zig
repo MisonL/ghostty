@@ -458,11 +458,6 @@ pub fn add(
         if (effective_renderer == .opengl and target.result.os.tag == .macos) {
             step.linkFramework("OpenGL");
         }
-        if (effective_renderer == .d3d12 and target.result.os.tag == .windows) {
-            step.linkSystemLibrary2("d3d12", dynamic_link_opts);
-            step.linkSystemLibrary2("dxgi", dynamic_link_opts);
-            step.linkSystemLibrary2("dxguid", dynamic_link_opts);
-        }
 
         // Apple platforms do not include libc libintl so we bundle it.
         // This is LGPL but since our source code is open source we are
@@ -478,6 +473,12 @@ pub fn add(
                 libintl_dep.artifact("intl").getEmittedBin(),
             );
         }
+    }
+
+    if (effective_renderer == .d3d12 and target.result.os.tag == .windows) {
+        step.linkSystemLibrary2("d3d12", dynamic_link_opts);
+        step.linkSystemLibrary2("dxgi", dynamic_link_opts);
+        step.linkSystemLibrary2("dxguid", dynamic_link_opts);
     }
 
     // cimgui
