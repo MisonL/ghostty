@@ -233,42 +233,41 @@ macOS 额外必填：
 
 ### 8.1.1 项目仓库专属 `Project CI` 工作流
 
-当前项目仓库使用的主验证入口是：
+当前项目仓库的 `Project CI` 不再作为日常 `push/pull_request` 自动验证入口，而是只保留为**手动触发的最小 smoke 工作流**：
 
 - `.github/workflows/project-ci.yml`
+- 触发方式：`workflow_dispatch`
 
-工作流固定拆成 4 个 job：
+工作流当前仅保留 3 个快验收 job：
 
-- `Linux Core Tests`
-- `Linux Software Renderer Validation`
 - `Linux libghostty Software Host Smoke`
-- `macOS Core Tests`
-- `macOS Software Renderer Validation`
+- `Linux Build Windows Smoke Artifact`
+- `Windows Win32 D3D12 Smoke`
 
 职责边界：
 
-- `Core Tests` 负责 `zig build test` 主测试集；
-- `Linux libghostty Software Host Smoke` 负责构建并运行 `example/c-libghostty-software-host`，验证完整 `libghostty` 的 software-host surface 与 `software_frame_cb` 闭环；
-- `Software Renderer Validation` 负责脚本自测、compat-check 与 runtime diagnostics smoke；
-- 所有 job 都会上传各自的 `ci-logs/` 作为排障基线。
+- `Linux libghostty Software Host Smoke`：验证 `example/c-libghostty-software-host` 的最小闭环；
+- `Linux Build Windows Smoke Artifact`：验证 Win32/D3D12 smoke 可执行文件能被交叉构建产出；
+- `Windows Win32 D3D12 Smoke`：验证 Win32 runtime + D3D12 native present smoke 仍能通过；
+- 所有更慢的核心测试、software-renderer 兼容矩阵、macOS 非 UI 验证与完整 UI 验证，统一转移到本地机器或专用 runner 执行。
 
-### 8.1.2 GitHub-hosted macOS runner 的验证边界
+换句话说：
 
-项目专属 `Project CI` 在 GitHub-hosted macOS runner 上固定设置：
+- `Project CI` 现在只负责项目专属的快速 smoke；
+- 更完整、更慢的验证默认不再放在线上自动跑。
 
-- `GHOSTTY_CI_SKIP_UI_TESTS=true`
+### 8.1.2 本地优先的验证边界
 
-这意味着：
+当前推荐的验证策略是：
 
-- macOS CI 上的 `zig build test` 只验证 Zig 核心与非 UI 路径；
-- 不再把 `xcodebuild test` UI 测试链路作为 hosted runner 必须通过的前提；
-- `macOS Software Renderer Validation` 仍会继续验证 software-renderer 脚本、自测与真实 Zig smoke；
-- 若需要完整 Xcode UI tests，应在专用本机 runner 或本地机器上执行，不应把 GitHub-hosted runner 结果解读成“已覆盖 UI 自动化”。
+- 线上：只保留最小 smoke，避免 GitHub-hosted runner 长时间占用与假运行噪音；
+- 本地：承担 `zig build test`、software-renderer 兼容脚本、runtime diagnostics smoke、macOS 非 UI 验证；
+- 专用本机 runner：承担完整 macOS UI tests（如果需要）。
 
-推荐把两类验证区分开理解：
+因此不应再把项目仓库上的 `Project CI` 结果理解为“完整产品验证”，它只代表：
 
-- `Project CI` 当前保证：项目专属仓库的核心 Zig 路径、software-renderer 兼容脚本、runtime diagnostics smoke 全部可重复通过；
-- 本地或专用 macOS runner 额外保证：Xcode UI tests / App 层交互链路。
+- 最小 `libghostty` software-host 路径可跑；
+- Win32/D3D12 smoke 构建与最小运行可跑。
 
 ### 8.2 常用可选项
 
@@ -322,7 +321,7 @@ macOS 额外必填：
   - `SR_CI_EXPECT_SOFTWARE_ROUTE_BACKEND`
 - `SR_CI_DRY_RUN`
 
-### 8.2.1 本地复现项目专属 CI 的 macOS 路径
+### 8.2.1 本地复现原项目专属 CI 的 macOS 路径
 
 若要本地复现 hosted macOS CI 的非 UI 验证口径，可执行：
 
@@ -338,6 +337,35 @@ GHOSTTY_CI_SKIP_UI_TESTS=true zig build test --system "$SYSTEM_PATH"
 nix --accept-flake-config build -L .#deps
 SYSTEM_PATH="$(readlink ./result)"
 zig build test --system "$SYSTEM_PATH"
+```
+
+### 8.2.2 本地执行项目专属慢测与兼容脚本
+
+以下验证已从自动 `Project CI` 移出，默认建议在本地执行：
+
+Linux 核心测试：
+
+```bash
+nix --accept-flake-config develop -c zig build test -Dskip-macos-ui-tests=true
+```
+
+Linux software renderer 兼容/diagnostics：
+
+```bash
+SR_CI_OS=linux \
+SR_CI_TRANSPORT_MODE=auto \
+./.github/scripts/software-renderer-cpu-path-ci.sh
+```
+
+macOS software renderer 兼容/diagnostics：
+
+```bash
+nix --accept-flake-config build -L .#deps
+SYSTEM_PATH="$(readlink ./result)"
+SR_CI_OS=macos \
+SR_CI_TRANSPORT_MODE=auto \
+SR_CI_SYSTEM_PATH="$SYSTEM_PATH" \
+./.github/scripts/software-renderer-cpu-path-ci.sh
 ```
 
 ### 8.3 CI 入口脚本 fail-fast 参数校验边界
