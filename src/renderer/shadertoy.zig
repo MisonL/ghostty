@@ -42,6 +42,11 @@ pub const Uniforms = extern struct {
 /// The target to load shaders for.
 pub const Target = enum { glsl, hlsl, msl };
 
+pub const Stage = enum {
+    vertex,
+    fragment,
+};
+
 /// Load a set of shaders from files and convert them to the target
 /// format. The shader order is preserved.
 pub fn loadFromFiles(
@@ -110,7 +115,7 @@ pub fn loadFromFile(
         var stream: std.Io.Writer.Allocating = .init(alloc);
         var errlog: SpirvLog = .{ .alloc = alloc };
         defer errlog.deinit();
-        spirvFromGlsl(&stream.writer, &errlog, glsl) catch |err| {
+        spirvFromGlslStage(&stream.writer, &errlog, .fragment, glsl) catch |err| {
             if (errlog.info.len > 0 or errlog.debug.len > 0) {
                 log.warn("spirv error path={s} info={s} debug={s}", .{
                     path,
@@ -158,13 +163,26 @@ pub fn spirvFromGlsl(
     errlog: ?*SpirvLog,
     src: [:0]const u8,
 ) !void {
+    return try spirvFromGlslStage(writer, errlog, .fragment, src);
+}
+
+/// Convert a stage-specific GLSL shader into SPIR-V assembly.
+pub fn spirvFromGlslStage(
+    writer: *std.Io.Writer,
+    errlog: ?*SpirvLog,
+    stage: Stage,
+    src: [:0]const u8,
+) !void {
     // So we can run unit tests without fear.
     if (builtin.is_test) try glslang.testing.ensureInit();
 
     const c = glslang.c;
     const input: c.glslang_input_t = .{
         .language = c.GLSLANG_SOURCE_GLSL,
-        .stage = c.GLSLANG_STAGE_FRAGMENT,
+        .stage = switch (stage) {
+            .vertex => c.GLSLANG_STAGE_VERTEX,
+            .fragment => c.GLSLANG_STAGE_FRAGMENT,
+        },
         .client = c.GLSLANG_CLIENT_VULKAN,
         .client_version = c.GLSLANG_TARGET_VULKAN_1_2,
         .target_language = c.GLSLANG_TARGET_SPV,

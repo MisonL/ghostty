@@ -15,7 +15,6 @@ const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
 const Health = rendererpkg.Health;
 const shadertoy = @import("shadertoy.zig");
-const OpenGLShaders = @import("opengl/shaders.zig");
 const internal_os = @import("../os/main.zig");
 const winos = internal_os.windows;
 
@@ -36,7 +35,7 @@ pub const ImageTextureFormat = enum {
     rgba,
 };
 
-pub const Pipeline = struct {};
+pub const Pipeline = @import("d3d12/Pipeline.zig");
 
 pub const Target = struct {
     width: u32 = 0,
@@ -162,30 +161,7 @@ pub const RenderPass = struct {
     }
 };
 
-pub const shaders = struct {
-    pub const Uniforms = OpenGLShaders.Uniforms;
-    pub const CellText = OpenGLShaders.CellText;
-    pub const CellBg = OpenGLShaders.CellBg;
-    pub const Image = OpenGLShaders.Image;
-    pub const BgImage = OpenGLShaders.BgImage;
-
-    pub const Shaders = struct {
-        pipelines: struct {
-            bg_color: Pipeline = .{},
-            cell_bg: Pipeline = .{},
-            cell_text: Pipeline = .{},
-            image: Pipeline = .{},
-            bg_image: Pipeline = .{},
-        } = .{},
-        post_pipelines: []const Pipeline = &.{},
-        defunct: bool = false,
-
-        pub fn deinit(self: *@This(), alloc: Allocator) void {
-            _ = self;
-            _ = alloc;
-        }
-    };
-};
+pub const shaders = @import("d3d12/shaders.zig");
 
 pub const Frame = struct {
     renderer: *rendererpkg.GenericRenderer(D3D12),
@@ -297,9 +273,7 @@ pub fn initShaders(
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
     _ = self;
-    _ = alloc;
-    _ = custom_shaders;
-    return .{};
+    return try shaders.Shaders.init(alloc, custom_shaders);
 }
 
 pub fn surfaceSize(self: *const D3D12) !struct { width: u32, height: u32 } {
