@@ -126,7 +126,7 @@ if (-not (Test-Path $logPath)) {
 $logContent = Get-Content -Path $logPath -Raw
 $requiredMarkers = @(
   "ci.win32.window_ready",
-  "ci.win32.software_frame_ready",
+  "ci.win32.native_draw_ready",
   "ci.win32.present_ok"
 )
 

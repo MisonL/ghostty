@@ -200,6 +200,7 @@ pub const App = struct {
     config: configpkg.Config,
     ci_smoke_enabled: bool,
     ci_smoke_window_ready_logged: bool = false,
+    ci_smoke_native_draw_ready_logged: bool = false,
     ci_smoke_software_frame_ready_logged: bool = false,
     ci_smoke_present_ok_logged: bool = false,
     hinstance: win.HINSTANCE,
@@ -540,42 +541,23 @@ pub const Surface = struct {
 
     fn runCiSmoke(self: *Surface) !void {
         if (!self.app.ci_smoke_enabled) return;
-        if (!self.app.ci_smoke_software_frame_ready_logged) {
-            self.app.ci_smoke_software_frame_ready_logged = true;
-            log.info("ci.win32.software_frame_ready", .{});
+        if (!self.app.ci_smoke_native_draw_ready_logged) {
+            self.app.ci_smoke_native_draw_ready_logged = true;
+            log.info("ci.win32.native_draw_ready", .{});
         }
 
-        const width = self.size.width;
-        const height = self.size.height;
-        const stride = std.math.mul(u32, width, 4) catch return error.OutOfMemory;
-        const len = std.math.mul(usize, @as(usize, stride), @as(usize, height)) catch
-            return error.OutOfMemory;
-        const alloc = self.app.core_app.alloc;
-        const bytes = try alloc.alloc(u8, len);
-        defer alloc.free(bytes);
-
-        var i: usize = 0;
-        while (i < bytes.len) : (i += 4) {
-            bytes[i + 0] = 0x30;
-            bytes[i + 1] = 0x18;
-            bytes[i + 2] = 0x10;
-            bytes[i + 3] = 0xff;
+        try self.recordNativeClear();
+        const sc: *winos.c.IDXGISwapChain3 =
+            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
+            return error.Unexpected;
         }
-
-        const frame: apprt.surface.Message.SoftwareFrameReady = .{
-            .width_px = width,
-            .height_px = height,
-            .stride_bytes = stride,
-            .generation = 1,
-            .pixel_format = .bgra8_premul,
-            .storage = .shared_cpu_bytes,
-            .data = bytes.ptr,
-            .data_len = bytes.len,
-            .handle = null,
-            .damage_rects = null,
-            .damage_rects_len = 0,
-        };
-        try self.presentSoftwareFrame(frame, bytes);
+        if (!self.app.ci_smoke_present_ok_logged) {
+            self.app.ci_smoke_present_ok_logged = true;
+            log.info("ci.win32.present_ok", .{});
+        }
+        try self.waitForGpuIdle();
+        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         _ = win.PostMessageW(self.hwnd, win.WM_CLOSE, 0, 0);
     }
 

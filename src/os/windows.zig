@@ -178,11 +178,18 @@ pub const graphics = struct {
     };
 
     pub const IDXGIFactory4 = opaque {};
+    pub const IDXGISwapChain1 = opaque {};
     pub const IDXGISwapChain3 = opaque {};
     pub const ID3D12Device = opaque {};
     pub const ID3D12CommandQueue = opaque {};
+    pub const ID3D12CommandAllocator = opaque {};
+    pub const ID3D12GraphicsCommandList = opaque {};
+    pub const ID3D12CommandList = opaque {};
     pub const ID3D12DescriptorHeap = opaque {};
     pub const ID3D12Fence = opaque {};
+    pub const ID3D12Resource = opaque {};
+    pub const ID3D12RootSignature = opaque {};
+    pub const ID3D12PipelineState = opaque {};
     pub const IDWriteFactory = extern struct {
         lpVtbl: *const VTable,
 
@@ -299,6 +306,8 @@ pub const graphics = struct {
 
     pub const IID_IDXGIFactory4 = windows.GUID.parse("{1bc6ea02-ef36-464f-bf0c-21ca39e5168a}");
     pub const IID_ID3D12Device = windows.GUID.parse("{189819f1-1db6-4b57-be54-1821339b85f7}");
+    pub const IID_ID3D12RootSignature = windows.GUID.parse("{c54a6b66-72df-4ee8-8be5-a946a1429214}");
+    pub const IID_ID3D12PipelineState = windows.GUID.parse("{765a30f3-f624-4c6f-a828-ace948622445}");
     pub const IID_IDWriteFactory = windows.GUID.parse("{b859ee5a-d838-4b5b-a2e8-1adc7d93db48}");
     pub const IID_IDWriteLocalFontFileLoader = windows.GUID.parse("{b2d9f3ec-c9fe-4a11-a2ec-d86208f7c0a2}");
 

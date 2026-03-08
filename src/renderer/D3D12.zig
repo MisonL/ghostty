@@ -3,8 +3,8 @@
 //! The long-term Windows product renderer is `Win32 + DXGI + D3D12`.
 //! Current stage:
 //! - native Win32 swapchain present path
-//! - dummy resource layer so GenericRenderer can run without a GL context
-//! - forced CPU software-frame route until native D3D12 draw is implemented
+//! - real D3D12 resource/pipeline layer for GenericRenderer
+//! - native draw path preferred on Win32 once initialization succeeds
 
 pub const D3D12 = @This();
 
@@ -17,9 +17,12 @@ const Health = rendererpkg.Health;
 const shadertoy = @import("shadertoy.zig");
 const internal_os = @import("../os/main.zig");
 const winos = internal_os.windows;
+const bufferpkg = @import("d3d12/buffer.zig");
+
+const log = std.log.scoped(.d3d12);
 
 pub const GraphicsAPI = D3D12;
-pub const force_software_cpu_route = true;
+pub const force_software_cpu_route = false;
 
 pub const custom_shader_target: shadertoy.Target = .hlsl;
 pub const custom_shader_y_is_down = false;
@@ -29,6 +32,8 @@ pub const softwareFramePublicationOnCompletion = false;
 pub const MIN_VERSION_MAJOR = 12;
 pub const MIN_VERSION_MINOR = 0;
 
+const srv_heap_capacity = 4096;
+
 pub const ImageTextureFormat = enum {
     grayscale,
     bgra,
@@ -36,37 +41,118 @@ pub const ImageTextureFormat = enum {
 };
 
 pub const Pipeline = @import("d3d12/Pipeline.zig");
+pub const Buffer = bufferpkg.Buffer;
+pub const shaders = @import("d3d12/shaders.zig");
 
-pub const Target = struct {
-    width: u32 = 0,
-    height: u32 = 0,
-
-    pub fn deinit(self: *@This()) void {
-        _ = self;
-    }
+const DeferredBufferRelease = struct {
+    buffer: *winos.graphics.ID3D12Resource,
+    was_mapped: bool,
 };
 
 pub const Texture = struct {
-    pub const Error = error{};
-    pub const Options = struct {};
+    pub const Error = error{
+        D3D12DescriptorHeapCreateFailed,
+        D3D12DeviceUnavailable,
+        D3D12SrvHeapExhausted,
+        D3D12TextureCreateFailed,
+        D3D12UploadBufferCreateFailed,
+        D3D12TextureMapFailed,
+        OutOfMemory,
+        Unexpected,
+    };
 
-    width: u32 = 0,
-    height: u32 = 0,
+    pub const Options = struct {
+        owner: *D3D12,
+        format: u32,
+        bytes_per_pixel: u32,
+        render_target: bool = false,
+        sampled: bool = true,
+    };
+
+    pub const Data = struct {
+        owner: *D3D12,
+        resource: *winos.graphics.ID3D12Resource,
+        format: u32,
+        bytes_per_pixel: u32,
+        render_target: bool,
+        sampled: bool,
+        state: u32,
+        srv_index: ?u32 = null,
+        rtv_heap: ?*winos.graphics.ID3D12DescriptorHeap = null,
+        rtv_handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE),
+    };
+
+    data: *Data,
+    width: usize,
+    height: usize,
 
     pub fn init(
-        _: Options,
-        width: u32,
-        height: u32,
-        _: ?[]const u8,
-    ) !@This() {
-        return .{
+        opts: Options,
+        width: usize,
+        height: usize,
+        bytes: ?[]const u8,
+    ) Error!@This() {
+        var data = try opts.owner.alloc.create(Data);
+        errdefer opts.owner.alloc.destroy(data);
+
+        data.* = .{
+            .owner = opts.owner,
+            .resource = try createTextureResource(opts, width, height),
+            .format = opts.format,
+            .bytes_per_pixel = opts.bytes_per_pixel,
+            .render_target = opts.render_target,
+            .sampled = opts.sampled,
+            .state = if (bytes != null) @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST) else if (opts.render_target)
+                @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET)
+            else
+                @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        };
+        errdefer {
+            winos.graphics.release(@ptrCast(data.resource));
+            opts.owner.alloc.destroy(data);
+        }
+
+        if (opts.sampled) {
+            data.srv_index = try opts.owner.allocateSrvIndex();
+            errdefer if (data.srv_index) |index| opts.owner.releaseSrvIndex(index);
+            try opts.owner.writeTextureSrv(data);
+        }
+
+        if (opts.render_target) {
+            try opts.owner.initTextureRtv(data);
+        }
+
+        var texture: Texture = .{
+            .data = data,
             .width = width,
             .height = height,
         };
+
+        if (bytes) |initial| {
+            try texture.replaceRegion(0, 0, width, height, initial);
+            if (opts.render_target) {
+                data.state = @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET);
+            }
+        }
+
+        return texture;
     }
 
     pub fn deinit(self: @This()) void {
-        _ = self;
+        if (self.data.owner.last_target) |last_target| {
+            if (last_target.texture.data == self.data) {
+                self.data.owner.last_target = null;
+            }
+        }
+
+        if (self.data.rtv_heap) |heap| {
+            winos.graphics.release(@ptrCast(heap));
+        }
+        if (self.data.srv_index) |index| {
+            self.data.owner.releaseSrvIndex(index);
+        }
+        winos.graphics.release(@ptrCast(self.data.resource));
+        self.data.owner.alloc.destroy(self.data);
     }
 
     pub fn replaceRegion(
@@ -75,22 +161,52 @@ pub const Texture = struct {
         y: usize,
         width: usize,
         height: usize,
-        data: []const u8,
-    ) !void {
-        _ = self;
-        _ = x;
-        _ = y;
-        _ = width;
-        _ = height;
-        _ = data;
+        bytes: []const u8,
+    ) Error!void {
+        try self.data.owner.uploadTextureRegion(
+            self.data,
+            x,
+            y,
+            width,
+            height,
+            bytes,
+        );
+    }
+};
+
+pub const Target = struct {
+    texture: Texture,
+    width: u32,
+    height: u32,
+
+    pub fn init(owner: *D3D12, width: usize, height: usize) Texture.Error!Target {
+        const texture = try Texture.init(
+            owner.textureOptions(),
+            width,
+            height,
+            null,
+        );
+        return .{
+            .texture = texture,
+            .width = @intCast(width),
+            .height = @intCast(height),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.texture.deinit();
     }
 };
 
 pub const Sampler = struct {
-    pub const Options = struct {};
+    pub const Options = struct {
+        owner: *D3D12,
+    };
 
-    pub fn init(_: Options) !@This() {
-        return .{};
+    owner: *D3D12,
+
+    pub fn init(opts: Options) !@This() {
+        return .{ .owner = opts.owner };
     }
 
     pub fn deinit(self: @This()) void {
@@ -98,47 +214,11 @@ pub const Sampler = struct {
     }
 };
 
-pub fn Buffer(comptime T: type) type {
-    return struct {
-        buffer: ?*anyopaque = null,
-        len: usize = 0,
-
-        pub fn init(_: anytype, len: usize) !@This() {
-            _ = T;
-            return .{ .len = len };
-        }
-
-        pub fn initFill(_: anytype, items: anytype) !@This() {
-            _ = T;
-            return .{
-                .len = switch (@typeInfo(@TypeOf(items))) {
-                    .pointer => items.len,
-                    else => 0,
-                },
-            };
-        }
-
-        pub fn sync(self: *@This(), items: anytype) !void {
-            self.len = switch (@typeInfo(@TypeOf(items))) {
-                .pointer => items.len,
-                else => self.len,
-            };
-        }
-
-        pub fn syncFromArrayLists(self: *@This(), lists: anytype) !u32 {
-            _ = self;
-            _ = lists;
-            return 0;
-        }
-
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
-    };
-}
-
 pub const RenderPass = struct {
     pub const Options = struct {
+        api: *D3D12,
+        attachments: []const Attachment,
+
         pub const Attachment = struct {
             target: union(enum) {
                 texture: Texture,
@@ -148,22 +228,273 @@ pub const RenderPass = struct {
         };
     };
 
-    pub fn begin(_: anytype) @This() {
-        return .{};
+    api: ?*D3D12 = null,
+    attachments: []const Options.Attachment = &.{},
+    attachment_texture: ?*Texture.Data = null,
+    attachment_after_state: u32 = 0,
+
+    pub fn begin(opts: Options) @This() {
+        var pass: RenderPass = .{
+            .api = opts.api,
+            .attachments = opts.attachments,
+        };
+        pass.beginImpl() catch |err| {
+            log.warn("error beginning d3d12 render pass err={}", .{err});
+            pass.api = null;
+            pass.attachment_texture = null;
+        };
+        return pass;
     }
 
-    pub fn step(self: *@This(), _: anytype) void {
-        _ = self;
+    pub fn step(self: *@This(), s: anytype) void {
+        if (self.api == null) return;
+        self.stepImpl(s) catch |err| {
+            log.warn("error encoding d3d12 render step err={}", .{err});
+            self.api = null;
+        };
     }
 
     pub fn complete(self: *@This()) void {
-        _ = self;
+        if (self.api == null) return;
+        self.completeImpl() catch |err| {
+            log.warn("error completing d3d12 render pass err={}", .{err});
+        };
+    }
+
+    fn beginImpl(self: *@This()) !void {
+        const api = self.api orelse return;
+        const command_list = api.currentCommandList() orelse return error.Unexpected;
+        if (self.attachments.len == 0) return;
+
+        const texture = attachmentTexture(self.attachments[0]);
+        self.attachment_texture = texture;
+        self.attachment_after_state = switch (self.attachments[0].target) {
+            .texture => @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            .target => @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET),
+        };
+
+        try api.transitionTextureState(
+            command_list,
+            texture,
+            @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET),
+        );
+
+        var rtv_handle = texture.rtv_handle;
+        command_list.lpVtbl[0].OMSetRenderTargets.?(
+            command_list,
+            1,
+            &rtv_handle,
+            winos.FALSE,
+            null,
+        );
+
+        const viewport = winos.c.D3D12_VIEWPORT{
+            .TopLeftX = 0,
+            .TopLeftY = 0,
+            .Width = @floatFromInt(switch (self.attachments[0].target) {
+                .texture => |t| t.width,
+                .target => |t| t.width,
+            }),
+            .Height = @floatFromInt(switch (self.attachments[0].target) {
+                .texture => |t| t.height,
+                .target => |t| t.height,
+            }),
+            .MinDepth = 0.0,
+            .MaxDepth = 1.0,
+        };
+        command_list.lpVtbl[0].RSSetViewports.?(
+            command_list,
+            1,
+            &viewport,
+        );
+
+        const rect = winos.c.D3D12_RECT{
+            .left = 0,
+            .top = 0,
+            .right = @intCast(switch (self.attachments[0].target) {
+                .texture => |t| t.width,
+                .target => |t| t.width,
+            }),
+            .bottom = @intCast(switch (self.attachments[0].target) {
+                .texture => |t| t.height,
+                .target => |t| t.height,
+            }),
+        };
+        command_list.lpVtbl[0].RSSetScissorRects.?(
+            command_list,
+            1,
+            &rect,
+        );
+
+        if (self.attachments[0].clear_color) |clear_color| {
+            command_list.lpVtbl[0].ClearRenderTargetView.?(
+                command_list,
+                rtv_handle,
+                &clear_color,
+                0,
+                null,
+            );
+        }
+    }
+
+    fn stepImpl(self: *@This(), s: anytype) !void {
+        const instance_count: usize = if (@hasField(@TypeOf(s.draw), "instance_count"))
+            s.draw.instance_count
+        else
+            1;
+        if (instance_count == 0) return;
+
+        const api = self.api orelse return;
+        const command_list = api.currentCommandList() orelse return error.Unexpected;
+        const pipeline = s.pipeline;
+        if (!pipeline.isReady()) return;
+
+        command_list.lpVtbl[0].SetPipelineState.?(
+            command_list,
+            nativePtr(*winos.c.ID3D12PipelineState, pipeline.pipeline_state.?),
+        );
+        command_list.lpVtbl[0].SetGraphicsRootSignature.?(
+            command_list,
+            nativePtr(*winos.c.ID3D12RootSignature, pipeline.root_signature.?),
+        );
+
+        if (@hasField(@TypeOf(s), "uniforms")) {
+            if (s.uniforms) |uniforms| {
+                const resource = nativePtr(*winos.c.ID3D12Resource, uniforms);
+                command_list.lpVtbl[0].SetGraphicsRootConstantBufferView.?(
+                    command_list,
+                    0,
+                    resource.lpVtbl[0].GetGPUVirtualAddress.?(resource),
+                );
+            }
+        }
+
+        if (@hasField(@TypeOf(s), "buffers")) {
+            if (s.buffers.len > 1) if (s.buffers[1]) |buffer| {
+                const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
+                command_list.lpVtbl[0].SetGraphicsRootShaderResourceView.?(
+                    command_list,
+                    1,
+                    resource.lpVtbl[0].GetGPUVirtualAddress.?(resource),
+                );
+            };
+        }
+
+        if (@hasField(@TypeOf(s), "textures") and s.textures.len > 0) {
+            const heap = api.srvHeap() orelse return error.Unexpected;
+            const native_heap = nativePtr(*winos.c.ID3D12DescriptorHeap, heap);
+            const heaps = [_][*c]winos.c.ID3D12DescriptorHeap{
+                @ptrCast(native_heap),
+            };
+            command_list.lpVtbl[0].SetDescriptorHeaps.?(
+                command_list,
+                1,
+                @ptrCast(&heaps),
+            );
+
+            if (@typeInfo(@TypeOf(s.textures[0])) == .optional) {
+                if (s.textures[0]) |tex| {
+                    try api.transitionTextureState(
+                        command_list,
+                        tex.data,
+                        @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                    );
+                    command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
+                        command_list,
+                        2,
+                        api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                    );
+                }
+            } else {
+                const tex = s.textures[0];
+                try api.transitionTextureState(
+                    command_list,
+                    tex.data,
+                    @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                );
+                command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
+                    command_list,
+                    2,
+                    api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                );
+            }
+            if (s.textures.len > 1) {
+                if (@typeInfo(@TypeOf(s.textures[1])) == .optional) {
+                    if (s.textures[1]) |tex| {
+                        try api.transitionTextureState(
+                            command_list,
+                            tex.data,
+                            @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                        );
+                        command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
+                            command_list,
+                            3,
+                            api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                        );
+                    }
+                } else {
+                    const tex = s.textures[1];
+                    try api.transitionTextureState(
+                        command_list,
+                        tex.data,
+                        @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                    );
+                    command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
+                        command_list,
+                        3,
+                        api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                    );
+                }
+            }
+        }
+
+        if (@hasField(@TypeOf(s), "buffers") and s.buffers.len > 0 and pipeline.vertex_stride > 0) {
+            if (s.buffers[0]) |buffer| {
+                var view = vertexBufferView(buffer, pipeline.vertex_stride);
+                command_list.lpVtbl[0].IASetVertexBuffers.?(
+                    command_list,
+                    0,
+                    1,
+                    &view,
+                );
+            }
+        }
+
+        command_list.lpVtbl[0].IASetPrimitiveTopology.?(
+            command_list,
+            pipeline.primitive_topology,
+        );
+        command_list.lpVtbl[0].DrawInstanced.?(
+            command_list,
+            @intCast(s.draw.vertex_count),
+            @intCast(instance_count),
+            0,
+            0,
+        );
+    }
+
+    fn completeImpl(self: *@This()) !void {
+        const api = self.api orelse return;
+        const command_list = api.currentCommandList() orelse return error.Unexpected;
+        if (self.attachment_texture) |texture| {
+            try api.transitionTextureState(
+                command_list,
+                texture,
+                self.attachment_after_state,
+            );
+        }
+    }
+
+    fn attachmentTexture(attachment: Options.Attachment) *Texture.Data {
+        return switch (attachment.target) {
+            .texture => |texture| texture.data,
+            .target => |target| target.texture.data,
+        };
     }
 };
 
-pub const shaders = @import("d3d12/shaders.zig");
-
 pub const Frame = struct {
+    api: *D3D12,
     renderer: *rendererpkg.GenericRenderer(D3D12),
     target: *Target,
     publish_software_frame: bool,
@@ -174,6 +505,7 @@ pub const Frame = struct {
 
     pub fn begin(
         opts: Options,
+        api: *D3D12,
         renderer: *rendererpkg.GenericRenderer(D3D12),
         target: *Target,
         publish_software_frame: bool,
@@ -182,6 +514,7 @@ pub const Frame = struct {
     ) !Frame {
         _ = opts;
         return .{
+            .api = api,
             .renderer = renderer,
             .target = target,
             .publish_software_frame = publish_software_frame,
@@ -194,16 +527,18 @@ pub const Frame = struct {
         self: *const Frame,
         attachments: []const RenderPass.Options.Attachment,
     ) RenderPass {
-        _ = self;
-        return RenderPass.begin(.{ .attachments = attachments });
+        return RenderPass.begin(.{
+            .api = self.api,
+            .attachments = attachments,
+        });
     }
 
     pub fn complete(self: *const Frame, sync: bool) void {
         _ = sync;
 
         const health: Health = .healthy;
-        self.renderer.api.present(self.target.*) catch |err| {
-            std.log.scoped(.d3d12).err("Failed to present render target: err={}", .{err});
+        self.api.present(self.target.*) catch |err| {
+            log.err("failed to present d3d12 render target err={}", .{err});
             self.renderer.frameCompleted(
                 .unhealthy,
                 self.target,
@@ -224,6 +559,7 @@ pub const Frame = struct {
     }
 };
 
+alloc: Allocator,
 blending: configpkg.Config.AlphaBlending,
 dxgi_factory: ?*winos.graphics.IDXGIFactory4 = null,
 d3d12_device: ?*winos.graphics.ID3D12Device = null,
@@ -231,12 +567,21 @@ dwrite_factory: ?*winos.graphics.IDWriteFactory = null,
 swap_chain: ?*winos.graphics.IDXGISwapChain3 = null,
 command_queue: ?*winos.graphics.ID3D12CommandQueue = null,
 rt_surface: ?*apprt.Surface = null,
+last_target: ?Target = null,
 last_present_generation: u64 = 0,
 has_native_present_path: bool = false,
 has_native_draw_path: bool = false,
+srv_descriptor_size: u32 = 0,
+srv_heap_cpu_start_ptr: u64 = 0,
+srv_heap_gpu_start_ptr: u64 = 0,
+next_srv_index: u32 = 0,
+free_srv_indices: std.ArrayListUnmanaged(u32) = .empty,
+deferred_buffer_releases: std.ArrayListUnmanaged(DeferredBufferRelease) = .empty,
+command_recording_active: bool = false,
 
-pub fn init(_: Allocator, opts: rendererpkg.Options) !D3D12 {
+pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
     var result: D3D12 = .{
+        .alloc = alloc,
         .blending = opts.config.blending,
     };
     result.rt_surface = opts.rt_surface;
@@ -248,11 +593,15 @@ pub fn init(_: Allocator, opts: rendererpkg.Options) !D3D12 {
         result.command_queue = opts.rt_surface.graphics.command_queue;
     }
     result.has_native_present_path = result.swap_chain != null;
-    result.has_native_draw_path = false;
+    if (result.d3d12_device != null) try result.ensureSrvHeap();
+    result.has_native_draw_path = result.has_native_present_path and result.d3d12_device != null;
     return result;
 }
 
 pub fn deinit(self: *D3D12) void {
+    self.flushDeferredBufferReleases();
+    self.free_srv_indices.deinit(self.alloc);
+    self.deferred_buffer_releases.deinit(self.alloc);
     self.* = undefined;
 }
 
@@ -272,8 +621,7 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    _ = self;
-    return try shaders.Shaders.init(alloc, custom_shaders);
+    return try shaders.Shaders.init(alloc, self.d3d12_device, custom_shaders);
 }
 
 pub fn surfaceSize(self: *const D3D12) !struct { width: u32, height: u32 } {
@@ -289,37 +637,39 @@ pub fn surfaceSize(self: *const D3D12) !struct { width: u32, height: u32 } {
 }
 
 pub fn initTarget(self: *const D3D12, width: usize, height: usize) !Target {
-    _ = self;
-    return .{
-        .width = @intCast(width),
-        .height = @intCast(height),
-    };
+    return try Target.init(@constCast(self), width, height);
 }
 
 pub fn present(self: *D3D12, target: Target) !void {
-    _ = target;
-    if (self.swap_chain) |swap_chain| {
-        if (self.rt_surface) |surface| {
-            if (@hasDecl(@TypeOf(surface.*), "prepareNativePresent")) {
-                try surface.prepareNativePresent();
-            }
-        }
-        const sc: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(swap_chain));
-        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) return error.Unexpected;
-        if (self.rt_surface) |surface| {
-            if (@hasDecl(@TypeOf(surface.*), "finishNativePresent")) {
-                try surface.finishNativePresent();
-            }
-        }
-        self.last_present_generation +%= 1;
-        return;
+    if (!self.command_recording_active) {
+        _ = try self.beginCommandRecording();
+    }
+    defer self.last_target = target;
+
+    try self.appendPresentCopy(target);
+    try self.executeRecordedCommands();
+
+    const sc = self.currentSwapChain() orelse return error.Unexpected;
+    if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
+        return error.Unexpected;
     }
 
-    return error.Unexpected;
+    try self.waitForGpuIdle();
+    self.flushDeferredBufferReleases();
+    self.updateCurrentFrameIndex(sc);
+    self.last_present_generation +%= 1;
 }
 
 pub fn presentLastTarget(self: *D3D12) !void {
-    try self.present(.{});
+    if (self.last_target) |target| {
+        try self.present(target);
+        return;
+    }
+
+    const sc = self.currentSwapChain() orelse return error.Unexpected;
+    if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) return error.Unexpected;
+    try self.waitForGpuIdle();
+    self.updateCurrentFrameIndex(sc);
 }
 
 pub fn publishSoftwareFrame(
@@ -333,7 +683,13 @@ pub fn publishSoftwareFrame(
     return null;
 }
 
-pub fn bufferOptions(_: D3D12) void {}
+pub fn bufferOptions(self: *const D3D12) bufferpkg.Options {
+    return .{
+        .device = self.d3d12_device,
+        .defer_release_ctx = @ptrCast(@constCast(self)),
+        .defer_release_fn = deferReleaseBuffer,
+    };
+}
 pub const instanceBufferOptions = bufferOptions;
 pub const uniformBufferOptions = bufferOptions;
 pub const fgBufferOptions = bufferOptions;
@@ -341,48 +697,722 @@ pub const bgBufferOptions = bufferOptions;
 pub const imageBufferOptions = bufferOptions;
 pub const bgImageBufferOptions = bufferOptions;
 
-pub fn textureOptions(_: D3D12) Texture.Options {
-    return .{};
+pub fn textureOptions(self: *const D3D12) Texture.Options {
+    return .{
+        .owner = @constCast(self),
+        .format = self.renderTargetFormat(),
+        .bytes_per_pixel = 4,
+        .render_target = true,
+        .sampled = true,
+    };
 }
 
-pub fn samplerOptions(_: D3D12) Sampler.Options {
-    return .{};
+pub fn samplerOptions(self: *const D3D12) Sampler.Options {
+    return .{ .owner = @constCast(self) };
 }
 
 pub fn imageTextureOptions(
-    self: D3D12,
+    self: *const D3D12,
     format: ImageTextureFormat,
     srgb: bool,
 ) Texture.Options {
-    _ = self;
-    _ = format;
-    _ = srgb;
-    return .{};
+    return .{
+        .owner = @constCast(self),
+        .format = imageDxgiFormat(format, srgb),
+        .bytes_per_pixel = switch (format) {
+            .grayscale => 1,
+            .bgra, .rgba => 4,
+        },
+        .render_target = false,
+        .sampled = true,
+    };
 }
 
 pub fn initAtlasTexture(
     self: *const D3D12,
     atlas: *const @import("../font/main.zig").Atlas,
 ) Texture.Error!Texture {
-    _ = self;
-    return try Texture.init(.{}, atlas.size, atlas.size, atlas.data);
+    const format: ImageTextureFormat = switch (atlas.format) {
+        .grayscale => .grayscale,
+        .bgr => return error.Unexpected,
+        .bgra => .bgra,
+    };
+    return try Texture.init(
+        @constCast(self).imageTextureOptions(format, atlas.format == .bgra),
+        atlas.size,
+        atlas.size,
+        atlas.data,
+    );
 }
 
 pub fn beginFrame(
-    self: *const D3D12,
+    self: *D3D12,
     renderer: *@import("../renderer.zig").GenericRenderer(D3D12),
     target: *Target,
     publish_software_frame: bool,
     publish_width_px: u32,
     publish_height_px: u32,
 ) !Frame {
-    _ = self;
+    _ = try self.beginCommandRecording();
     return try Frame.begin(
         .{},
+        self,
         renderer,
         target,
         publish_software_frame,
         publish_width_px,
         publish_height_px,
     );
+}
+
+fn ensureSrvHeap(self: *D3D12) !void {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+    if (self.srvHeap()) |heap| {
+        if (self.srv_descriptor_size != 0) return;
+
+        const native_heap = nativePtr(*winos.c.ID3D12DescriptorHeap, heap);
+        var cpu_handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
+        var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
+        _ = native_heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(native_heap, &cpu_handle);
+        _ = native_heap.lpVtbl[0].GetGPUDescriptorHandleForHeapStart.?(native_heap, &gpu_handle);
+
+        self.srv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(
+            device,
+            winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+        );
+        self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
+        self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
+        return;
+    }
+
+    var desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
+    desc.Type = winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    desc.NumDescriptors = srv_heap_capacity;
+    desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    desc.NodeMask = 0;
+
+    var raw_heap: ?*anyopaque = null;
+    if (device.lpVtbl[0].CreateDescriptorHeap.?(
+        device,
+        &desc,
+        &winos.c.IID_ID3D12DescriptorHeap,
+        &raw_heap,
+    ) != winos.S_OK or raw_heap == null) {
+        return error.D3D12DescriptorHeapCreateFailed;
+    }
+
+    if (self.rt_surface) |surface| {
+        if (@hasField(@TypeOf(surface.*), "graphics")) {
+            surface.graphics.srv_heap = @ptrCast(raw_heap.?);
+        }
+    }
+
+    const heap = nativePtr(*winos.c.ID3D12DescriptorHeap, raw_heap.?);
+    var cpu_handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
+    var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
+    _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(heap, &cpu_handle);
+    _ = heap.lpVtbl[0].GetGPUDescriptorHandleForHeapStart.?(heap, &gpu_handle);
+
+    self.srv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(
+        device,
+        winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+    );
+    self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
+    self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
+}
+
+fn allocateSrvIndex(self: *D3D12) !u32 {
+    try self.ensureSrvHeap();
+    if (self.free_srv_indices.pop()) |index| return index;
+    if (self.next_srv_index >= srv_heap_capacity) return error.D3D12SrvHeapExhausted;
+    defer self.next_srv_index += 1;
+    return self.next_srv_index;
+}
+
+fn releaseSrvIndex(self: *D3D12, index: u32) void {
+    self.free_srv_indices.append(self.alloc, index) catch {};
+}
+
+fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+    const resource = nativePtr(*winos.c.ID3D12Resource, texture.resource);
+    var desc: winos.c.D3D12_SHADER_RESOURCE_VIEW_DESC =
+        std.mem.zeroes(winos.c.D3D12_SHADER_RESOURCE_VIEW_DESC);
+    desc.Format = texture.format;
+    desc.ViewDimension = winos.c.D3D12_SRV_DIMENSION_TEXTURE2D;
+    desc.Shader4ComponentMapping = winos.c.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.unnamed_0.Texture2D = .{
+        .MostDetailedMip = 0,
+        .MipLevels = 1,
+        .PlaneSlice = 0,
+        .ResourceMinLODClamp = 0,
+    };
+    device.lpVtbl[0].CreateShaderResourceView.?(
+        device,
+        resource,
+        &desc,
+        self.srvCpuHandleForIndex(texture.srv_index.?),
+    );
+}
+
+fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+
+    var desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC =
+        std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
+    desc.Type = winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    desc.NumDescriptors = 1;
+    desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    desc.NodeMask = 0;
+
+    var raw_heap: ?*anyopaque = null;
+    if (device.lpVtbl[0].CreateDescriptorHeap.?(
+        device,
+        &desc,
+        &winos.c.IID_ID3D12DescriptorHeap,
+        &raw_heap,
+    ) != winos.S_OK or raw_heap == null) {
+        return error.D3D12DescriptorHeapCreateFailed;
+    }
+
+    texture.rtv_heap = @ptrCast(raw_heap.?);
+    const heap = nativePtr(*winos.c.ID3D12DescriptorHeap, texture.rtv_heap.?);
+    _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(
+        heap,
+        &texture.rtv_handle,
+    );
+    device.lpVtbl[0].CreateRenderTargetView.?(
+        device,
+        nativePtr(*winos.c.ID3D12Resource, texture.resource),
+        null,
+        texture.rtv_handle,
+    );
+}
+
+fn uploadTextureRegion(
+    self: *D3D12,
+    texture: *Texture.Data,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bytes: []const u8,
+) Texture.Error!void {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+    const resource = nativePtr(*winos.c.ID3D12Resource, texture.resource);
+    const command_list = try self.beginCommandRecording();
+    defer {
+        self.executeRecordedCommands() catch {};
+        self.waitForGpuIdle() catch {};
+        self.flushDeferredBufferReleases();
+    }
+
+    const row_pitch: u32 = std.mem.alignForward(
+        u32,
+        @intCast(width * texture.bytes_per_pixel),
+        winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+    );
+    const upload_size: usize = @as(usize, row_pitch) * height;
+
+    var heap_props: winos.c.D3D12_HEAP_PROPERTIES =
+        std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
+    heap_props.Type = winos.c.D3D12_HEAP_TYPE_UPLOAD;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    var upload_desc: winos.c.D3D12_RESOURCE_DESC =
+        std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
+    upload_desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_BUFFER;
+    upload_desc.Width = upload_size;
+    upload_desc.Height = 1;
+    upload_desc.DepthOrArraySize = 1;
+    upload_desc.MipLevels = 1;
+    upload_desc.SampleDesc = .{ .Count = 1, .Quality = 0 };
+    upload_desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    upload_desc.Flags = winos.c.D3D12_RESOURCE_FLAG_NONE;
+
+    var raw_upload: ?*anyopaque = null;
+    if (device.lpVtbl[0].CreateCommittedResource.?(
+        device,
+        &heap_props,
+        winos.c.D3D12_HEAP_FLAG_NONE,
+        &upload_desc,
+        winos.c.D3D12_RESOURCE_STATE_GENERIC_READ,
+        null,
+        &winos.c.IID_ID3D12Resource,
+        &raw_upload,
+    ) != winos.S_OK or raw_upload == null) {
+        return error.D3D12UploadBufferCreateFailed;
+    }
+    defer winos.graphics.release(raw_upload);
+
+    const upload = nativePtr(*winos.c.ID3D12Resource, raw_upload.?);
+    var mapped: ?*anyopaque = null;
+    if (upload.lpVtbl[0].Map.?(
+        upload,
+        0,
+        null,
+        &mapped,
+    ) != winos.S_OK or mapped == null) {
+        return error.D3D12TextureMapFailed;
+    }
+    defer upload.lpVtbl[0].Unmap.?(
+        upload,
+        0,
+        null,
+    );
+
+    const dst: [*]u8 = @ptrCast(mapped.?);
+    const src_stride = width * texture.bytes_per_pixel;
+    var row: usize = 0;
+    while (row < height) : (row += 1) {
+        const src_off = row * src_stride;
+        const dst_off = row * @as(usize, row_pitch);
+        @memcpy(
+            dst[dst_off .. dst_off + src_stride],
+            bytes[src_off .. src_off + src_stride],
+        );
+        if (@as(usize, row_pitch) > src_stride) {
+            @memset(dst[dst_off + src_stride .. dst_off + @as(usize, row_pitch)], 0);
+        }
+    }
+
+    try self.transitionTextureState(
+        command_list,
+        texture,
+        @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST),
+    );
+
+    const dst_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = resource,
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        .unnamed_0 = .{ .SubresourceIndex = 0 },
+    };
+    const src_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = upload,
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .unnamed_0 = .{
+            .PlacedFootprint = .{
+                .Offset = 0,
+                .Footprint = .{
+                    .Format = texture.format,
+                    .Width = @intCast(width),
+                    .Height = @intCast(height),
+                    .Depth = 1,
+                    .RowPitch = row_pitch,
+                },
+            },
+        },
+    };
+    command_list.lpVtbl[0].CopyTextureRegion.?(
+        command_list,
+        &dst_location,
+        @intCast(x),
+        @intCast(y),
+        0,
+        &src_location,
+        null,
+    );
+
+    const after_state: u32 = if (texture.render_target)
+        @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET)
+    else
+        @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    try self.transitionTextureState(
+        command_list,
+        texture,
+        after_state,
+    );
+}
+
+fn appendPresentCopy(self: *D3D12, target: Target) !void {
+    const command_list = self.currentCommandList() orelse return error.Unexpected;
+    const backbuffer = self.currentBackbufferResource() orelse return error.Unexpected;
+    const source = nativePtr(*winos.c.ID3D12Resource, target.texture.data.resource);
+
+    try self.transitionTextureState(
+        command_list,
+        target.texture.data,
+        @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_SOURCE),
+    );
+
+    var barrier = transitionBarrier(
+        backbuffer,
+        winos.c.D3D12_RESOURCE_STATE_PRESENT,
+        winos.c.D3D12_RESOURCE_STATE_COPY_DEST,
+    );
+    command_list.lpVtbl[0].ResourceBarrier.?(
+        command_list,
+        1,
+        &barrier,
+    );
+
+    const dst_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = backbuffer,
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        .unnamed_0 = .{ .SubresourceIndex = 0 },
+    };
+    const src_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
+        .pResource = source,
+        .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        .unnamed_0 = .{ .SubresourceIndex = 0 },
+    };
+    command_list.lpVtbl[0].CopyTextureRegion.?(
+        command_list,
+        &dst_location,
+        0,
+        0,
+        0,
+        &src_location,
+        null,
+    );
+
+    barrier = transitionBarrier(
+        backbuffer,
+        winos.c.D3D12_RESOURCE_STATE_COPY_DEST,
+        winos.c.D3D12_RESOURCE_STATE_PRESENT,
+    );
+    command_list.lpVtbl[0].ResourceBarrier.?(
+        command_list,
+        1,
+        &barrier,
+    );
+}
+
+fn beginCommandRecording(self: *D3D12) !*winos.c.ID3D12GraphicsCommandList {
+    if (self.command_recording_active) {
+        return self.currentCommandList() orelse error.Unexpected;
+    }
+
+    try self.waitForGpuIdle();
+
+    const allocator = self.currentCommandAllocator() orelse return error.Unexpected;
+    const command_list = self.currentCommandList() orelse return error.Unexpected;
+    if (allocator.lpVtbl[0].Reset.?(allocator) != winos.S_OK) return error.Unexpected;
+    if (command_list.lpVtbl[0].Reset.?(
+        command_list,
+        allocator,
+        null,
+    ) != winos.S_OK) return error.Unexpected;
+
+    self.command_recording_active = true;
+    return command_list;
+}
+
+fn executeRecordedCommands(self: *D3D12) !void {
+    if (!self.command_recording_active) return;
+
+    const command_list = self.currentCommandList() orelse return error.Unexpected;
+    const queue = self.currentQueue() orelse return error.Unexpected;
+    if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
+
+    const lists = [_][*c]winos.c.ID3D12CommandList{
+        @ptrCast(command_list),
+    };
+    queue.lpVtbl[0].ExecuteCommandLists.?(
+        queue,
+        1,
+        @ptrCast(&lists),
+    );
+    self.command_recording_active = false;
+}
+
+fn transitionTextureState(
+    self: *D3D12,
+    command_list: *winos.c.ID3D12GraphicsCommandList,
+    texture: *Texture.Data,
+    after_state: u32,
+) !void {
+    _ = self;
+    if (texture.state == after_state) return;
+
+    var barrier = transitionBarrier(
+        nativePtr(*winos.c.ID3D12Resource, texture.resource),
+        texture.state,
+        after_state,
+    );
+    command_list.lpVtbl[0].ResourceBarrier.?(
+        command_list,
+        1,
+        &barrier,
+    );
+    texture.state = after_state;
+}
+
+fn waitForGpuIdle(self: *D3D12) !void {
+    const surface = self.rt_surface orelse return;
+    if (!@hasField(@TypeOf(surface.*), "graphics")) return;
+    if (surface.graphics.command_queue == null or
+        surface.graphics.fence == null or
+        surface.graphics.fence_event == null)
+    {
+        return;
+    }
+
+    const queue = nativePtr(*winos.c.ID3D12CommandQueue, surface.graphics.command_queue.?);
+    const fence = nativePtr(*winos.c.ID3D12Fence, surface.graphics.fence.?);
+
+    surface.graphics.fence_value += 1;
+    const wait_value = surface.graphics.fence_value;
+    if (queue.lpVtbl[0].Signal.?(
+        queue,
+        fence,
+        wait_value,
+    ) != winos.S_OK) return error.Unexpected;
+
+    if (fence.lpVtbl[0].GetCompletedValue.?(fence) < wait_value) {
+        if (fence.lpVtbl[0].SetEventOnCompletion.?(
+            fence,
+            wait_value,
+            surface.graphics.fence_event.?,
+        ) != winos.S_OK) return error.Unexpected;
+        if (winos.c.WaitForSingleObject(surface.graphics.fence_event.?, winos.INFINITE) == winos.WAIT_FAILED) {
+            return error.Unexpected;
+        }
+    }
+}
+
+fn currentDevice(self: *const D3D12) ?*winos.c.ID3D12Device {
+    return if (self.d3d12_device) |device|
+        nativePtr(*winos.c.ID3D12Device, device)
+    else
+        null;
+}
+
+fn currentQueue(self: *const D3D12) ?*winos.c.ID3D12CommandQueue {
+    return if (self.command_queue) |queue|
+        nativePtr(*winos.c.ID3D12CommandQueue, queue)
+    else
+        null;
+}
+
+fn currentCommandAllocator(self: *const D3D12) ?*winos.c.ID3D12CommandAllocator {
+    const surface = self.rt_surface orelse return null;
+    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
+    return if (surface.graphics.command_allocator) |allocator|
+        nativePtr(*winos.c.ID3D12CommandAllocator, allocator)
+    else
+        null;
+}
+
+fn currentCommandList(self: *const D3D12) ?*winos.c.ID3D12GraphicsCommandList {
+    const surface = self.rt_surface orelse return null;
+    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
+    return if (surface.graphics.command_list) |command_list|
+        nativePtr(*winos.c.ID3D12GraphicsCommandList, command_list)
+    else
+        null;
+}
+
+fn currentSwapChain(self: *const D3D12) ?*winos.c.IDXGISwapChain3 {
+    return if (self.swap_chain) |swap_chain|
+        nativePtr(*winos.c.IDXGISwapChain3, swap_chain)
+    else
+        null;
+}
+
+fn srvHeap(self: *const D3D12) ?*winos.graphics.ID3D12DescriptorHeap {
+    const surface = self.rt_surface orelse return null;
+    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
+    return surface.graphics.srv_heap;
+}
+
+fn currentBackbufferResource(self: *const D3D12) ?*winos.c.ID3D12Resource {
+    const surface = self.rt_surface orelse return null;
+    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
+    const index: usize = @intCast(surface.graphics.frame_index);
+    if (index >= surface.graphics.backbuffers.len) return null;
+    return if (surface.graphics.backbuffers[index]) |resource|
+        nativePtr(*winos.c.ID3D12Resource, resource)
+    else
+        null;
+}
+
+fn updateCurrentFrameIndex(self: *D3D12, sc: *winos.c.IDXGISwapChain3) void {
+    if (self.rt_surface) |surface| {
+        if (@hasField(@TypeOf(surface.*), "graphics")) {
+            surface.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
+        }
+    }
+}
+
+fn renderTargetFormat(self: *const D3D12) u32 {
+    return if (self.blending.isLinear())
+        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+    else
+        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM);
+}
+
+fn srvCpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
+    return .{
+        .ptr = self.srv_heap_cpu_start_ptr +
+            (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
+    };
+}
+
+fn srvGpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_GPU_DESCRIPTOR_HANDLE {
+    return .{
+        .ptr = self.srv_heap_gpu_start_ptr +
+            (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
+    };
+}
+
+fn flushDeferredBufferReleases(self: *D3D12) void {
+    for (self.deferred_buffer_releases.items) |release| {
+        const resource = nativePtr(*winos.c.ID3D12Resource, release.buffer);
+        if (release.was_mapped) {
+            resource.lpVtbl[0].Unmap.?(
+                resource,
+                0,
+                null,
+            );
+        }
+        winos.graphics.release(@ptrCast(release.buffer));
+    }
+    self.deferred_buffer_releases.clearRetainingCapacity();
+}
+
+fn deferReleaseBuffer(ctx: ?*anyopaque, buffer: *winos.graphics.ID3D12Resource, was_mapped: bool) void {
+    const self: *D3D12 = @ptrCast(@alignCast(ctx orelse {
+        if (was_mapped) {
+            const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
+            resource.lpVtbl[0].Unmap.?(
+                resource,
+                0,
+                null,
+            );
+        }
+        winos.graphics.release(@ptrCast(buffer));
+        return;
+    }));
+
+    if (!self.command_recording_active) {
+        const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
+        if (was_mapped) {
+            resource.lpVtbl[0].Unmap.?(
+                resource,
+                0,
+                null,
+            );
+        }
+        winos.graphics.release(@ptrCast(buffer));
+        return;
+    }
+
+    self.deferred_buffer_releases.append(self.alloc, .{
+        .buffer = buffer,
+        .was_mapped = was_mapped,
+    }) catch {
+        const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
+        if (was_mapped) {
+            resource.lpVtbl[0].Unmap.?(
+                resource,
+                0,
+                null,
+            );
+        }
+        winos.graphics.release(@ptrCast(buffer));
+    };
+}
+
+fn createTextureResource(
+    opts: Texture.Options,
+    width: usize,
+    height: usize,
+) Texture.Error!*winos.graphics.ID3D12Resource {
+    const device = opts.owner.currentDevice() orelse return error.D3D12DeviceUnavailable;
+
+    var heap_props: winos.c.D3D12_HEAP_PROPERTIES =
+        std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
+    heap_props.Type = winos.c.D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    var desc: winos.c.D3D12_RESOURCE_DESC =
+        std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
+    desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Alignment = 0;
+    desc.Width = width;
+    desc.Height = @intCast(height);
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = opts.format;
+    desc.SampleDesc = .{ .Count = 1, .Quality = 0 };
+    desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = if (opts.render_target)
+        winos.c.D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+    else
+        winos.c.D3D12_RESOURCE_FLAG_NONE;
+
+    const initial_state: winos.c.D3D12_RESOURCE_STATES = if (opts.render_target)
+        @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET)
+    else
+        @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST);
+
+    var raw_resource: ?*anyopaque = null;
+    if (device.lpVtbl[0].CreateCommittedResource.?(
+        device,
+        &heap_props,
+        winos.c.D3D12_HEAP_FLAG_NONE,
+        &desc,
+        initial_state,
+        null,
+        &winos.c.IID_ID3D12Resource,
+        &raw_resource,
+    ) != winos.S_OK or raw_resource == null) {
+        return error.D3D12TextureCreateFailed;
+    }
+
+    return @ptrCast(raw_resource.?);
+}
+
+fn imageDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
+    return switch (format) {
+        .grayscale => @intCast(winos.c.DXGI_FORMAT_R8_UNORM),
+        .rgba => if (srgb)
+            @intCast(winos.c.DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+        else
+            @intCast(winos.c.DXGI_FORMAT_R8G8B8A8_UNORM),
+        .bgra => if (srgb)
+            @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+        else
+            @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM),
+    };
+}
+
+fn vertexBufferView(
+    raw_buffer: *winos.graphics.ID3D12Resource,
+    stride: usize,
+) winos.c.D3D12_VERTEX_BUFFER_VIEW {
+    const buffer = nativePtr(*winos.c.ID3D12Resource, raw_buffer);
+    var desc: winos.c.D3D12_RESOURCE_DESC = std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
+    _ = buffer.lpVtbl[0].GetDesc.?(buffer, &desc);
+    return .{
+        .BufferLocation = buffer.lpVtbl[0].GetGPUVirtualAddress.?(buffer),
+        .SizeInBytes = @intCast(desc.Width),
+        .StrideInBytes = @intCast(stride),
+    };
+}
+
+fn transitionBarrier(
+    resource: *winos.c.ID3D12Resource,
+    before: winos.c.D3D12_RESOURCE_STATES,
+    after: winos.c.D3D12_RESOURCE_STATES,
+) winos.c.D3D12_RESOURCE_BARRIER {
+    return .{
+        .Type = winos.c.D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        .Flags = winos.c.D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        .unnamed_0 = .{
+            .Transition = .{
+                .pResource = resource,
+                .Subresource = winos.c.D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                .StateBefore = before,
+                .StateAfter = after,
+            },
+        },
+    };
+}
+
+fn nativePtr(comptime T: type, raw: anytype) T {
+    return @ptrFromInt(@intFromPtr(raw));
 }
