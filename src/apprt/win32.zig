@@ -42,6 +42,10 @@ fn ciSmokeEnabled() bool {
     return value.len > 0 and !std.mem.eql(u8, value, "0");
 }
 
+fn nativePtr(comptime T: type, raw: anytype) T {
+    return @ptrFromInt(@intFromPtr(raw));
+}
+
 const win = struct {
     const UINT = u32;
     const DWORD = u32;
@@ -419,8 +423,8 @@ pub const App = struct {
             },
             win.WM_PAINT => blk: {
                 var ps: winos.c.PAINTSTRUCT = std.mem.zeroes(winos.c.PAINTSTRUCT);
-                _ = winos.c.BeginPaint(@ptrCast(@alignCast(hwnd.?)), &ps);
-                defer _ = winos.c.EndPaint(@ptrCast(@alignCast(hwnd.?)), &ps);
+                _ = winos.c.BeginPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
+                defer _ = winos.c.EndPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
 
                 if (self.surface) |surface| surface.markDirty();
                 break :blk 0;
@@ -821,10 +825,9 @@ pub const Surface = struct {
     pub fn finishNativePresent(self: *Surface) !void {
         try self.waitForGpuIdle();
         if (self.graphics.swap_chain) |swap_chain| {
-            const sc: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(swap_chain);
-            self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(
-                @ptrCast(@alignCast(sc)),
-            );
+            const sc: *winos.c.IDXGISwapChain3 =
+                nativePtr(*winos.c.IDXGISwapChain3, swap_chain);
+            self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         }
     }
 
@@ -906,9 +909,10 @@ pub const Surface = struct {
         try self.waitForGpuIdle();
         self.destroyBackbuffers();
 
-        const sc: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(self.graphics.swap_chain.?);
+        const sc: *winos.c.IDXGISwapChain3 =
+            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
         if (sc.lpVtbl[0].ResizeBuffers.?(
-            @ptrCast(@alignCast(sc)),
+            sc,
             swap_chain_buffer_count,
             width,
             height,
@@ -916,41 +920,40 @@ pub const Surface = struct {
             0,
         ) != winos.S_OK) return error.Unexpected;
 
-        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(
-            @ptrCast(@alignCast(sc)),
-        );
+        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         try self.createBackbuffers();
     }
 
     fn createBackbuffers(self: *Surface) !void {
         if (self.graphics.swap_chain == null or self.graphics.rtv_heap == null) return;
 
-        const device: *align(1) winos.c.ID3D12Device = @ptrCast(self.graphics.d3d12_device.?);
-        const heap: *align(1) winos.c.ID3D12DescriptorHeap = @ptrCast(self.graphics.rtv_heap.?);
-        const sc: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(self.graphics.swap_chain.?);
+        const device: *winos.c.ID3D12Device =
+            nativePtr(*winos.c.ID3D12Device, self.graphics.d3d12_device.?);
+        const heap: *winos.c.ID3D12DescriptorHeap =
+            nativePtr(*winos.c.ID3D12DescriptorHeap, self.graphics.rtv_heap.?);
+        const sc: *winos.c.IDXGISwapChain3 =
+            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
 
         var handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
-        _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(
-            @ptrCast(@alignCast(heap)),
-            &handle,
-        );
+        _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(heap, &handle);
         self.graphics.rtv_heap_start_ptr = handle.ptr;
 
         for (0..swap_chain_buffer_count) |i| {
             var raw_resource: ?*anyopaque = null;
             if (sc.lpVtbl[0].GetBuffer.?(
-                @ptrCast(@alignCast(sc)),
+                sc,
                 @intCast(i),
                 &winos.c.IID_ID3D12Resource,
                 &raw_resource,
             ) != winos.S_OK) return error.Unexpected;
 
             self.graphics.backbuffers[i] = raw_resource.?;
-            const resource: *align(1) winos.c.ID3D12Resource = @ptrCast(raw_resource.?);
+            const resource: *winos.c.ID3D12Resource =
+                nativePtr(*winos.c.ID3D12Resource, raw_resource.?);
             const rtv_handle = self.rtvHandleForIndex(i);
             device.lpVtbl[0].CreateRenderTargetView.?(
-                @ptrCast(@alignCast(device)),
-                @ptrCast(@alignCast(resource)),
+                device,
+                resource,
                 null,
                 rtv_handle,
             );
@@ -974,17 +977,18 @@ pub const Surface = struct {
             return;
         }
 
-        const allocator: *align(1) winos.c.ID3D12CommandAllocator = @ptrCast(self.graphics.command_allocator.?);
-        const command_list: *align(1) winos.c.ID3D12GraphicsCommandList = @ptrCast(self.graphics.command_list.?);
-        const queue: *align(1) winos.c.ID3D12CommandQueue = @ptrCast(self.graphics.command_queue.?);
+        const allocator: *winos.c.ID3D12CommandAllocator =
+            nativePtr(*winos.c.ID3D12CommandAllocator, self.graphics.command_allocator.?);
+        const command_list: *winos.c.ID3D12GraphicsCommandList =
+            nativePtr(*winos.c.ID3D12GraphicsCommandList, self.graphics.command_list.?);
+        const queue: *winos.c.ID3D12CommandQueue =
+            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
         const backbuffer = self.currentBackbufferResource() orelse return error.Unexpected;
 
-        if (allocator.lpVtbl[0].Reset.?(
-            @ptrCast(@alignCast(allocator)),
-        ) != winos.S_OK) return error.Unexpected;
+        if (allocator.lpVtbl[0].Reset.?(allocator) != winos.S_OK) return error.Unexpected;
         if (command_list.lpVtbl[0].Reset.?(
-            @ptrCast(@alignCast(command_list)),
-            @ptrCast(@alignCast(allocator)),
+            command_list,
+            allocator,
             null,
         ) != winos.S_OK) return error.Unexpected;
 
@@ -994,14 +998,14 @@ pub const Surface = struct {
             winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
         command_list.lpVtbl[0].ResourceBarrier.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             1,
             &barrier,
         );
 
         var rtv_handle = self.rtvHandleForIndex(self.graphics.frame_index);
         command_list.lpVtbl[0].OMSetRenderTargets.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             1,
             &rtv_handle,
             winos.FALSE,
@@ -1010,7 +1014,7 @@ pub const Surface = struct {
 
         const clear_color = self.nativeClearColor();
         command_list.lpVtbl[0].ClearRenderTargetView.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             rtv_handle,
             &clear_color,
             0,
@@ -1023,20 +1027,18 @@ pub const Surface = struct {
             winos.c.D3D12_RESOURCE_STATE_PRESENT,
         );
         command_list.lpVtbl[0].ResourceBarrier.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             1,
             &barrier,
         );
 
-        if (command_list.lpVtbl[0].Close.?(
-            @ptrCast(@alignCast(command_list)),
-        ) != winos.S_OK) return error.Unexpected;
+        if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
 
         const command_lists = [_][*c]winos.c.ID3D12CommandList{
-            @ptrCast(@alignCast(command_list)),
+            @ptrCast(command_list),
         };
         queue.lpVtbl[0].ExecuteCommandLists.?(
-            @ptrCast(@alignCast(queue)),
+            queue,
             1,
             @ptrCast(&command_lists),
         );
@@ -1050,22 +1052,22 @@ pub const Surface = struct {
             return;
         }
 
-        const queue: *align(1) winos.c.ID3D12CommandQueue = @ptrCast(self.graphics.command_queue.?);
-        const fence: *align(1) winos.c.ID3D12Fence = @ptrCast(self.graphics.fence.?);
+        const queue: *winos.c.ID3D12CommandQueue =
+            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
+        const fence: *winos.c.ID3D12Fence =
+            nativePtr(*winos.c.ID3D12Fence, self.graphics.fence.?);
 
         self.graphics.fence_value += 1;
         const wait_value = self.graphics.fence_value;
         if (queue.lpVtbl[0].Signal.?(
-            @ptrCast(@alignCast(queue)),
-            @ptrCast(@alignCast(fence)),
+            queue,
+            fence,
             wait_value,
         ) != winos.S_OK) return error.Unexpected;
 
-        if (fence.lpVtbl[0].GetCompletedValue.?(
-            @ptrCast(@alignCast(fence)),
-        ) < wait_value) {
+        if (fence.lpVtbl[0].GetCompletedValue.?(fence) < wait_value) {
             if (fence.lpVtbl[0].SetEventOnCompletion.?(
-                @ptrCast(@alignCast(fence)),
+                fence,
                 wait_value,
                 self.graphics.fence_event.?,
             ) != winos.S_OK) return error.Unexpected;
@@ -1074,11 +1076,11 @@ pub const Surface = struct {
         }
     }
 
-    fn currentBackbufferResource(self: *Surface) ?*align(1) winos.c.ID3D12Resource {
+    fn currentBackbufferResource(self: *Surface) ?*winos.c.ID3D12Resource {
         const index: usize = @intCast(self.graphics.frame_index);
         if (index >= self.graphics.backbuffers.len) return null;
         return if (self.graphics.backbuffers[index]) |backbuffer|
-            @ptrCast(backbuffer)
+            nativePtr(*winos.c.ID3D12Resource, backbuffer)
         else
             null;
     }
@@ -1101,7 +1103,7 @@ pub const Surface = struct {
     }
 
     fn transitionBarrier(
-        resource: *align(1) winos.c.ID3D12Resource,
+        resource: *winos.c.ID3D12Resource,
         before: winos.c.D3D12_RESOURCE_STATES,
         after: winos.c.D3D12_RESOURCE_STATES,
     ) winos.c.D3D12_RESOURCE_BARRIER {
@@ -1110,7 +1112,7 @@ pub const Surface = struct {
             .Flags = winos.c.D3D12_RESOURCE_BARRIER_FLAG_NONE,
             .unnamed_0 = .{
                 .Transition = .{
-                    .pResource = @ptrCast(@alignCast(resource)),
+                    .pResource = nativePtr([*c]winos.c.ID3D12Resource, resource),
                     .Subresource = winos.c.D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                     .StateBefore = before,
                     .StateAfter = after,
@@ -1207,17 +1209,18 @@ pub const Surface = struct {
         try self.waitForGpuIdle();
         try self.copySoftwareFrameToUpload(frame, shared_bytes, upload);
 
-        const allocator: *align(1) winos.c.ID3D12CommandAllocator = @ptrCast(self.graphics.command_allocator.?);
-        const command_list: *align(1) winos.c.ID3D12GraphicsCommandList = @ptrCast(self.graphics.command_list.?);
-        const queue: *align(1) winos.c.ID3D12CommandQueue = @ptrCast(self.graphics.command_queue.?);
+        const allocator: *winos.c.ID3D12CommandAllocator =
+            nativePtr(*winos.c.ID3D12CommandAllocator, self.graphics.command_allocator.?);
+        const command_list: *winos.c.ID3D12GraphicsCommandList =
+            nativePtr(*winos.c.ID3D12GraphicsCommandList, self.graphics.command_list.?);
+        const queue: *winos.c.ID3D12CommandQueue =
+            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
         const backbuffer = self.currentBackbufferResource() orelse return error.Unexpected;
 
-        if (allocator.lpVtbl[0].Reset.?(
-            @ptrCast(@alignCast(allocator)),
-        ) != winos.S_OK) return error.Unexpected;
+        if (allocator.lpVtbl[0].Reset.?(allocator) != winos.S_OK) return error.Unexpected;
         if (command_list.lpVtbl[0].Reset.?(
-            @ptrCast(@alignCast(command_list)),
-            @ptrCast(@alignCast(allocator)),
+            command_list,
+            allocator,
             null,
         ) != winos.S_OK) return error.Unexpected;
 
@@ -1227,19 +1230,19 @@ pub const Surface = struct {
             winos.c.D3D12_RESOURCE_STATE_COPY_DEST,
         );
         command_list.lpVtbl[0].ResourceBarrier.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             1,
             &barrier,
         );
 
         const src_location = self.softwareUploadCopyLocation(frame, upload);
         const dst_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
-            .pResource = @ptrCast(@alignCast(backbuffer)),
+            .pResource = nativePtr([*c]winos.c.ID3D12Resource, backbuffer),
             .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             .unnamed_0 = .{ .SubresourceIndex = 0 },
         };
         command_list.lpVtbl[0].CopyTextureRegion.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             &dst_location,
             0,
             0,
@@ -1254,26 +1257,25 @@ pub const Surface = struct {
             winos.c.D3D12_RESOURCE_STATE_PRESENT,
         );
         command_list.lpVtbl[0].ResourceBarrier.?(
-            @ptrCast(@alignCast(command_list)),
+            command_list,
             1,
             &barrier,
         );
 
-        if (command_list.lpVtbl[0].Close.?(
-            @ptrCast(@alignCast(command_list)),
-        ) != winos.S_OK) return error.Unexpected;
+        if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
 
         const command_lists = [_][*c]winos.c.ID3D12CommandList{
-            @ptrCast(@alignCast(command_list)),
+            @ptrCast(command_list),
         };
         queue.lpVtbl[0].ExecuteCommandLists.?(
-            @ptrCast(@alignCast(queue)),
+            queue,
             1,
             @ptrCast(&command_lists),
         );
 
-        const sc: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(self.graphics.swap_chain.?);
-        if (sc.lpVtbl[0].Present.?(@ptrCast(@alignCast(sc)), 1, 0) != winos.S_OK) {
+        const sc: *winos.c.IDXGISwapChain3 =
+            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
             return error.Unexpected;
         }
         if (self.app.ci_smoke_enabled and !self.app.ci_smoke_present_ok_logged) {
@@ -1282,9 +1284,7 @@ pub const Surface = struct {
         }
 
         try self.waitForGpuIdle();
-        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(
-            @ptrCast(@alignCast(sc)),
-        );
+        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         self.graphics.last_present_generation = frame.generation;
     }
 
@@ -1292,7 +1292,7 @@ pub const Surface = struct {
         self: *Surface,
         width_px: u32,
         height_px: u32,
-    ) !*align(1) winos.c.ID3D12Resource {
+    ) !*winos.c.ID3D12Resource {
         const row_pitch = alignedSoftwareRowPitch(width_px) catch return error.OutOfMemory;
         const upload_size = std.math.mul(
             u64,
@@ -1304,14 +1304,15 @@ pub const Surface = struct {
             if (self.graphics.software_upload_capacity >= upload_size and
                 self.graphics.software_upload_row_pitch == row_pitch)
             {
-                return @ptrCast(resource);
+                return nativePtr(*winos.c.ID3D12Resource, resource);
             }
 
             winos.graphics.release(resource);
             self.graphics.software_upload = null;
         }
 
-        const device: *align(1) winos.c.ID3D12Device = @ptrCast(self.graphics.d3d12_device.?);
+        const device: *winos.c.ID3D12Device =
+            nativePtr(*winos.c.ID3D12Device, self.graphics.d3d12_device.?);
         var heap_props: winos.c.D3D12_HEAP_PROPERTIES = std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
         heap_props.Type = winos.c.D3D12_HEAP_TYPE_UPLOAD;
         heap_props.CreationNodeMask = 1;
@@ -1329,7 +1330,7 @@ pub const Surface = struct {
 
         var raw_resource: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateCommittedResource.?(
-            @ptrCast(@alignCast(device)),
+            device,
             &heap_props,
             winos.c.D3D12_HEAP_FLAG_NONE,
             &desc,
@@ -1342,24 +1343,24 @@ pub const Surface = struct {
         self.graphics.software_upload = raw_resource.?;
         self.graphics.software_upload_capacity = upload_size;
         self.graphics.software_upload_row_pitch = row_pitch;
-        return @ptrCast(raw_resource.?);
+        return nativePtr(*winos.c.ID3D12Resource, raw_resource.?);
     }
 
     fn copySoftwareFrameToUpload(
         self: *Surface,
         frame: apprt.surface.Message.SoftwareFrameReady,
         shared_bytes: []const u8,
-        resource: *align(1) winos.c.ID3D12Resource,
+        resource: *winos.c.ID3D12Resource,
     ) !void {
         var mapped: ?*anyopaque = null;
         if (resource.lpVtbl[0].Map.?(
-            @ptrCast(@alignCast(resource)),
+            resource,
             0,
             null,
             &mapped,
         ) != winos.S_OK) return error.Unexpected;
         defer resource.lpVtbl[0].Unmap.?(
-            @ptrCast(@alignCast(resource)),
+            resource,
             0,
             null,
         );
@@ -1401,10 +1402,10 @@ pub const Surface = struct {
     fn softwareUploadCopyLocation(
         self: *const Surface,
         frame: apprt.surface.Message.SoftwareFrameReady,
-        resource: *align(1) winos.c.ID3D12Resource,
+        resource: *winos.c.ID3D12Resource,
     ) winos.c.D3D12_TEXTURE_COPY_LOCATION {
         return .{
-            .pResource = @ptrCast(@alignCast(resource)),
+            .pResource = nativePtr([*c]winos.c.ID3D12Resource, resource),
             .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             .unnamed_0 = .{
                 .PlacedFootprint = .{
