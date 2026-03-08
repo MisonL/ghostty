@@ -522,8 +522,6 @@ pub const Surface = struct {
         try self.initGraphics();
         errdefer self.deinitGraphics();
 
-        if (app.ci_smoke_enabled) return;
-
         try app.core_app.addSurface(self);
         errdefer app.core_app.deleteSurface(self);
 
@@ -544,23 +542,38 @@ pub const Surface = struct {
 
     fn runCiSmoke(self: *Surface) !void {
         if (!self.app.ci_smoke_enabled) return;
-        if (!self.app.ci_smoke_native_draw_ready_logged) {
-            self.app.ci_smoke_native_draw_ready_logged = true;
-            log.info("ci.win32.native_draw_ready", .{});
-        }
 
-        try self.recordNativeClear();
-        const sc: *winos.c.IDXGISwapChain3 =
-            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
-        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
-            return error.Unexpected;
+        if (self.core_surface) |core_surface| {
+            try core_surface.refreshCallback();
+            try core_surface.draw();
+
+            if (!self.app.ci_smoke_native_draw_ready_logged) {
+                self.app.ci_smoke_native_draw_ready_logged = true;
+                log.info("ci.win32.native_draw_ready", .{});
+            }
+            if (!self.app.ci_smoke_present_ok_logged) {
+                self.app.ci_smoke_present_ok_logged = true;
+                log.info("ci.win32.present_ok", .{});
+            }
+        } else {
+            if (!self.app.ci_smoke_native_draw_ready_logged) {
+                self.app.ci_smoke_native_draw_ready_logged = true;
+                log.info("ci.win32.native_draw_ready", .{});
+            }
+
+            try self.recordNativeClear();
+            const sc: *winos.c.IDXGISwapChain3 =
+                nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+            if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
+                return error.Unexpected;
+            }
+            if (!self.app.ci_smoke_present_ok_logged) {
+                self.app.ci_smoke_present_ok_logged = true;
+                log.info("ci.win32.present_ok", .{});
+            }
+            try self.waitForGpuIdle();
+            self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         }
-        if (!self.app.ci_smoke_present_ok_logged) {
-            self.app.ci_smoke_present_ok_logged = true;
-            log.info("ci.win32.present_ok", .{});
-        }
-        try self.waitForGpuIdle();
-        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         _ = win.PostMessageW(self.hwnd, win.WM_CLOSE, 0, 0);
     }
 
