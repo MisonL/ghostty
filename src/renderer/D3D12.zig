@@ -22,7 +22,7 @@ const winos = internal_os.windows;
 pub const GraphicsAPI = D3D12;
 pub const force_software_cpu_route = true;
 
-pub const custom_shader_target: shadertoy.Target = .glsl;
+pub const custom_shader_target: shadertoy.Target = .hlsl;
 pub const custom_shader_y_is_down = false;
 pub const swap_chain_count = 1;
 pub const softwareFramePublicationOnCompletion = false;
