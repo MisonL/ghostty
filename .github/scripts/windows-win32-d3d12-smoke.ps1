@@ -72,6 +72,7 @@ $psi.Environment["GHOSTTY_CI_WIN32_SMOKE"] = "1"
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $psi
 $process.EnableRaisingEvents = $true
+$forcedTermination = $false
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
@@ -98,6 +99,7 @@ if (-not $process.HasExited) {
 
 if (-not $process.HasExited) {
   try {
+    $forcedTermination = $true
     $process.Kill($true)
   } catch {
   }
@@ -136,7 +138,11 @@ foreach ($marker in $requiredMarkers) {
 }
 
 $failed = $false
-if ($process.ExitCode -ne 0) {
+if ($forcedTermination) {
+  Write-Host "Smoke process required forced termination"
+  $failed = $true
+}
+if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
   Write-Host "Smoke process exit code: $($process.ExitCode)"
   $failed = $true
 }

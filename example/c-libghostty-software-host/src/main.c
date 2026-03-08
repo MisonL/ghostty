@@ -1,6 +1,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <ghostty.h>
 
@@ -79,6 +81,45 @@ static bool software_frame_cb(
   return true;
 }
 
+static bool load_software_host_smoke_config(ghostty_config_t config) {
+  char path[] = "/tmp/ghostty-software-host-XXXXXX";
+  int fd = mkstemp(path);
+  if (fd == -1) {
+    perror("mkstemp");
+    return false;
+  }
+
+  FILE *fp = fdopen(fd, "w");
+  if (fp == NULL) {
+    perror("fdopen");
+    close(fd);
+    unlink(path);
+    return false;
+  }
+
+  const char *contents =
+      "software-renderer-experimental = true\n"
+      "software-renderer-presenter = snapshot\n";
+  const size_t contents_len = strlen(contents);
+  const size_t written = fwrite(contents, 1, contents_len, fp);
+  if (written != contents_len) {
+    perror("fwrite");
+    fclose(fp);
+    unlink(path);
+    return false;
+  }
+
+  if (fclose(fp) != 0) {
+    perror("fclose");
+    unlink(path);
+    return false;
+  }
+
+  ghostty_config_load_file(config, path);
+  unlink(path);
+  return true;
+}
+
 int main(int argc, char **argv) {
   if (ghostty_init((uintptr_t)argc, argv) != GHOSTTY_SUCCESS) {
     fprintf(stderr, "ghostty_init failed\n");
@@ -88,6 +129,11 @@ int main(int argc, char **argv) {
   ghostty_config_t config = ghostty_config_new();
   if (config == NULL) {
     fprintf(stderr, "ghostty_config_new failed\n");
+    return 1;
+  }
+  if (!load_software_host_smoke_config(config)) {
+    fprintf(stderr, "failed to load software-host smoke config\n");
+    ghostty_config_free(config);
     return 1;
   }
   ghostty_config_finalize(config);
@@ -114,6 +160,7 @@ int main(int argc, char **argv) {
 
   ghostty_surface_config_s surface_config = ghostty_surface_config_new();
   surface_config.platform_tag = GHOSTTY_PLATFORM_SOFTWARE_HOST;
+  surface_config.userdata = &state;
   surface_config.scale_factor = 1.0;
   surface_config.command = "printf 'hello from libghostty software host\\n'";
   surface_config.wait_after_command = true;
