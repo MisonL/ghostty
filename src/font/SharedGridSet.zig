@@ -31,6 +31,16 @@ const Config = configpkg.Config;
 
 const log = std.log.scoped(.font_shared_grid_set);
 
+fn skipSystemFontDiscoveryForWin32CiSmoke() bool {
+    if (comptime builtin.target.os.tag != .windows) return false;
+
+    const alloc = std.heap.page_allocator;
+    const value = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch
+        return false;
+    defer alloc.free(value);
+    return value.len > 0 and !std.mem.eql(u8, value, "0");
+}
+
 /// The allocator to use for all heap allocations.
 alloc: Allocator,
 
@@ -176,7 +186,7 @@ fn collection(
     c.metric_modifiers = key.metric_modifiers;
 
     // Search for fonts
-    if (Discover != void) discover: {
+    if (Discover != void and !skipSystemFontDiscoveryForWin32CiSmoke()) discover: {
         const disco = try self.discover() orelse {
             log.warn(
                 "font discovery not available, cannot search for fonts",
@@ -248,6 +258,8 @@ fn collection(
                 });
             }
         }
+    } else if (skipSystemFontDiscoveryForWin32CiSmoke()) {
+        log.info("skipping system font discovery for win32 ci smoke; using embedded fallback fonts only", .{});
     }
 
     // Complete our styles to ensure we have something to satisfy every
