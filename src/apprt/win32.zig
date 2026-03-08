@@ -223,7 +223,10 @@ pub const App = struct {
         errdefer core_app.alloc.free(self.class_name);
         errdefer core_app.alloc.free(self.title);
 
-        self.config = try configpkg.Config.load(core_app.alloc);
+        self.config = if (self.ci_smoke_enabled)
+            try configpkg.Config.default(core_app.alloc)
+        else
+            try configpkg.Config.load(core_app.alloc);
         errdefer self.config.deinit();
 
         try self.registerWindowClass();
