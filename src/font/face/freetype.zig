@@ -819,7 +819,7 @@ pub const Face = struct {
         const post_ = face.getSfntTable(.post);
 
         // Read the 'OS/2' table out of the font data.
-        const os2_: ?*freetype.c.TT_OS2 = os2: {
+        const os2_: ?*align(1) freetype.c.TT_OS2 = os2: {
             const os2 = face.getSfntTable(.os2) orelse break :os2 null;
             if (os2.version == 0xFFFF) break :os2 null;
             break :os2 os2;

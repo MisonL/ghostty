@@ -104,11 +104,11 @@ pub const Face = struct {
     }
 
     /// Return a pointer to a given SFNT table stored within a face.
-    pub fn getSfntTable(self: Face, comptime tag: SfntTag) ?*tag.DataType() {
-        return @ptrCast(@alignCast(c.FT_Get_Sfnt_Table(
+    pub fn getSfntTable(self: Face, comptime tag: SfntTag) ?*align(1) tag.DataType() {
+        return @ptrCast(c.FT_Get_Sfnt_Table(
             self.handle,
             @intFromEnum(tag),
-        )));
+        ));
     }
 
     /// Retrieve the number of name strings in the SFNT ‘name’ table.
