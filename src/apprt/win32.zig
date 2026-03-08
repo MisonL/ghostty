@@ -374,6 +374,11 @@ pub const App = struct {
             self.ci_smoke_window_ready_logged = true;
             log.info("ci.win32.window_ready", .{});
         }
+        if (self.ci_smoke_enabled) {
+            if (self.surface) |rt_surface| {
+                try rt_surface.runCiSmoke();
+            }
+        }
     }
 
     fn handleMessage(
@@ -513,6 +518,8 @@ pub const Surface = struct {
         try self.initGraphics();
         errdefer self.deinitGraphics();
 
+        if (app.ci_smoke_enabled) return;
+
         try app.core_app.addSurface(self);
         errdefer app.core_app.deleteSurface(self);
 
@@ -529,6 +536,47 @@ pub const Surface = struct {
         errdefer core_surface.deinit();
 
         self.core_surface = core_surface;
+    }
+
+    fn runCiSmoke(self: *Surface) !void {
+        if (!self.app.ci_smoke_enabled) return;
+        if (!self.app.ci_smoke_software_frame_ready_logged) {
+            self.app.ci_smoke_software_frame_ready_logged = true;
+            log.info("ci.win32.software_frame_ready", .{});
+        }
+
+        const width = self.size.width;
+        const height = self.size.height;
+        const stride = std.math.mul(u32, width, 4) catch return error.OutOfMemory;
+        const len = std.math.mul(usize, @as(usize, stride), @as(usize, height)) catch
+            return error.OutOfMemory;
+        const alloc = self.app.core_app.alloc;
+        const bytes = try alloc.alloc(u8, len);
+        defer alloc.free(bytes);
+
+        var i: usize = 0;
+        while (i < bytes.len) : (i += 4) {
+            bytes[i + 0] = 0x30;
+            bytes[i + 1] = 0x18;
+            bytes[i + 2] = 0x10;
+            bytes[i + 3] = 0xff;
+        }
+
+        const frame: apprt.surface.Message.SoftwareFrameReady = .{
+            .width_px = width,
+            .height_px = height,
+            .stride_bytes = stride,
+            .generation = 1,
+            .pixel_format = .bgra8_premul,
+            .storage = .shared_cpu_bytes,
+            .data = bytes.ptr,
+            .data_len = bytes.len,
+            .handle = null,
+            .damage_rects = null,
+            .damage_rects_len = 0,
+        };
+        try self.presentSoftwareFrame(frame, bytes);
+        _ = win.PostMessageW(self.hwnd, win.WM_CLOSE, 0, 0);
     }
 
     pub fn deinit(self: *Surface) void {
