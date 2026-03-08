@@ -1398,7 +1398,7 @@ fn searchCallback(event: terminal.search.Thread.Event, ud: ?*anyopaque) void {
     // to access anything other than values that never change on the surface.
     // The surface is guaranteed to be valid for the lifetime of the search
     // thread.
-    const self: *Surface = @ptrCast(@alignCast(ud.?));
+    const self: *Surface = @ptrFromInt(@intFromPtr(ud.?));
     self.searchCallback_(event) catch |err| {
         log.warn("error in search callback err={}", .{err});
     };
