@@ -326,7 +326,7 @@ pub const graphics = struct {
 
     pub fn release(ptr: ?*anyopaque) void {
         const raw = ptr orelse return;
-        const unknown: *IUnknown = @ptrCast(@alignCast(raw));
+        const unknown: *IUnknown = @ptrFromInt(@intFromPtr(raw));
         _ = unknown.lpVtbl.Release(unknown);
     }
 };

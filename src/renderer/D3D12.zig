@@ -330,8 +330,8 @@ pub fn present(self: *D3D12, target: Target) !void {
                 try surface.prepareNativePresent();
             }
         }
-        const sc: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(swap_chain);
-        if (sc.lpVtbl[0].Present.?(@ptrCast(@alignCast(sc)), 1, 0) != winos.S_OK) return error.Unexpected;
+        const sc: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(swap_chain));
+        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) return error.Unexpected;
         if (self.rt_surface) |surface| {
             if (@hasDecl(@TypeOf(surface.*), "finishNativePresent")) {
                 try surface.finishNativePresent();

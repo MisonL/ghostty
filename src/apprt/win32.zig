@@ -449,7 +449,7 @@ pub const App = struct {
     ) callconv(.winapi) win.LRESULT {
         if (msg == win.WM_NCCREATE) {
             const create_struct: *const win.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(l_param)));
-            const app: *App = @ptrCast(@alignCast(create_struct.lpCreateParams.?));
+            const app: *App = @ptrFromInt(@intFromPtr(create_struct.lpCreateParams.?));
             _ = win.SetWindowLongPtrW(hwnd, win.GWLP_USERDATA, @intCast(@intFromPtr(app)));
         }
 
@@ -611,11 +611,11 @@ pub const Surface = struct {
         queue_desc.Priority = 0;
         queue_desc.NodeMask = 0;
 
-        const device: *align(1) winos.c.ID3D12Device = @ptrCast(self.graphics.d3d12_device.?);
+        const device: *winos.c.ID3D12Device = @ptrFromInt(@intFromPtr(self.graphics.d3d12_device.?));
 
         var raw_queue: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateCommandQueue.?(
-            @ptrCast(@alignCast(device)),
+            device,
             &queue_desc,
             &winos.c.IID_ID3D12CommandQueue,
             &raw_queue,
@@ -635,14 +635,14 @@ pub const Surface = struct {
         swap_chain_desc.AlphaMode = winos.c.DXGI_ALPHA_MODE_IGNORE;
         swap_chain_desc.Flags = 0;
 
-        const factory: *align(1) winos.c.IDXGIFactory4 = @ptrCast(self.graphics.dxgi_factory.?);
-        const command_queue: *align(1) winos.c.ID3D12CommandQueue = @ptrCast(self.graphics.command_queue.?);
+        const factory: *winos.c.IDXGIFactory4 = @ptrFromInt(@intFromPtr(self.graphics.dxgi_factory.?));
+        const command_queue: *winos.c.ID3D12CommandQueue = @ptrFromInt(@intFromPtr(self.graphics.command_queue.?));
 
         var swap_chain1: ?*winos.c.IDXGISwapChain1 = null;
         if (factory.lpVtbl[0].CreateSwapChainForHwnd.?(
-            @ptrCast(@alignCast(factory)),
-            @ptrCast(@alignCast(command_queue)),
-            @ptrCast(@alignCast(self.hwnd.?)),
+            factory,
+            @ptrFromInt(@intFromPtr(command_queue)),
+            @ptrFromInt(@intFromPtr(self.hwnd.?)),
             &swap_chain_desc,
             null,
             null,
@@ -656,10 +656,8 @@ pub const Surface = struct {
             &raw_swap_chain3,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.swap_chain = @ptrCast(raw_swap_chain3.?);
-        const swap_chain3: *align(1) winos.c.IDXGISwapChain3 = @ptrCast(self.graphics.swap_chain.?);
-        self.graphics.frame_index = swap_chain3.lpVtbl[0].GetCurrentBackBufferIndex.?(
-            @ptrCast(@alignCast(swap_chain3)),
-        );
+        const swap_chain3: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(self.graphics.swap_chain.?));
+        self.graphics.frame_index = swap_chain3.lpVtbl[0].GetCurrentBackBufferIndex.?(swap_chain3);
         winos.graphics.release(@ptrCast(swap_chain1));
 
         var rtv_heap_desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
@@ -670,48 +668,43 @@ pub const Surface = struct {
 
         var raw_rtv_heap: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateDescriptorHeap.?(
-            @ptrCast(@alignCast(device)),
+            device,
             &rtv_heap_desc,
             &winos.c.IID_ID3D12DescriptorHeap,
             &raw_rtv_heap,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.rtv_heap = @ptrCast(raw_rtv_heap.?);
-        self.graphics.rtv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(
-            @ptrCast(@alignCast(device)),
-            winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-        );
+        self.graphics.rtv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(device, winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         var raw_command_allocator: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateCommandAllocator.?(
-            @ptrCast(@alignCast(device)),
+            device,
             winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
             &winos.c.IID_ID3D12CommandAllocator,
             &raw_command_allocator,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_allocator = raw_command_allocator.?;
 
-        const command_allocator: *align(1) winos.c.ID3D12CommandAllocator = @ptrCast(self.graphics.command_allocator.?);
+        const command_allocator: *winos.c.ID3D12CommandAllocator = @ptrFromInt(@intFromPtr(self.graphics.command_allocator.?));
 
         var raw_command_list: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateCommandList.?(
-            @ptrCast(@alignCast(device)),
+            device,
             0,
             winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
-            @ptrCast(@alignCast(command_allocator)),
+            command_allocator,
             null,
             &winos.c.IID_ID3D12GraphicsCommandList,
             &raw_command_list,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_list = raw_command_list.?;
 
-        const command_list: *align(1) winos.c.ID3D12GraphicsCommandList = @ptrCast(self.graphics.command_list.?);
-        if (command_list.lpVtbl[0].Close.?(
-            @ptrCast(@alignCast(command_list)),
-        ) != winos.S_OK) return error.Unexpected;
+        const command_list: *winos.c.ID3D12GraphicsCommandList = @ptrFromInt(@intFromPtr(self.graphics.command_list.?));
+        if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
 
         var raw_fence: ?*anyopaque = null;
         if (device.lpVtbl[0].CreateFence.?(
-            @ptrCast(@alignCast(device)),
+            device,
             0,
             winos.c.D3D12_FENCE_FLAG_NONE,
             &winos.c.IID_ID3D12Fence,
