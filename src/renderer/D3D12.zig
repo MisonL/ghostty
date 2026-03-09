@@ -1413,10 +1413,10 @@ fn updateCurrentFrameIndex(self: *D3D12, sc: *winos.c.IDXGISwapChain3) void {
 }
 
 fn renderTargetFormat(self: *const D3D12) u32 {
-    return if (self.blending.isLinear())
-        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
-    else
-        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM);
+    _ = self;
+    // Hosted Windows runners currently reject BGRA8_SRGB render-target resources.
+    // Keep offscreen targets on UNORM until we add typeless resources + SRGB views.
+    return @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM);
 }
 
 fn srvCpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {

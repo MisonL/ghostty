@@ -1815,6 +1815,9 @@ pub const Surface = struct {
                 }
             },
         }
+        if (self.app.ci_smoke_mode != .disabled) {
+            std.Thread.sleep(750 * std.time.ns_per_ms);
+        }
         _ = win.PostMessageW(self.hwnd, win.WM_CLOSE, 0, 0);
     }
 
