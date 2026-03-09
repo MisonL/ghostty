@@ -108,6 +108,7 @@ pub const Texture = struct {
         bytes_per_pixel: u32,
         render_target: bool = false,
         sampled: bool = true,
+        debug_name: ?[]const u8 = null,
     };
 
     pub const Data = struct {
@@ -857,6 +858,7 @@ pub fn textureOptions(self: *const D3D12) Texture.Options {
         .bytes_per_pixel = 4,
         .render_target = true,
         .sampled = true,
+        .debug_name = "render-target",
     };
 }
 
@@ -869,18 +871,23 @@ pub fn imageTextureOptions(
     format: ImageTextureFormat,
     srgb: bool,
 ) Texture.Options {
-    const format_u32 = imageDxgiFormat(format, srgb);
+    const srv_format = imageDxgiFormat(format, srgb);
     return .{
         .owner = @constCast(self),
-        .resource_format = format_u32,
-        .copy_format = format_u32,
-        .srv_format = format_u32,
+        .resource_format = imageResourceDxgiFormat(format, srgb),
+        .copy_format = imageCopyDxgiFormat(format, srgb),
+        .srv_format = srv_format,
         .bytes_per_pixel = switch (format) {
             .grayscale => 1,
             .bgra, .rgba => 4,
         },
         .render_target = false,
         .sampled = true,
+        .debug_name = switch (format) {
+            .grayscale => "image-grayscale",
+            .bgra => if (srgb) "image-bgra-srgb" else "image-bgra",
+            .rgba => if (srgb) "image-rgba-srgb" else "image-rgba",
+        },
     };
 }
 
@@ -1587,8 +1594,8 @@ fn createTextureResource(
     );
     if (hr != winos.S_OK or raw_resource == null) {
         log.err(
-            "failed to create d3d12 texture resource hr=0x{x} resource_format=0x{x} copy_format=0x{x} rtv_format=0x{x}",
-            .{ hr, opts.resource_format, opts.copy_format, opts.rtv_format orelse 0 },
+            "failed to create d3d12 texture resource name={s} hr=0x{x} resource_format=0x{x} copy_format=0x{x} srv_format=0x{x} rtv_format=0x{x} render_target={} sampled={} width={} height={}",
+            .{ opts.debug_name orelse "unnamed", hr, opts.resource_format, opts.copy_format, opts.srv_format orelse 0, opts.rtv_format orelse 0, opts.render_target, opts.sampled, width, height },
         );
         return error.D3D12TextureCreateFailed;
     }
@@ -1608,6 +1615,19 @@ fn imageDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
         else
             @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM),
     };
+}
+
+fn imageResourceDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
+    if (!srgb) return imageDxgiFormat(format, false);
+    return switch (format) {
+        .grayscale => imageDxgiFormat(.grayscale, false),
+        .rgba => @intCast(winos.c.DXGI_FORMAT_R8G8B8A8_TYPELESS),
+        .bgra => @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_TYPELESS),
+    };
+}
+
+fn imageCopyDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
+    return if (srgb) imageDxgiFormat(format, false) else imageDxgiFormat(format, false);
 }
 
 fn vertexBufferView(
