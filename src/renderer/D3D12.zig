@@ -627,19 +627,19 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
     result.rt_surface = opts.rt_surface;
     if (@hasField(@TypeOf(opts.rt_surface.*), "graphics")) {
         if (opts.rt_surface.graphics.dxgi_factory) |raw| {
-            result.dxgi_factory = nativePtr(*winos.graphics.IDXGIFactory4, raw);
+            result.dxgi_factory = @ptrCast(raw);
         }
         if (opts.rt_surface.graphics.d3d12_device) |raw| {
-            result.d3d12_device = nativePtr(*winos.graphics.ID3D12Device, raw);
+            result.d3d12_device = @ptrCast(raw);
         }
         if (opts.rt_surface.graphics.dwrite_factory) |raw| {
-            result.dwrite_factory = nativePtr(*winos.graphics.IDWriteFactory, raw);
+            result.dwrite_factory = raw;
         }
         if (opts.rt_surface.graphics.swap_chain) |raw| {
-            result.swap_chain = nativePtr(*winos.graphics.IDXGISwapChain3, raw);
+            result.swap_chain = @ptrCast(raw);
         }
         if (opts.rt_surface.graphics.command_queue) |raw| {
-            result.command_queue = nativePtr(*winos.graphics.ID3D12CommandQueue, raw);
+            result.command_queue = @ptrCast(raw);
         }
     }
     result.has_native_present_path = result.swap_chain != null;
@@ -934,13 +934,13 @@ fn ensureSrvHeap(self: *D3D12) !void {
     desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     desc.NodeMask = 0;
 
-    var raw_heap: ?*anyopaque = null;
+    var raw_heap: ?*winos.c.ID3D12DescriptorHeap = null;
     traceWin32D3D12Init("renderer.ensure_srv_heap.create.begin");
     if (device.lpVtbl[0].CreateDescriptorHeap.?(
         device,
         &desc,
         &winos.c.IID_ID3D12DescriptorHeap,
-        &raw_heap,
+        @ptrCast(&raw_heap),
     ) != winos.S_OK or raw_heap == null) {
         return error.D3D12DescriptorHeapCreateFailed;
     }
@@ -951,7 +951,7 @@ fn ensureSrvHeap(self: *D3D12) !void {
         }
     }
 
-    const heap = nativePtr(*winos.c.ID3D12DescriptorHeap, raw_heap.?);
+    const heap = raw_heap.?;
     var cpu_handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
     var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
     _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(heap, &cpu_handle);
@@ -1334,8 +1334,8 @@ fn waitForGpuIdle(self: *D3D12) !void {
         return;
     }
 
-    const queue = nativePtr(*winos.c.ID3D12CommandQueue, surface.graphics.command_queue.?);
-    const fence = nativePtr(*winos.c.ID3D12Fence, surface.graphics.fence.?);
+    const queue = surface.graphics.command_queue.?;
+    const fence = surface.graphics.fence.?;
 
     surface.graphics.fence_value += 1;
     const wait_value = surface.graphics.fence_value;
@@ -1374,19 +1374,13 @@ fn currentQueue(self: *const D3D12) ?*winos.c.ID3D12CommandQueue {
 fn currentCommandAllocator(self: *const D3D12) ?*winos.c.ID3D12CommandAllocator {
     const surface = self.rt_surface orelse return null;
     if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return if (surface.graphics.command_allocator) |allocator|
-        nativePtr(*winos.c.ID3D12CommandAllocator, allocator)
-    else
-        null;
+    return surface.graphics.command_allocator;
 }
 
 fn currentCommandList(self: *const D3D12) ?*winos.c.ID3D12GraphicsCommandList {
     const surface = self.rt_surface orelse return null;
     if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return if (surface.graphics.command_list) |command_list|
-        nativePtr(*winos.c.ID3D12GraphicsCommandList, command_list)
-    else
-        null;
+    return surface.graphics.command_list;
 }
 
 fn currentSwapChain(self: *const D3D12) ?*winos.c.IDXGISwapChain3 {
@@ -1399,10 +1393,7 @@ fn currentSwapChain(self: *const D3D12) ?*winos.c.IDXGISwapChain3 {
 fn srvHeap(self: *const D3D12) ?*winos.graphics.ID3D12DescriptorHeap {
     const surface = self.rt_surface orelse return null;
     if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return if (surface.graphics.srv_heap) |raw|
-        nativePtr(*winos.graphics.ID3D12DescriptorHeap, raw)
-    else
-        null;
+    return if (surface.graphics.srv_heap) |raw| @ptrCast(raw) else null;
 }
 
 fn currentBackbufferResource(self: *const D3D12) ?*winos.c.ID3D12Resource {
@@ -1410,10 +1401,7 @@ fn currentBackbufferResource(self: *const D3D12) ?*winos.c.ID3D12Resource {
     if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
     const index: usize = @intCast(surface.graphics.frame_index);
     if (index >= surface.graphics.backbuffers.len) return null;
-    return if (surface.graphics.backbuffers[index]) |resource|
-        nativePtr(*winos.c.ID3D12Resource, resource)
-    else
-        null;
+    return surface.graphics.backbuffers[index];
 }
 
 fn updateCurrentFrameIndex(self: *D3D12, sc: *winos.c.IDXGISwapChain3) void {

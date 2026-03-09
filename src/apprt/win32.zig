@@ -1684,24 +1684,24 @@ pub const Surface = struct {
     graphics: GraphicsState = .{},
 
     pub const GraphicsState = struct {
-        d3d12_device: ?*anyopaque = null,
-        dxgi_factory: ?*anyopaque = null,
-        command_queue: ?*anyopaque = null,
-        command_allocator: ?*anyopaque = null,
-        command_list: ?*anyopaque = null,
-        swap_chain: ?*anyopaque = null,
-        rtv_heap: ?*anyopaque = null,
-        srv_heap: ?*anyopaque = null,
-        backbuffers: [swap_chain_buffer_count]?*anyopaque = .{null} ** swap_chain_buffer_count,
+        d3d12_device: ?*winos.c.ID3D12Device = null,
+        dxgi_factory: ?*winos.c.IDXGIFactory4 = null,
+        command_queue: ?*winos.c.ID3D12CommandQueue = null,
+        command_allocator: ?*winos.c.ID3D12CommandAllocator = null,
+        command_list: ?*winos.c.ID3D12GraphicsCommandList = null,
+        swap_chain: ?*winos.c.IDXGISwapChain3 = null,
+        rtv_heap: ?*winos.c.ID3D12DescriptorHeap = null,
+        srv_heap: ?*winos.c.ID3D12DescriptorHeap = null,
+        backbuffers: [swap_chain_buffer_count]?*winos.c.ID3D12Resource = .{null} ** swap_chain_buffer_count,
         rtv_descriptor_size: u32 = 0,
         rtv_heap_start_ptr: u64 = 0,
-        software_upload: ?*anyopaque = null,
+        software_upload: ?*winos.c.ID3D12Resource = null,
         software_upload_capacity: u64 = 0,
         software_upload_row_pitch: u32 = 0,
-        fence: ?*anyopaque = null,
+        fence: ?*winos.c.ID3D12Fence = null,
         fence_event: ?winos.HANDLE = null,
         fence_value: u64 = 0,
-        dwrite_factory: ?*anyopaque = null,
+        dwrite_factory: ?*winos.graphics.IDWriteFactory = null,
         frame_index: u32 = 0,
         last_present_generation: u64 = 0,
     };
@@ -1764,8 +1764,7 @@ pub const Surface = struct {
                 }
 
                 try self.recordNativeClear();
-                const sc: *winos.c.IDXGISwapChain3 =
-                    nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+                const sc = self.graphics.swap_chain.?;
                 if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
                     return error.Unexpected;
                 }
@@ -1813,31 +1812,31 @@ pub const Surface = struct {
             log.warn("error waiting for D3D12 idle during teardown err={}", .{err});
         };
         self.destroyBackbuffers();
-        winos.graphics.release(self.graphics.command_list);
+        winos.graphics.release(@ptrCast(self.graphics.command_list));
         self.graphics.command_list = null;
-        winos.graphics.release(self.graphics.command_allocator);
+        winos.graphics.release(@ptrCast(self.graphics.command_allocator));
         self.graphics.command_allocator = null;
-        winos.graphics.release(self.graphics.software_upload);
+        winos.graphics.release(@ptrCast(self.graphics.software_upload));
         self.graphics.software_upload = null;
-        winos.graphics.release(self.graphics.swap_chain);
+        winos.graphics.release(@ptrCast(self.graphics.swap_chain));
         self.graphics.swap_chain = null;
-        winos.graphics.release(self.graphics.command_queue);
+        winos.graphics.release(@ptrCast(self.graphics.command_queue));
         self.graphics.command_queue = null;
-        winos.graphics.release(self.graphics.rtv_heap);
+        winos.graphics.release(@ptrCast(self.graphics.rtv_heap));
         self.graphics.rtv_heap = null;
-        winos.graphics.release(self.graphics.srv_heap);
+        winos.graphics.release(@ptrCast(self.graphics.srv_heap));
         self.graphics.srv_heap = null;
-        winos.graphics.release(self.graphics.fence);
+        winos.graphics.release(@ptrCast(self.graphics.fence));
         self.graphics.fence = null;
         if (self.graphics.fence_event != null) {
             _ = winos.CloseHandle(self.graphics.fence_event.?);
             self.graphics.fence_event = null;
         }
-        winos.graphics.release(self.graphics.d3d12_device);
+        winos.graphics.release(@ptrCast(self.graphics.d3d12_device));
         self.graphics.d3d12_device = null;
-        winos.graphics.release(self.graphics.dxgi_factory);
+        winos.graphics.release(@ptrCast(self.graphics.dxgi_factory));
         self.graphics.dxgi_factory = null;
-        winos.graphics.release(self.graphics.dwrite_factory);
+        winos.graphics.release(@ptrCast(self.graphics.dwrite_factory));
         self.graphics.dwrite_factory = null;
         self.graphics.rtv_descriptor_size = 0;
         self.graphics.rtv_heap_start_ptr = 0;
@@ -1850,21 +1849,21 @@ pub const Surface = struct {
     fn initGraphics(self: *Surface) !void {
         if (comptime @import("builtin").target.os.tag != .windows) return;
 
-        var raw_factory: ?*anyopaque = null;
+        var raw_factory: ?*winos.c.IDXGIFactory4 = null;
         traceWin32InitStep("surface.init.graphics.dxgi_factory.begin");
         if (winos.graphics.CreateDXGIFactory1(
             &winos.graphics.IID_IDXGIFactory4,
-            &raw_factory,
+            @ptrCast(&raw_factory),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.dxgi_factory = raw_factory.?;
         traceWin32InitStep("surface.init.graphics.dxgi_factory.ready");
-        var raw_device: ?*anyopaque = null;
+        var raw_device: ?*winos.c.ID3D12Device = null;
         traceWin32InitStep("surface.init.graphics.d3d12_device.begin");
         if (winos.graphics.D3D12CreateDevice(
             null,
             .@"11_0",
             &winos.graphics.IID_ID3D12Device,
-            &raw_device,
+            @ptrCast(&raw_device),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.d3d12_device = raw_device.?;
         traceWin32InitStep("surface.init.graphics.d3d12_device.ready");
@@ -1875,15 +1874,15 @@ pub const Surface = struct {
         queue_desc.Priority = 0;
         queue_desc.NodeMask = 0;
 
-        const device: *winos.c.ID3D12Device = @ptrFromInt(@intFromPtr(self.graphics.d3d12_device.?));
+        const device = self.graphics.d3d12_device.?;
 
-        var raw_queue: ?*anyopaque = null;
+        var raw_queue: ?*winos.c.ID3D12CommandQueue = null;
         traceWin32InitStep("surface.init.graphics.command_queue.begin");
         if (device.lpVtbl[0].CreateCommandQueue.?(
             device,
             &queue_desc,
             &winos.c.IID_ID3D12CommandQueue,
-            &raw_queue,
+            @ptrCast(&raw_queue),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_queue = raw_queue.?;
         traceWin32InitStep("surface.init.graphics.command_queue.ready");
@@ -1901,14 +1900,14 @@ pub const Surface = struct {
         swap_chain_desc.AlphaMode = winos.c.DXGI_ALPHA_MODE_IGNORE;
         swap_chain_desc.Flags = 0;
 
-        const factory: *winos.c.IDXGIFactory4 = @ptrFromInt(@intFromPtr(self.graphics.dxgi_factory.?));
-        const command_queue: *winos.c.ID3D12CommandQueue = @ptrFromInt(@intFromPtr(self.graphics.command_queue.?));
+        const factory = self.graphics.dxgi_factory.?;
+        const command_queue = self.graphics.command_queue.?;
 
         var swap_chain1: ?*winos.c.IDXGISwapChain1 = null;
         traceWin32InitStep("surface.init.graphics.swap_chain.begin");
         if (factory.lpVtbl[0].CreateSwapChainForHwnd.?(
             factory,
-            @ptrFromInt(@intFromPtr(command_queue)),
+            @ptrCast(command_queue),
             @ptrFromInt(@intFromPtr(self.hwnd.?)),
             &swap_chain_desc,
             null,
@@ -1916,16 +1915,16 @@ pub const Surface = struct {
             &swap_chain1,
         ) != winos.S_OK) return error.Unexpected;
 
-        var raw_swap_chain3: ?*anyopaque = null;
+        var raw_swap_chain3: ?*winos.c.IDXGISwapChain3 = null;
         if (swap_chain1.?.lpVtbl[0].QueryInterface.?(
             @ptrCast(swap_chain1.?),
             &winos.c.IID_IDXGISwapChain3,
-            &raw_swap_chain3,
+            @ptrCast(&raw_swap_chain3),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.swap_chain = raw_swap_chain3.?;
-        const swap_chain3: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(self.graphics.swap_chain.?));
+        const swap_chain3 = self.graphics.swap_chain.?;
         self.graphics.frame_index = swap_chain3.lpVtbl[0].GetCurrentBackBufferIndex.?(swap_chain3);
-        winos.graphics.release(@ptrCast(swap_chain1));
+        winos.graphics.release(@ptrCast(swap_chain1.?));
         traceWin32InitStep("surface.init.graphics.swap_chain.ready");
 
         var rtv_heap_desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
@@ -1934,32 +1933,32 @@ pub const Surface = struct {
         rtv_heap_desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         rtv_heap_desc.NodeMask = 0;
 
-        var raw_rtv_heap: ?*anyopaque = null;
+        var raw_rtv_heap: ?*winos.c.ID3D12DescriptorHeap = null;
         traceWin32InitStep("surface.init.graphics.rtv_heap.begin");
         if (device.lpVtbl[0].CreateDescriptorHeap.?(
             device,
             &rtv_heap_desc,
             &winos.c.IID_ID3D12DescriptorHeap,
-            &raw_rtv_heap,
+            @ptrCast(&raw_rtv_heap),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.rtv_heap = raw_rtv_heap.?;
         self.graphics.rtv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(device, winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         traceWin32InitStep("surface.init.graphics.rtv_heap.ready");
 
-        var raw_command_allocator: ?*anyopaque = null;
+        var raw_command_allocator: ?*winos.c.ID3D12CommandAllocator = null;
         traceWin32InitStep("surface.init.graphics.command_allocator.begin");
         if (device.lpVtbl[0].CreateCommandAllocator.?(
             device,
             winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
             &winos.c.IID_ID3D12CommandAllocator,
-            &raw_command_allocator,
+            @ptrCast(&raw_command_allocator),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_allocator = raw_command_allocator.?;
         traceWin32InitStep("surface.init.graphics.command_allocator.ready");
 
-        const command_allocator: *winos.c.ID3D12CommandAllocator = @ptrFromInt(@intFromPtr(self.graphics.command_allocator.?));
+        const command_allocator = self.graphics.command_allocator.?;
 
-        var raw_command_list: ?*anyopaque = null;
+        var raw_command_list: ?*winos.c.ID3D12GraphicsCommandList = null;
         traceWin32InitStep("surface.init.graphics.command_list.begin");
         if (device.lpVtbl[0].CreateCommandList.?(
             device,
@@ -1968,21 +1967,21 @@ pub const Surface = struct {
             command_allocator,
             null,
             &winos.c.IID_ID3D12GraphicsCommandList,
-            &raw_command_list,
+            @ptrCast(&raw_command_list),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_list = raw_command_list.?;
         traceWin32InitStep("surface.init.graphics.command_list.ready");
 
-        const command_list: *winos.c.ID3D12GraphicsCommandList = @ptrFromInt(@intFromPtr(self.graphics.command_list.?));
+        const command_list = self.graphics.command_list.?;
         if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
-        var raw_fence: ?*anyopaque = null;
+        var raw_fence: ?*winos.c.ID3D12Fence = null;
         traceWin32InitStep("surface.init.graphics.fence.begin");
         if (device.lpVtbl[0].CreateFence.?(
             device,
             0,
             winos.c.D3D12_FENCE_FLAG_NONE,
             &winos.c.IID_ID3D12Fence,
-            &raw_fence,
+            @ptrCast(&raw_fence),
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.fence = raw_fence.?;
         traceWin32InitStep("surface.init.graphics.fence.ready");
@@ -2694,8 +2693,7 @@ pub const Surface = struct {
         try self.waitForGpuIdle();
         self.destroyBackbuffers();
 
-        const sc: *winos.c.IDXGISwapChain3 =
-            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+        const sc = self.graphics.swap_chain.?;
         if (sc.lpVtbl[0].ResizeBuffers.?(
             sc,
             swap_chain_buffer_count,
@@ -2712,29 +2710,25 @@ pub const Surface = struct {
     fn createBackbuffers(self: *Surface) !void {
         if (self.graphics.swap_chain == null or self.graphics.rtv_heap == null) return;
 
-        const device: *winos.c.ID3D12Device =
-            nativePtr(*winos.c.ID3D12Device, self.graphics.d3d12_device.?);
-        const heap: *winos.c.ID3D12DescriptorHeap =
-            nativePtr(*winos.c.ID3D12DescriptorHeap, self.graphics.rtv_heap.?);
-        const sc: *winos.c.IDXGISwapChain3 =
-            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+        const device = self.graphics.d3d12_device.?;
+        const heap = self.graphics.rtv_heap.?;
+        const sc = self.graphics.swap_chain.?;
 
         var handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
         _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(heap, &handle);
         self.graphics.rtv_heap_start_ptr = handle.ptr;
 
         for (0..swap_chain_buffer_count) |i| {
-            var raw_resource: ?*anyopaque = null;
+            var raw_resource: ?*winos.c.ID3D12Resource = null;
             if (sc.lpVtbl[0].GetBuffer.?(
                 sc,
                 @intCast(i),
                 &winos.c.IID_ID3D12Resource,
-                &raw_resource,
+                @ptrCast(&raw_resource),
             ) != winos.S_OK) return error.Unexpected;
 
             self.graphics.backbuffers[i] = raw_resource.?;
-            const resource: *winos.c.ID3D12Resource =
-                nativePtr(*winos.c.ID3D12Resource, raw_resource.?);
+            const resource = raw_resource.?;
             const rtv_handle = self.rtvHandleForIndex(i);
             device.lpVtbl[0].CreateRenderTargetView.?(
                 device,
@@ -2747,7 +2741,7 @@ pub const Surface = struct {
 
     fn destroyBackbuffers(self: *Surface) void {
         for (&self.graphics.backbuffers) |*backbuffer| {
-            winos.graphics.release(backbuffer.*);
+            winos.graphics.release(@ptrCast(backbuffer.*));
             backbuffer.* = null;
         }
     }
@@ -2762,12 +2756,9 @@ pub const Surface = struct {
             return;
         }
 
-        const allocator: *winos.c.ID3D12CommandAllocator =
-            nativePtr(*winos.c.ID3D12CommandAllocator, self.graphics.command_allocator.?);
-        const command_list: *winos.c.ID3D12GraphicsCommandList =
-            nativePtr(*winos.c.ID3D12GraphicsCommandList, self.graphics.command_list.?);
-        const queue: *winos.c.ID3D12CommandQueue =
-            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
+        const allocator = self.graphics.command_allocator.?;
+        const command_list = self.graphics.command_list.?;
+        const queue = self.graphics.command_queue.?;
         const backbuffer = self.currentBackbufferResource() orelse return error.Unexpected;
 
         if (allocator.lpVtbl[0].Reset.?(allocator) != winos.S_OK) return error.Unexpected;
@@ -2837,10 +2828,8 @@ pub const Surface = struct {
             return;
         }
 
-        const queue: *winos.c.ID3D12CommandQueue =
-            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
-        const fence: *winos.c.ID3D12Fence =
-            nativePtr(*winos.c.ID3D12Fence, self.graphics.fence.?);
+        const queue = self.graphics.command_queue.?;
+        const fence = self.graphics.fence.?;
 
         self.graphics.fence_value += 1;
         const wait_value = self.graphics.fence_value;
@@ -2864,10 +2853,7 @@ pub const Surface = struct {
     fn currentBackbufferResource(self: *Surface) ?*winos.c.ID3D12Resource {
         const index: usize = @intCast(self.graphics.frame_index);
         if (index >= self.graphics.backbuffers.len) return null;
-        return if (self.graphics.backbuffers[index]) |backbuffer|
-            nativePtr(*winos.c.ID3D12Resource, backbuffer)
-        else
-            null;
+        return self.graphics.backbuffers[index];
     }
 
     fn rtvHandleForIndex(self: *Surface, index: usize) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
@@ -2994,12 +2980,9 @@ pub const Surface = struct {
         try self.waitForGpuIdle();
         try self.copySoftwareFrameToUpload(frame, shared_bytes, upload);
 
-        const allocator: *winos.c.ID3D12CommandAllocator =
-            nativePtr(*winos.c.ID3D12CommandAllocator, self.graphics.command_allocator.?);
-        const command_list: *winos.c.ID3D12GraphicsCommandList =
-            nativePtr(*winos.c.ID3D12GraphicsCommandList, self.graphics.command_list.?);
-        const queue: *winos.c.ID3D12CommandQueue =
-            nativePtr(*winos.c.ID3D12CommandQueue, self.graphics.command_queue.?);
+        const allocator = self.graphics.command_allocator.?;
+        const command_list = self.graphics.command_list.?;
+        const queue = self.graphics.command_queue.?;
         const backbuffer = self.currentBackbufferResource() orelse return error.Unexpected;
 
         if (allocator.lpVtbl[0].Reset.?(allocator) != winos.S_OK) return error.Unexpected;
@@ -3058,8 +3041,7 @@ pub const Surface = struct {
             @ptrCast(&command_lists),
         );
 
-        const sc: *winos.c.IDXGISwapChain3 =
-            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+        const sc = self.graphics.swap_chain.?;
         if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
             return error.Unexpected;
         }
@@ -3089,15 +3071,14 @@ pub const Surface = struct {
             if (self.graphics.software_upload_capacity >= upload_size and
                 self.graphics.software_upload_row_pitch == row_pitch)
             {
-                return nativePtr(*winos.c.ID3D12Resource, resource);
+                return resource;
             }
 
-            winos.graphics.release(resource);
+            winos.graphics.release(@ptrCast(resource));
             self.graphics.software_upload = null;
         }
 
-        const device: *winos.c.ID3D12Device =
-            nativePtr(*winos.c.ID3D12Device, self.graphics.d3d12_device.?);
+        const device = self.graphics.d3d12_device.?;
         var heap_props: winos.c.D3D12_HEAP_PROPERTIES = std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
         heap_props.Type = winos.c.D3D12_HEAP_TYPE_UPLOAD;
         heap_props.CreationNodeMask = 1;
@@ -3113,7 +3094,7 @@ pub const Surface = struct {
         desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         desc.Flags = winos.c.D3D12_RESOURCE_FLAG_NONE;
 
-        var raw_resource: ?*anyopaque = null;
+        var raw_resource: ?*winos.c.ID3D12Resource = null;
         if (device.lpVtbl[0].CreateCommittedResource.?(
             device,
             &heap_props,
@@ -3122,13 +3103,13 @@ pub const Surface = struct {
             winos.c.D3D12_RESOURCE_STATE_GENERIC_READ,
             null,
             &winos.c.IID_ID3D12Resource,
-            &raw_resource,
+            @ptrCast(&raw_resource),
         ) != winos.S_OK) return error.Unexpected;
 
         self.graphics.software_upload = raw_resource.?;
         self.graphics.software_upload_capacity = upload_size;
         self.graphics.software_upload_row_pitch = row_pitch;
-        return nativePtr(*winos.c.ID3D12Resource, raw_resource.?);
+        return raw_resource.?;
     }
 
     fn copySoftwareFrameToUpload(

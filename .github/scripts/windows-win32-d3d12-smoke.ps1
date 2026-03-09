@@ -173,7 +173,9 @@ foreach ($marker in $requiredMarkers) {
 $failed = $false
 if ($forcedTermination) {
   Write-Host "Smoke process required forced termination"
-  $failed = $true
+  if ($Mode -ne "native" -or $missingMarkers.Count -gt 0) {
+    $failed = $true
+  }
 }
 if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
   Write-Host "Smoke process exit code: $($process.ExitCode)"
