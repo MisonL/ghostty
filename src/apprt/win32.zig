@@ -35,6 +35,7 @@ const log = std.log.scoped(.win32_apprt);
 const swap_chain_buffer_count: usize = 2;
 const software_upload_row_pitch_alignment: u32 = 256;
 const ipc_pipe_prefix = "\\\\.\\pipe\\ghostty-win32-";
+var trace_win32_init_enabled: bool = false;
 
 const CiSmokeMode = enum {
     disabled,
@@ -60,12 +61,7 @@ fn ciSmokeMode() CiSmokeMode {
 }
 
 fn shouldTraceWin32Init() bool {
-    if (ciSmokeMode() != .disabled) return true;
-
-    const alloc = std.heap.page_allocator;
-    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
-    defer if (label) |value| alloc.free(value);
-    return if (label) |value| value.len > 0 else false;
+    return trace_win32_init_enabled;
 }
 
 fn traceWin32InitStep(step: []const u8) void {
@@ -493,6 +489,14 @@ pub const App = struct {
         _ = opts;
 
         const smoke_mode = ciSmokeMode();
+        const trace_win32_init = trace_win32_init: {
+            if (smoke_mode != .disabled) break :trace_win32_init true;
+            const alloc = std.heap.page_allocator;
+            const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+            defer if (label) |value| alloc.free(value);
+            break :trace_win32_init if (label) |value| value.len > 0 else false;
+        };
+        trace_win32_init_enabled = trace_win32_init;
         self.* = .{
             .core_app = core_app,
             .config = .{},
