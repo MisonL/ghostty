@@ -468,6 +468,7 @@ fn shouldTraceWin32CoreInit() bool {
 
 fn traceWin32CoreInitStep(step: []const u8) void {
     if (!shouldTraceWin32CoreInit()) return;
+    std.debug.print("info(surface): ci.win32.core_init.step={s}\n", .{step});
     log.info("ci.win32.core_init.step={s}", .{step});
 }
 

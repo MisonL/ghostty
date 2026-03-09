@@ -36,6 +36,7 @@ fn shouldTraceWin32D3D12Init() bool {
 
 fn traceWin32D3D12Init(step: []const u8) void {
     if (!shouldTraceWin32D3D12Init()) return;
+    std.debug.print("info(renderer_d3d12): ci.win32.d3d12.step={s}\n", .{step});
     log.info("ci.win32.d3d12.step={s}", .{step});
 }
 

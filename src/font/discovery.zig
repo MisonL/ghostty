@@ -339,9 +339,8 @@ pub const DirectWrite = struct {
         loader: *winos.graphics.IDWriteFontFileLoader,
     ) ?*winos.graphics.IDWriteLocalFontFileLoader {
         var raw_loader: ?*anyopaque = null;
-        const unknown: *winos.graphics.IUnknown = @ptrFromInt(@intFromPtr(loader));
-        if (!winos.graphics.succeeded(unknown.lpVtbl.QueryInterface(
-            unknown,
+        if (!winos.graphics.succeeded(loader.lpVtbl.QueryInterface(
+            loader,
             &winos.graphics.IID_IDWriteLocalFontFileLoader,
             &raw_loader,
         )) or raw_loader == null) {

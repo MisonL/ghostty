@@ -59,6 +59,20 @@ fn ciSmokeMode() CiSmokeMode {
     return .native;
 }
 
+fn shouldTraceWin32Init() bool {
+    if (ciSmokeMode() != .disabled) return true;
+
+    const alloc = std.heap.page_allocator;
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32InitStep(step: []const u8) void {
+    if (!shouldTraceWin32Init()) return;
+    std.debug.print("info(win32_apprt): ci.win32.surface_init.step={s}\n", .{step});
+}
+
 fn nativePtr(comptime T: type, raw: anytype) T {
     return @ptrFromInt(@intFromPtr(raw));
 }
@@ -1634,12 +1648,17 @@ pub const Surface = struct {
 
         if (app.ci_smoke_mode == .native) return;
 
+        traceWin32InitStep("surface.init.add_surface.begin");
         try app.core_app.addSurface(self);
+        traceWin32InitStep("surface.init.add_surface.ready");
         errdefer app.core_app.deleteSurface(self);
 
+        traceWin32InitStep("surface.init.core_surface_alloc.begin");
         const core_surface = try app.core_app.alloc.create(CoreSurface);
+        traceWin32InitStep("surface.init.core_surface_alloc.ready");
         errdefer app.core_app.alloc.destroy(core_surface);
 
+        traceWin32InitStep("surface.init.core_surface_init.begin");
         try core_surface.init(
             app.core_app.alloc,
             config,
@@ -1647,6 +1666,7 @@ pub const Surface = struct {
             app,
             self,
         );
+        traceWin32InitStep("surface.init.core_surface_init.ready");
         errdefer core_surface.deinit();
 
         self.core_surface = core_surface;
