@@ -88,6 +88,11 @@ function Wait-GhosttyVisibleWindowHandle {
     Start-Sleep -Milliseconds 250
   }
 
+  $Process.Refresh()
+  if ($Process.HasExited) {
+    throw "Ghostty interaction process exited before window became visible ($Label), exit=$($Process.ExitCode)"
+  }
+
   throw "Ghostty interaction window was not created in time ($Label)"
 }
 

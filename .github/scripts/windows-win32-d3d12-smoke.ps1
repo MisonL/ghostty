@@ -14,6 +14,7 @@ $logsDir = Join-Path $repoRoot "ci-logs"
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 $layer = if ([string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_LAYER)) { "default" } else { $env:GHOSTTY_CI_WIN32_SMOKE_LAYER }
 $logPath = Join-Path $logsDir ("windows-win32-d3d12-smoke-{0}-{1}.log" -f $layer, $Mode)
+$requireWindow = -not [string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_REQUIRE_WINDOW) -and $env:GHOSTTY_CI_WIN32_REQUIRE_WINDOW -notin @("0", "false", "False", "FALSE")
 if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
@@ -176,6 +177,10 @@ if ($forcedTermination) {
   if ($Mode -ne "native" -or $missingMarkers.Count -gt 0) {
     $failed = $true
   }
+}
+if ($requireWindow -and $windowHandle -eq [IntPtr]::Zero) {
+  Write-Host "Smoke process never exposed a visible window handle"
+  $failed = $true
 }
 if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
   Write-Host "Smoke process exit code: $($process.ExitCode)"

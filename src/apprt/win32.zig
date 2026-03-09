@@ -119,7 +119,7 @@ const win = struct {
     const LONG_PTR = isize;
     const ATOM = u16;
     const HINSTANCE = ?*anyopaque;
-    const HWND = ?*anyopaque;
+    const HWND = ?windows.HWND;
     const HICON = ?*anyopaque;
     const HCURSOR = ?*anyopaque;
     const HBRUSH = ?*anyopaque;
@@ -230,6 +230,8 @@ const win = struct {
     pub extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
     pub extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.winapi) BOOL;
     pub extern "user32" fn UpdateWindow(hWnd: HWND) callconv(.winapi) BOOL;
+    pub extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *winos.c.PAINTSTRUCT) callconv(.winapi) HDC;
+    pub extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const winos.c.PAINTSTRUCT) callconv(.winapi) BOOL;
     pub extern "user32" fn GetMessageW(lpMsg: *MSG, hWnd: HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT) callconv(.winapi) i32;
     pub extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
     pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
@@ -1169,8 +1171,8 @@ pub const App = struct {
             },
             win.WM_PAINT => blk: {
                 var ps: winos.c.PAINTSTRUCT = std.mem.zeroes(winos.c.PAINTSTRUCT);
-                _ = winos.c.BeginPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
-                defer _ = winos.c.EndPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
+                _ = win.BeginPaint(hwnd, &ps);
+                defer _ = win.EndPaint(hwnd, &ps);
 
                 if (surface) |rt_surface| rt_surface.markDirty();
                 break :blk 0;
@@ -1902,13 +1904,24 @@ pub const Surface = struct {
 
         const factory = self.graphics.dxgi_factory.?;
         const command_queue = self.graphics.command_queue.?;
+        const CreateSwapChainForHwndFn = *const fn (
+            *winos.c.IDXGIFactory4,
+            ?*anyopaque,
+            windows.HWND,
+            *const winos.c.DXGI_SWAP_CHAIN_DESC1,
+            ?*const winos.c.DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
+            ?*anyopaque,
+            ?*?*winos.c.IDXGISwapChain1,
+        ) callconv(.winapi) winos.graphics.HRESULT;
+        const create_swap_chain_for_hwnd: CreateSwapChainForHwndFn =
+            @ptrCast(factory.lpVtbl[0].CreateSwapChainForHwnd.?);
 
         var swap_chain1: ?*winos.c.IDXGISwapChain1 = null;
         traceWin32InitStep("surface.init.graphics.swap_chain.begin");
-        if (factory.lpVtbl[0].CreateSwapChainForHwnd.?(
+        if (create_swap_chain_for_hwnd(
             factory,
             @ptrCast(command_queue),
-            @ptrFromInt(@intFromPtr(self.hwnd.?)),
+            self.hwnd.?,
             &swap_chain_desc,
             null,
             null,
