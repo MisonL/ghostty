@@ -1431,7 +1431,7 @@ fn flushDeferredBufferReleases(self: *D3D12) void {
 }
 
 fn deferReleaseBuffer(ctx: ?*anyopaque, buffer: *winos.graphics.ID3D12Resource, was_mapped: bool) void {
-    const self: *D3D12 = @ptrCast(@alignCast(ctx orelse {
+    const self: *D3D12 = @ptrFromInt(@intFromPtr(ctx orelse {
         if (was_mapped) {
             const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
             resource.lpVtbl[0].Unmap.?(
