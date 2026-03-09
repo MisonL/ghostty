@@ -97,10 +97,25 @@ $process.StartInfo = $psi
 $process.EnableRaisingEvents = $true
 $forcedTermination = $false
 $windowHandle = [IntPtr]::Zero
+$stdoutEvent = $null
+$stderrEvent = $null
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
 }
+
+$stdoutEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
+  if ($null -ne $EventArgs.Data) {
+    $EventArgs.Data | Out-File -FilePath $using:logPath -Append -Encoding utf8
+  }
+}
+$stderrEvent = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
+  if ($null -ne $EventArgs.Data) {
+    $EventArgs.Data | Out-File -FilePath $using:logPath -Append -Encoding utf8
+  }
+}
+$process.BeginOutputReadLine()
+$process.BeginErrorReadLine()
 
 $deadline = (Get-Date).AddSeconds(30)
 while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
@@ -129,16 +144,29 @@ if (-not $process.HasExited) {
 
 try {
   $process.WaitForExit()
+  $process.WaitForExit(1000) | Out-Null
 } catch {
 }
 
-$stdout = $process.StandardOutput.ReadToEnd()
-$stderr = $process.StandardError.ReadToEnd()
-if ($stdout) {
-  $stdout | Out-File -FilePath $logPath -Append -Encoding utf8
+if ($null -ne $stdoutEvent) {
+  try {
+    Unregister-Event -SourceIdentifier $stdoutEvent.Name -ErrorAction SilentlyContinue
+  } catch {
+  }
+  try {
+    $stdoutEvent.Action | Remove-Job -Force -ErrorAction SilentlyContinue
+  } catch {
+  }
 }
-if ($stderr) {
-  $stderr | Out-File -FilePath $logPath -Append -Encoding utf8
+if ($null -ne $stderrEvent) {
+  try {
+    Unregister-Event -SourceIdentifier $stderrEvent.Name -ErrorAction SilentlyContinue
+  } catch {
+  }
+  try {
+    $stderrEvent.Action | Remove-Job -Force -ErrorAction SilentlyContinue
+  } catch {
+  }
 }
 
 if (-not (Test-Path $logPath)) {

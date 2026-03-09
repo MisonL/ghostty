@@ -65,6 +65,50 @@ function Resolve-GhosttyExePath {
   return $builtExe
 }
 
+function Start-ProcessLogCapture {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$LogPath
+  )
+
+  if ($null -eq $Process) { return $null }
+
+  $stdoutEvent = Register-ObjectEvent -InputObject $Process -EventName OutputDataReceived -Action {
+    if ($null -ne $EventArgs.Data) {
+      $EventArgs.Data | Out-File -FilePath $using:LogPath -Append -Encoding utf8
+    }
+  }
+  $stderrEvent = Register-ObjectEvent -InputObject $Process -EventName ErrorDataReceived -Action {
+    if ($null -ne $EventArgs.Data) {
+      $EventArgs.Data | Out-File -FilePath $using:LogPath -Append -Encoding utf8
+    }
+  }
+  $Process.BeginOutputReadLine()
+  $Process.BeginErrorReadLine()
+
+  return [pscustomobject]@{
+    Stdout = $stdoutEvent
+    Stderr = $stderrEvent
+  }
+}
+
+function Stop-ProcessLogCapture {
+  param($Capture)
+
+  if ($null -eq $Capture) { return }
+  foreach ($subscription in @($Capture.Stdout, $Capture.Stderr)) {
+    if ($null -eq $subscription) { continue }
+    try {
+      Unregister-Event -SourceIdentifier $subscription.Name -ErrorAction SilentlyContinue
+    } catch {
+    }
+    try {
+      $subscription.Action | Remove-Job -Force -ErrorAction SilentlyContinue
+    } catch {
+    }
+  }
+}
+
 function Start-GhosttyInteractive {
   param(
     [string]$ExePath,
@@ -97,7 +141,11 @@ function Start-GhosttyInteractive {
   if (-not $process.Start()) {
     throw "Failed to start ghostty.exe for interaction ($Label)"
   }
-  return $process
+  $capture = Start-ProcessLogCapture -Process $process -LogPath $logPath
+  return [pscustomobject]@{
+    Process = $process
+    Capture = $capture
+  }
 }
 
 function Wait-ForWindow {
@@ -150,18 +198,9 @@ function Capture-ProcessLogs {
 
   if ($null -eq $Process) { return }
   try {
-    $stdout = $Process.StandardOutput.ReadToEnd()
-    if ($stdout) {
-      $stdout | Out-File -FilePath $logPath -Append -Encoding utf8
-    }
+    if (-not $Process.HasExited) { return }
   } catch {
-  }
-  try {
-    $stderr = $Process.StandardError.ReadToEnd()
-    if ($stderr) {
-      $stderr | Out-File -FilePath $logPath -Append -Encoding utf8
-    }
-  } catch {
+    return
   }
 }
 
@@ -201,10 +240,14 @@ Write-Log "Running Windows interaction mode=$Mode exe=$exePath"
 
 $primary = $null
 $secondary = $null
+$primaryCapture = $null
+$secondaryCapture = $null
 $primaryHwnd = [IntPtr]::Zero
 $secondaryHwnd = [IntPtr]::Zero
 try {
-  $primary = Start-GhosttyInteractive -ExePath $exePath -Label "primary"
+  $primaryHandle = Start-GhosttyInteractive -ExePath $exePath -Label "primary"
+  $primary = $primaryHandle.Process
+  $primaryCapture = $primaryHandle.Capture
   $primaryHwnd = Wait-ForWindow -Process $primary -Label "primary"
   Focus-Window -Hwnd $primaryHwnd
   Resize-Window -Hwnd $primaryHwnd -Width 1240 -Height 820
@@ -214,7 +257,9 @@ try {
     Set-Clipboard -Value "echo ghostty-ci-strict-clipboard"
     Send-Keys "^v{ENTER}"
 
-    $secondary = Start-GhosttyInteractive -ExePath $exePath -Label "secondary"
+    $secondaryHandle = Start-GhosttyInteractive -ExePath $exePath -Label "secondary"
+    $secondary = $secondaryHandle.Process
+    $secondaryCapture = $secondaryHandle.Capture
     $secondaryHwnd = Wait-ForWindow -Process $secondary -Label "secondary"
     Focus-Window -Hwnd $secondaryHwnd
     Resize-Window -Hwnd $secondaryHwnd -Width 1040 -Height 720
@@ -234,6 +279,8 @@ try {
 finally {
   Capture-ProcessLogs -Process $secondary
   Capture-ProcessLogs -Process $primary
+  Stop-ProcessLogCapture -Capture $secondaryCapture
+  Stop-ProcessLogCapture -Capture $primaryCapture
   Stop-ProcessBestEffort -Process $secondary -Hwnd $secondaryHwnd
   Stop-ProcessBestEffort -Process $primary -Hwnd $primaryHwnd
 }
