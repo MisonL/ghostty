@@ -25,6 +25,7 @@ const CoreApp = @import("../App.zig");
 const CoreSurface = @import("../Surface.zig");
 const configpkg = @import("../config.zig");
 const internal_os = @import("../os/main.zig");
+const terminal = @import("../terminal/main.zig");
 const winos = internal_os.windows;
 
 pub const resourcesDir = internal_os.resourcesDir;
@@ -83,6 +84,7 @@ const win = struct {
     const HBRUSH = ?*anyopaque;
     const HMENU = ?*anyopaque;
     const HDC = ?*anyopaque;
+    const HMONITOR = ?*anyopaque;
     const HGLRC = ?*anyopaque;
     const HANDLE = ?*anyopaque;
     const HGLOBAL = ?*anyopaque;
@@ -150,6 +152,21 @@ const win = struct {
         rcArea: RECT,
     };
 
+    const MONITORINFO = extern struct {
+        cbSize: DWORD,
+        rcMonitor: RECT,
+        rcWork: RECT,
+        dwFlags: DWORD,
+    };
+
+    const MINMAXINFO = extern struct {
+        ptReserved: POINT,
+        ptMaxSize: POINT,
+        ptMaxPosition: POINT,
+        ptMinTrackSize: POINT,
+        ptMaxTrackSize: POINT,
+    };
+
     pub extern "kernel32" fn GetModuleHandleW(lpModuleName: LPCWSTR) callconv(.winapi) HINSTANCE;
     pub extern "user32" fn RegisterClassW(lpWndClass: *const WNDCLASSW) callconv(.winapi) ATOM;
     pub extern "user32" fn UnregisterClassW(lpClassName: LPCWSTR, hInstance: HINSTANCE) callconv(.winapi) BOOL;
@@ -182,6 +199,25 @@ const win = struct {
     pub extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
     pub extern "user32" fn GetDC(hWnd: HWND) callconv(.winapi) HDC;
     pub extern "user32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.winapi) i32;
+    pub extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+    pub extern "user32" fn SetWindowPos(
+        hWnd: HWND,
+        hWndInsertAfter: HWND,
+        X: i32,
+        Y: i32,
+        cx: i32,
+        cy: i32,
+        uFlags: UINT,
+    ) callconv(.winapi) BOOL;
+    pub extern "user32" fn IsZoomed(hWnd: HWND) callconv(.winapi) BOOL;
+    pub extern "user32" fn MonitorFromWindow(hwnd: HWND, dwFlags: DWORD) callconv(.winapi) HMONITOR;
+    pub extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;
+    pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
+    pub extern "user32" fn BringWindowToTop(hWnd: HWND) callconv(.winapi) BOOL;
+    pub extern "user32" fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: LPCWSTR) callconv(.winapi) HCURSOR;
+    pub extern "user32" fn SetCursor(hCursor: HCURSOR) callconv(.winapi) HCURSOR;
+    pub extern "user32" fn ShowCursor(bShow: BOOL) callconv(.winapi) i32;
+    pub extern "user32" fn MessageBeep(uType: UINT) callconv(.winapi) BOOL;
     pub extern "user32" fn GetKeyState(nVirtKey: i32) callconv(.winapi) SHORT;
     pub extern "user32" fn GetKeyboardState(lpKeyState: [*]BYTE) callconv(.winapi) BOOL;
     pub extern "user32" fn GetKeyboardLayout(idThread: DWORD) callconv(.winapi) HKL;
@@ -227,14 +263,17 @@ const win = struct {
     pub const WS_MAXIMIZEBOX = 0x00010000;
     pub const WS_OVERLAPPEDWINDOW = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
     pub const CW_USEDEFAULT: i32 = @bitCast(@as(u32, 0x80000000));
+    pub const SW_HIDE = 0;
     pub const SW_SHOW = 5;
     pub const WM_NCCREATE = 0x0081;
     pub const WM_CLOSE = 0x0010;
     pub const WM_DESTROY = 0x0002;
     pub const WM_SIZE = 0x0005;
+    pub const WM_GETMINMAXINFO = 0x0024;
     pub const WM_SETFOCUS = 0x0007;
     pub const WM_KILLFOCUS = 0x0008;
     pub const WM_PAINT = 0x000F;
+    pub const WM_SETCURSOR = 0x0020;
     pub const WM_CHAR = 0x0102;
     pub const WM_KEYDOWN = 0x0100;
     pub const WM_KEYUP = 0x0101;
@@ -258,6 +297,7 @@ const win = struct {
     pub const WM_APP = 0x8000;
     pub const WM_GHOSTTY_WAKEUP = WM_APP + 1;
     pub const GWLP_USERDATA = -21;
+    pub const GWL_STYLE = -16;
     pub const CF_UNICODETEXT = 13;
     pub const GMEM_MOVEABLE = 0x0002;
     pub const WHEEL_DELTA: SHORT = 120;
@@ -278,6 +318,33 @@ const win = struct {
     pub const VK_RWIN = 0x5C;
     pub const VK_CAPITAL = 0x14;
     pub const VK_NUMLOCK = 0x90;
+    pub const IDC_ARROW: WORD = 32512;
+    pub const IDC_IBEAM: WORD = 32513;
+    pub const IDC_WAIT: WORD = 32514;
+    pub const IDC_CROSS: WORD = 32515;
+    pub const IDC_UPARROW: WORD = 32516;
+    pub const IDC_SIZENWSE: WORD = 32642;
+    pub const IDC_SIZENESW: WORD = 32643;
+    pub const IDC_SIZEWE: WORD = 32644;
+    pub const IDC_SIZENS: WORD = 32645;
+    pub const IDC_SIZEALL: WORD = 32646;
+    pub const IDC_NO: WORD = 32648;
+    pub const IDC_HAND: WORD = 32649;
+    pub const IDC_APPSTARTING: WORD = 32650;
+    pub const SW_MAXIMIZE = 3;
+    pub const SW_RESTORE = 9;
+    pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+    pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
+    pub const MONITOR_DEFAULTTONEAREST = 2;
+    pub const SWP_NOSIZE = 0x0001;
+    pub const SWP_NOMOVE = 0x0002;
+    pub const SWP_NOZORDER = 0x0004;
+    pub const SWP_NOOWNERZORDER = 0x0200;
+    pub const SWP_FRAMECHANGED = 0x0020;
+    pub const SWP_SHOWWINDOW = 0x0040;
+    pub const WS_VISIBLE = 0x10000000;
+    pub const WS_POPUP = 0x80000000;
+    pub const MB_OK = 0x00000000;
     pub const MAPVK_VK_TO_VSC = 0x0;
     pub const MAPVK_VK_TO_CHAR = 0x2;
     pub const GCS_COMPSTR = 0x0008;
@@ -318,6 +385,10 @@ const win = struct {
     pub fn keyWasDown(value: LPARAM) bool {
         return ((@as(usize, @bitCast(value)) >> 30) & 0x01) != 0;
     }
+
+    pub fn makeIntResource(id: WORD) LPCWSTR {
+        return @ptrFromInt(@as(usize, id));
+    }
 };
 
 pub const App = struct {
@@ -341,6 +412,12 @@ pub const App = struct {
     surfaces: std.ArrayListUnmanaged(*Surface) = .{},
     pending_window_requests: std.ArrayListUnmanaged(PendingWindowRequest) = .{},
     pending_window_requests_mutex: std.Thread.Mutex = .{},
+    warned_container_actions: bool = false,
+    warned_inspector_actions: bool = false,
+    warned_notification_actions: bool = false,
+    warned_secure_input_actions: bool = false,
+    warned_osk_actions: bool = false,
+    warned_misc_actions: bool = false,
 
     pub fn init(self: *App, core_app: *CoreApp, opts: struct {}) !void {
         _ = opts;
@@ -433,10 +510,21 @@ pub const App = struct {
         comptime action: apprt.Action.Key,
         value: apprt.Action.Value(action),
     ) !bool {
+        const surface = self.targetSurface(target);
         return switch (action) {
             .quit => blk: {
                 for (self.surfaces.items) |surface| {
                     _ = win.PostMessageW(surface.hwnd, win.WM_CLOSE, 0, 0);
+                }
+                break :blk true;
+            },
+            .close_window => blk: {
+                if (surface) |rt_surface| _ = win.PostMessageW(rt_surface.hwnd, win.WM_CLOSE, 0, 0);
+                break :blk true;
+            },
+            .close_all_windows => blk: {
+                for (self.surfaces.items) |rt_surface| {
+                    _ = win.PostMessageW(rt_surface.hwnd, win.WM_CLOSE, 0, 0);
                 }
                 break :blk true;
             },
@@ -450,31 +538,173 @@ pub const App = struct {
                 break :blk true;
             },
             .render => blk: {
-                const surface = switch (target) {
-                    .surface => |core_surface| self.findRuntimeSurface(core_surface) orelse null,
-                    .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
-                };
                 if (surface) |rt_surface| _ = win.InvalidateRect(rt_surface.hwnd, null, 0);
                 break :blk true;
             },
+            .present_terminal => blk: {
+                if (surface) |rt_surface| rt_surface.presentTerminal();
+                break :blk true;
+            },
             .set_title => blk: {
-                const surface = switch (target) {
-                    .surface => |core_surface| self.findRuntimeSurface(core_surface),
-                    .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
-                };
                 if (surface) |rt_surface| try rt_surface.setTitle(value.title);
                 break :blk true;
             },
-            .cell_size,
-            .size_limit,
-            .config_change,
+            .reload_config => blk: {
+                var config = try configpkg.Config.load(self.core_app.alloc);
+                defer config.deinit();
+                try self.core_app.updateConfig(self, &config);
+                break :blk true;
+            },
+            .open_url => blk: {
+                internal_os.open(self.core_app.alloc, value.kind, value.url) catch |err| {
+                    log.warn("win32 open_url fallback failed err={}", .{err});
+                };
+                break :blk true;
+            },
+            .toggle_maximize => blk: {
+                if (surface) |rt_surface| rt_surface.toggleMaximize();
+                break :blk true;
+            },
+            .toggle_visibility => blk: {
+                if (surface) |rt_surface| rt_surface.toggleVisibility();
+                break :blk true;
+            },
+            .toggle_fullscreen => blk: {
+                if (surface) |rt_surface| try rt_surface.toggleFullscreen(value);
+                break :blk true;
+            },
+            .toggle_window_decorations => blk: {
+                if (surface) |rt_surface| try rt_surface.toggleWindowDecorations();
+                break :blk true;
+            },
+            .float_window => blk: {
+                if (surface) |rt_surface| try rt_surface.setFloatWindow(value);
+                break :blk true;
+            },
+            .mouse_shape => blk: {
+                if (surface) |rt_surface| rt_surface.setMouseShape(value);
+                break :blk true;
+            },
+            .mouse_visibility => blk: {
+                if (surface) |rt_surface| rt_surface.setMouseVisibility(value);
+                break :blk true;
+            },
+            .ring_bell => blk: {
+                _ = win.MessageBeep(0);
+                break :blk true;
+            },
+            .desktop_notification,
+            .show_child_exited,
+            .progress_report,
+            .command_finished,
+            => blk: {
+                self.warnOnce(&self.warned_notification_actions, action, "Win32 当前使用最小 fallback 处理通知类 action");
+                break :blk true;
+            },
+            .readonly,
+            .pwd,
+            .renderer_health,
+            .color_change,
             => true,
+            .secure_input => blk: {
+                self.warnOnce(&self.warned_secure_input_actions, action, "Win32 secure-input 仍为最小 no-op fallback");
+                break :blk true;
+            },
+            .show_on_screen_keyboard => blk: {
+                self.openOnScreenKeyboard();
+                break :blk true;
+            },
+            .new_tab,
+            .close_tab,
+            .goto_tab,
+            .move_tab,
+            .new_split,
+            .goto_split,
+            .resize_split,
+            .equalize_splits,
+            .toggle_split_zoom,
+            .toggle_tab_overview,
+            .inspector,
+            .render_inspector,
+            .show_gtk_inspector,
+            .toggle_command_palette,
+            => blk: {
+                self.warnOnce(&self.warned_container_actions, action, "Win32 当前仅支持单窗口 runtime，不支持 tabs/splits/inspector 容器动作");
+                break :blk true;
+            },
+            .cell_size, .size_limit, .config_change => blk: {
+                break :blk switch (action) {
+                    .cell_size => true,
+                    .size_limit => if (surface) |rt_surface| blk2: {
+                        rt_surface.setSizeLimit(value);
+                        break :blk2 true;
+                    } else true,
+                    .config_change => blk2: {
+                        switch (target) {
+                            .app => {
+                                const cloned = try value.config.clone(self.core_app.alloc);
+                                self.config.deinit();
+                                self.config = cloned;
+                            },
+                            .surface => {},
+                        }
+                        break :blk2 true;
+                    },
+                    else => unreachable,
+                };
+            },
+            .toggle_background_opacity,
+            .check_for_updates,
+            .undo,
+            .redo,
+            .toggle_quick_terminal,
+            .prompt_title,
+            .mouse_over_link,
+            .initial_size,
+            .key_sequence,
+            .key_table,
+            .start_search,
+            .end_search,
+            .search_total,
+            .search_selected,
+            .close_surface,
+            .focus_split,
+            .toggle_readonly,
+            => blk: {
+                break :blk switch (action) {
+                    .initial_size => if (surface) |rt_surface| blk2: {
+                        rt_surface.applyInitialSize(value);
+                        break :blk2 true;
+                    } else true,
+                    .prompt_title,
+                    .toggle_background_opacity,
+                    .check_for_updates,
+                    .undo,
+                    .redo,
+                    .toggle_quick_terminal,
+                    .key_sequence,
+                    .key_table,
+                    .start_search,
+                    .end_search,
+                    .search_total,
+                    .search_selected,
+                    => blk2: {
+                        self.warnOnce(&self.warned_misc_actions, action, "Win32 当前对该 action 仅提供最小 no-op fallback");
+                        break :blk2 true;
+                    },
+                    .mouse_over_link,
+                    .close_surface,
+                    .focus_split,
+                    .toggle_readonly,
+                    => true,
+                    else => unreachable,
+                };
+            },
             .open_config => blk: {
                 try self.openConfigFile();
                 break :blk true;
             },
             .quit_timer => true,
-            else => false,
         };
     }
 
@@ -602,6 +832,14 @@ pub const App = struct {
                 );
                 break :blk 0;
             },
+            win.WM_GETMINMAXINFO => blk: {
+                if (surface) |rt_surface| {
+                    const info: *win.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(l_param)));
+                    rt_surface.applyMinMaxInfo(info);
+                    break :blk 0;
+                }
+                break :blk win.DefWindowProcW(hwnd, msg, w_param, l_param);
+            },
             win.WM_SETFOCUS => blk: {
                 if (surface) |rt_surface| rt_surface.updateFocus(true);
                 break :blk 0;
@@ -611,11 +849,21 @@ pub const App = struct {
                 break :blk 0;
             },
             win.WM_MOUSEMOVE => blk: {
-                if (surface) |rt_surface| rt_surface.updateCursorPos(
-                    @floatFromInt(win.signedLowWord(l_param)),
-                    @floatFromInt(win.signedHighWord(l_param)),
-                );
+                if (surface) |rt_surface| {
+                    rt_surface.updateCursorPos(
+                        @floatFromInt(win.signedLowWord(l_param)),
+                        @floatFromInt(win.signedHighWord(l_param)),
+                    );
+                    rt_surface.applyCursor();
+                }
                 break :blk 0;
+            },
+            win.WM_SETCURSOR => blk: {
+                if (surface) |rt_surface| {
+                    rt_surface.applyCursor();
+                    break :blk 1;
+                }
+                break :blk win.DefWindowProcW(hwnd, msg, w_param, l_param);
             },
             win.WM_LBUTTONDOWN,
             win.WM_LBUTTONUP,
@@ -742,6 +990,25 @@ pub const App = struct {
         }
     }
 
+    fn targetSurface(self: *App, target: apprt.Target) ?*Surface {
+        return switch (target) {
+            .surface => |core_surface| self.findRuntimeSurface(core_surface),
+            .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
+        };
+    }
+
+    fn warnOnce(
+        self: *App,
+        warned: *bool,
+        comptime action: apprt.Action.Key,
+        message: []const u8,
+    ) void {
+        _ = self;
+        if (warned.*) return;
+        warned.* = true;
+        log.warn("{s} action={s}", .{ message, @tagName(action) });
+    }
+
     fn drainPendingWindowRequests(self: *App) !void {
         var ready: std.ArrayListUnmanaged(PendingWindowRequest) = .{};
         defer {
@@ -785,6 +1052,16 @@ pub const App = struct {
         child.stdout_behavior = .Ignore;
         child.stderr_behavior = .Ignore;
         try child.spawn();
+    }
+
+    fn openOnScreenKeyboard(self: *App) void {
+        var child = std.process.Child.init(&.{"osk.exe"}, self.core_app.alloc);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        child.spawn() catch {
+            self.warnOnce(&self.warned_osk_actions, .show_on_screen_keyboard, "Win32 无法启动 on-screen keyboard");
+        };
     }
 
     fn messageMouseButtonState(msg: win.UINT) input.MouseButtonState {
@@ -1144,6 +1421,15 @@ pub const Surface = struct {
     last_text_input: [16]u8 = [_]u8{0} ** 16,
     last_text_input_len: u8 = 0,
     suppress_char_messages: u8 = 0,
+    mouse_hidden: bool = false,
+    mouse_shape: terminal.MouseShape = .text,
+    topmost: bool = false,
+    fullscreen: bool = false,
+    decorations_enabled: bool = true,
+    min_width_px: u32 = 0,
+    min_height_px: u32 = 0,
+    saved_window_style: win.LONG_PTR = 0,
+    saved_window_rect: win.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
     graphics: GraphicsState = .{},
 
     pub const GraphicsState = struct {
@@ -1652,6 +1938,149 @@ pub const Surface = struct {
         );
         defer self.app.core_app.alloc.free(title_w);
         _ = win.SetWindowTextW(self.hwnd, title_w.ptr);
+    }
+
+    fn presentTerminal(self: *Surface) void {
+        _ = win.ShowWindow(self.hwnd, if (self.fullscreen or win.IsZoomed(self.hwnd) != 0) win.SW_RESTORE else win.SW_SHOW);
+        _ = win.BringWindowToTop(self.hwnd);
+        _ = win.SetForegroundWindow(self.hwnd);
+    }
+
+    fn toggleMaximize(self: *Surface) void {
+        _ = win.ShowWindow(self.hwnd, if (win.IsZoomed(self.hwnd) != 0) win.SW_RESTORE else win.SW_MAXIMIZE);
+    }
+
+    fn toggleVisibility(self: *Surface) void {
+        const style = win.GetWindowLongPtrW(self.hwnd, win.GWL_STYLE);
+        _ = win.ShowWindow(self.hwnd, if ((style & @as(win.LONG_PTR, win.WS_VISIBLE)) != 0) win.SW_HIDE else win.SW_SHOW);
+    }
+
+    fn toggleFullscreen(self: *Surface, _: apprt.action.Fullscreen) !void {
+        const style = win.GetWindowLongPtrW(self.hwnd, win.GWL_STYLE);
+        if (!self.fullscreen) {
+            self.saved_window_style = style;
+            if (win.GetWindowRect(self.hwnd, &self.saved_window_rect) == 0) return error.Unexpected;
+
+            const monitor = win.MonitorFromWindow(self.hwnd, win.MONITOR_DEFAULTTONEAREST) orelse
+                return error.Unexpected;
+            var monitor_info: win.MONITORINFO = .{
+                .cbSize = @sizeOf(win.MONITORINFO),
+                .rcMonitor = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+                .rcWork = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+                .dwFlags = 0,
+            };
+            if (win.GetMonitorInfoW(monitor, &monitor_info) == 0) return error.Unexpected;
+
+            const fullscreen_style = style & ~@as(win.LONG_PTR, win.WS_OVERLAPPEDWINDOW);
+            _ = win.SetWindowLongPtrW(self.hwnd, win.GWL_STYLE, fullscreen_style | win.WS_VISIBLE);
+            _ = win.SetWindowPos(
+                self.hwnd,
+                if (self.topmost) win.HWND_TOPMOST else null,
+                monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.top,
+                monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                win.SWP_FRAMECHANGED | win.SWP_SHOWWINDOW,
+            );
+            self.fullscreen = true;
+            return;
+        }
+
+        const restored_style = if (self.decorations_enabled)
+            self.saved_window_style
+        else
+            (self.saved_window_style & ~@as(win.LONG_PTR, win.WS_OVERLAPPEDWINDOW)) | win.WS_VISIBLE;
+        _ = win.SetWindowLongPtrW(self.hwnd, win.GWL_STYLE, restored_style);
+        _ = win.SetWindowPos(
+            self.hwnd,
+            if (self.topmost) win.HWND_TOPMOST else win.HWND_NOTOPMOST,
+            self.saved_window_rect.left,
+            self.saved_window_rect.top,
+            self.saved_window_rect.right - self.saved_window_rect.left,
+            self.saved_window_rect.bottom - self.saved_window_rect.top,
+            win.SWP_FRAMECHANGED | win.SWP_SHOWWINDOW,
+        );
+        self.fullscreen = false;
+    }
+
+    fn toggleWindowDecorations(self: *Surface) !void {
+        self.decorations_enabled = !self.decorations_enabled;
+        if (self.fullscreen) return;
+
+        const style = win.GetWindowLongPtrW(self.hwnd, win.GWL_STYLE);
+        const new_style = if (self.decorations_enabled)
+            style | @as(win.LONG_PTR, win.WS_OVERLAPPEDWINDOW)
+        else
+            (style & ~@as(win.LONG_PTR, win.WS_OVERLAPPEDWINDOW)) | win.WS_VISIBLE;
+        _ = win.SetWindowLongPtrW(self.hwnd, win.GWL_STYLE, new_style);
+        _ = win.SetWindowPos(
+            self.hwnd,
+            null,
+            0,
+            0,
+            0,
+            0,
+            win.SWP_NOMOVE | win.SWP_NOSIZE | win.SWP_NOZORDER | win.SWP_NOOWNERZORDER | win.SWP_FRAMECHANGED,
+        );
+    }
+
+    fn setFloatWindow(self: *Surface, value: apprt.action.FloatWindow) !void {
+        self.topmost = switch (value) {
+            .on => true,
+            .off => false,
+            .toggle => !self.topmost,
+        };
+        _ = win.SetWindowPos(
+            self.hwnd,
+            if (self.topmost) win.HWND_TOPMOST else win.HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            win.SWP_NOMOVE | win.SWP_NOSIZE,
+        );
+    }
+
+    fn setMouseShape(self: *Surface, shape: terminal.MouseShape) void {
+        self.mouse_shape = shape;
+        self.applyCursor();
+    }
+
+    fn setMouseVisibility(self: *Surface, value: apprt.action.MouseVisibility) void {
+        self.mouse_hidden = value == .hidden;
+        _ = win.ShowCursor(if (self.mouse_hidden) 0 else 1);
+        self.applyCursor();
+    }
+
+    fn applyInitialSize(self: *Surface, value: apprt.action.InitialSize) void {
+        if (value.width == 0 or value.height == 0) return;
+        _ = win.SetWindowPos(
+            self.hwnd,
+            null,
+            0,
+            0,
+            @intCast(value.width),
+            @intCast(value.height),
+            win.SWP_NOMOVE | win.SWP_NOZORDER,
+        );
+    }
+
+    fn setSizeLimit(self: *Surface, value: apprt.action.SizeLimit) void {
+        self.min_width_px = value.min_width;
+        self.min_height_px = value.min_height;
+    }
+
+    fn applyMinMaxInfo(self: *Surface, info: *win.MINMAXINFO) void {
+        if (self.min_width_px > 0) info.ptMinTrackSize.x = @intCast(self.min_width_px);
+        if (self.min_height_px > 0) info.ptMinTrackSize.y = @intCast(self.min_height_px);
+    }
+
+    fn applyCursor(self: *Surface) void {
+        if (self.mouse_hidden) {
+            _ = win.SetCursor(null);
+            return;
+        }
+        _ = win.SetCursor(win.LoadCursorW(null, cursorResource(self.mouse_shape)));
     }
 
     fn updateSize(self: *Surface, width: u32, height: u32) void {
@@ -2520,6 +2949,22 @@ pub const Surface = struct {
         }
 
         return result;
+    }
+
+    fn cursorResource(shape: terminal.MouseShape) win.LPCWSTR {
+        return switch (shape) {
+            .default, .context_menu, .help, .pointer, .alias, .copy, .grab, .grabbing, .zoom_in, .zoom_out => win.makeIntResource(win.IDC_HAND),
+            .progress => win.makeIntResource(win.IDC_APPSTARTING),
+            .wait => win.makeIntResource(win.IDC_WAIT),
+            .cell, .text, .vertical_text => win.makeIntResource(win.IDC_IBEAM),
+            .crosshair => win.makeIntResource(win.IDC_CROSS),
+            .move, .all_scroll => win.makeIntResource(win.IDC_SIZEALL),
+            .no_drop, .not_allowed => win.makeIntResource(win.IDC_NO),
+            .col_resize, .e_resize, .w_resize, .ew_resize => win.makeIntResource(win.IDC_SIZEWE),
+            .row_resize, .n_resize, .s_resize, .ns_resize => win.makeIntResource(win.IDC_SIZENS),
+            .ne_resize, .sw_resize, .nesw_resize => win.makeIntResource(win.IDC_SIZENESW),
+            .nw_resize, .se_resize, .nwse_resize => win.makeIntResource(win.IDC_SIZENWSE),
+        };
     }
 
     test "win32 ipc payload round trip preserves arguments" {
