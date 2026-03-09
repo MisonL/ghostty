@@ -875,12 +875,15 @@ pub fn imageTextureOptions(
     format: ImageTextureFormat,
     srgb: bool,
 ) Texture.Options {
-    const srv_format = imageDxgiFormat(format, srgb);
+    // Hosted Windows runners consistently remove the D3D12 device when we
+    // create sampled sRGB textures, so we store color textures as UNORM and
+    // linearize them explicitly in the D3D12 shader path.
+    const storage_format = imageDxgiFormat(format, false);
     return .{
         .owner = @constCast(self),
-        .resource_format = imageResourceDxgiFormat(format, srgb),
-        .copy_format = imageCopyDxgiFormat(format, srgb),
-        .srv_format = srv_format,
+        .resource_format = storage_format,
+        .copy_format = storage_format,
+        .srv_format = storage_format,
         .bytes_per_pixel = switch (format) {
             .grayscale => 1,
             .bgra, .rgba => 4,
@@ -908,7 +911,7 @@ pub fn initAtlasTexture(
     var opts = @constCast(self).imageTextureOptions(format, atlas.format == .bgra);
     if (atlas.format == .bgra) {
         opts.swizzle_bgra_to_rgba = true;
-        opts.debug_name = "atlas-color-rgba-srgb";
+        opts.debug_name = "atlas-color-rgba-unorm";
     } else {
         opts.debug_name = "atlas-grayscale";
     }
@@ -1636,19 +1639,6 @@ fn imageDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
         else
             @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM),
     };
-}
-
-fn imageResourceDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
-    if (!srgb) return imageDxgiFormat(format, false);
-    return switch (format) {
-        .grayscale => imageDxgiFormat(.grayscale, false),
-        .rgba => @intCast(winos.c.DXGI_FORMAT_R8G8B8A8_TYPELESS),
-        .bgra => @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_TYPELESS),
-    };
-}
-
-fn imageCopyDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
-    return if (srgb) imageDxgiFormat(format, false) else imageDxgiFormat(format, false);
 }
 
 fn vertexBufferView(

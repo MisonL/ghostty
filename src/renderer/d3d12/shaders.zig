@@ -568,7 +568,7 @@ const cell_text_fragment_hlsl = common_hlsl ++
     \\    bool use_linear_correction = (bools & USE_LINEAR_CORRECTION) != 0u;
     \\
     \\    if (input.atlas == ATLAS_COLOR) {
-    \\        float4 color = atlas_color.Load(int3(int2(input.tex_coord), 0));
+    \\        float4 color = linearize(atlas_color.Load(int3(int2(input.tex_coord), 0)));
     \\        if (use_linear_blending) return color;
     \\        if (color.a > 0.0f) {
     \\            color.rgb /= color.a;
@@ -639,7 +639,7 @@ const image_fragment_hlsl = common_hlsl ++
     \\
     \\float4 image_fragment(ImageVertexOut input) : SV_Target0 {
     \\    bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0u;
-    \\    float4 rgba = image_texture.SampleLevel(linear_sampler, input.tex_coord, 0.0f);
+    \\    float4 rgba = linearize(image_texture.SampleLevel(linear_sampler, input.tex_coord, 0.0f));
     \\    if (!use_linear_blending) {
     \\        rgba = unlinearize(rgba);
     \\    }
@@ -761,7 +761,7 @@ const bg_image_fragment_hlsl = common_hlsl ++
     \\    if (any(tex_coord < float2(0.0f, 0.0f)) || any(tex_coord > tex_size)) {
     \\        rgba = float4(0.0f, 0.0f, 0.0f, 0.0f);
     \\    } else {
-    \\        rgba = image_texture.SampleLevel(linear_sampler, tex_coord / tex_size, 0.0f);
+    \\        rgba = linearize(image_texture.SampleLevel(linear_sampler, tex_coord / tex_size, 0.0f));
     \\        if (!use_linear_blending) {
     \\            rgba = unlinearize(rgba);
     \\        }
