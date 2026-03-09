@@ -453,6 +453,24 @@ const DerivedConfig = struct {
     }
 };
 
+fn shouldTraceWin32CoreInit() bool {
+    const alloc = std.heap.page_allocator;
+    const smoke = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch null;
+    defer if (smoke) |value| alloc.free(value);
+    if (smoke) |value| {
+        if (value.len > 0 and !std.mem.eql(u8, value, "0")) return true;
+    }
+
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32CoreInitStep(step: []const u8) void {
+    if (!shouldTraceWin32CoreInit()) return;
+    log.info("ci.win32.core_init.step={s}", .{step});
+}
+
 /// Create a new surface. This must be called from the main thread. The
 /// pointer to the memory for the surface must be provided and must be
 /// stable due to interfacing with various callbacks.
@@ -464,6 +482,7 @@ pub fn init(
     rt_app: *apprt.runtime.App,
     rt_surface: *apprt.runtime.Surface,
 ) !void {
+    traceWin32CoreInitStep("surface.init.begin");
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
     var config_: ?configpkg.Config = config_original.changeConditionalState(
@@ -489,7 +508,9 @@ pub fn init(
     errdefer derived_config.deinit();
 
     // Initialize our renderer with our initialized surface.
+    traceWin32CoreInitStep("surface.init.renderer_surface.begin");
     try Renderer.surfaceInit(rt_surface);
+    traceWin32CoreInitStep("surface.init.renderer_surface.ready");
 
     // Determine our DPI configurations so we can properly configure
     // font points to pixels and handle other high-DPI scaling factors.
@@ -512,10 +533,12 @@ pub fn init(
 
     // Setup our font group. This will reuse an existing font group if
     // it was already loaded.
+    traceWin32CoreInitStep("surface.init.font_grid.begin");
     const font_grid_key, const font_grid = try app.font_grid_set.ref(
         &derived_config.font,
         font_size,
     );
+    traceWin32CoreInitStep("surface.init.font_grid.ready");
     errdefer app.font_grid_set.deref(font_grid_key);
 
     // Build our size struct which has all the sizes we need.
@@ -548,6 +571,7 @@ pub fn init(
 
     // Create our terminal grid with the initial size
     const app_mailbox: App.Mailbox = .{ .rt_app = rt_app, .mailbox = &app.mailbox };
+    traceWin32CoreInitStep("surface.init.renderer.begin");
     var renderer_impl = try Renderer.init(alloc, .{
         .config = try .init(alloc, config),
         .font_grid = font_grid,
@@ -556,6 +580,7 @@ pub fn init(
         .rt_surface = rt_surface,
         .thread = &self.renderer_thread,
     });
+    traceWin32CoreInitStep("surface.init.renderer.ready");
     errdefer renderer_impl.deinit();
 
     // The mutex used to protect our renderer state.

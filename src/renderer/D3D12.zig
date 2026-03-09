@@ -21,6 +21,24 @@ const bufferpkg = @import("d3d12/buffer.zig");
 
 const log = std.log.scoped(.d3d12);
 
+fn shouldTraceWin32D3D12Init() bool {
+    const alloc = std.heap.page_allocator;
+    const smoke = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch null;
+    defer if (smoke) |value| alloc.free(value);
+    if (smoke) |value| {
+        if (value.len > 0 and !std.mem.eql(u8, value, "0")) return true;
+    }
+
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32D3D12Init(step: []const u8) void {
+    if (!shouldTraceWin32D3D12Init()) return;
+    log.info("ci.win32.d3d12.step={s}", .{step});
+}
+
 pub const GraphicsAPI = D3D12;
 pub const force_software_cpu_route = false;
 
@@ -600,6 +618,7 @@ deferred_buffer_releases: std.ArrayListUnmanaged(DeferredBufferRelease) = .empty
 command_recording_active: bool = false,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
+    traceWin32D3D12Init("renderer.init.begin");
     var result: D3D12 = .{
         .alloc = alloc,
         .blending = opts.config.blending,
@@ -623,8 +642,13 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
         }
     }
     result.has_native_present_path = result.swap_chain != null;
-    if (result.d3d12_device != null) try result.ensureSrvHeap();
+    if (result.d3d12_device != null) {
+        traceWin32D3D12Init("renderer.init.ensure_srv_heap.begin");
+        try result.ensureSrvHeap();
+        traceWin32D3D12Init("renderer.init.ensure_srv_heap.ready");
+    }
     result.has_native_draw_path = result.has_native_present_path and result.d3d12_device != null;
+    traceWin32D3D12Init("renderer.init.ready");
     return result;
 }
 
@@ -881,10 +905,12 @@ pub fn beginFrame(
 }
 
 fn ensureSrvHeap(self: *D3D12) !void {
+    traceWin32D3D12Init("renderer.ensure_srv_heap.enter");
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     if (self.srvHeap()) |heap| {
         if (self.srv_descriptor_size != 0) return;
 
+        traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.begin");
         const native_heap = nativePtr(*winos.c.ID3D12DescriptorHeap, heap);
         var cpu_handle: winos.c.D3D12_CPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_CPU_DESCRIPTOR_HANDLE);
         var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
@@ -897,6 +923,7 @@ fn ensureSrvHeap(self: *D3D12) !void {
         );
         self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
         self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
+        traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.ready");
         return;
     }
 
@@ -907,6 +934,7 @@ fn ensureSrvHeap(self: *D3D12) !void {
     desc.NodeMask = 0;
 
     var raw_heap: ?*anyopaque = null;
+    traceWin32D3D12Init("renderer.ensure_srv_heap.create.begin");
     if (device.lpVtbl[0].CreateDescriptorHeap.?(
         device,
         &desc,
@@ -934,6 +962,7 @@ fn ensureSrvHeap(self: *D3D12) !void {
     );
     self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
     self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
+    traceWin32D3D12Init("renderer.ensure_srv_heap.create.ready");
 }
 
 fn allocateSrvIndex(self: *D3D12) !u32 {
@@ -1431,7 +1460,7 @@ fn flushDeferredBufferReleases(self: *D3D12) void {
 }
 
 fn deferReleaseBuffer(ctx: ?*anyopaque, buffer: *winos.graphics.ID3D12Resource, was_mapped: bool) void {
-    const self: *D3D12 = @ptrFromInt(@intFromPtr(ctx orelse {
+    const self: *D3D12 = @ptrCast(@alignCast(ctx orelse {
         if (was_mapped) {
             const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
             resource.lpVtbl[0].Unmap.?(
