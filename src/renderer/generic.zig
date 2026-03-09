@@ -4168,6 +4168,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.font_grid.lock.lockShared();
                 defer self.font_grid.lock.unlockShared();
                 frame.color_modified = self.font_grid.atlas_color.modified.load(.monotonic);
+                if (std.mem.allEqual(u8, self.font_grid.atlas_color.data, 0)) break :texture;
                 try self.syncAtlasTexture(&self.font_grid.atlas_color, &frame.color);
             }
 
