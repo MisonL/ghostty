@@ -846,7 +846,6 @@ pub const App = struct {
     fn createWindow(self: *App, request: PendingWindowRequest) !void {
         var config = try self.deriveWindowConfig(request.parent);
         defer config.deinit();
-        const create_window_visible = self.ci_smoke_mode != .disabled or shouldTraceWin32Init();
         if (request.arguments) |arguments| {
             const alloc = config.arenaAlloc();
             const copied = try alloc.alloc([:0]const u8, arguments.len);
@@ -859,10 +858,7 @@ pub const App = struct {
             0,
             self.class_name.ptr,
             self.title.ptr,
-            if (create_window_visible)
-                win.WS_OVERLAPPEDWINDOW | win.WS_VISIBLE
-            else
-                win.WS_OVERLAPPEDWINDOW,
+            win.WS_OVERLAPPEDWINDOW,
             win.CW_USEDEFAULT,
             win.CW_USEDEFAULT,
             1280,
@@ -875,10 +871,6 @@ pub const App = struct {
         traceWin32InitStep("create_window.create_window_ex.ready");
         if (hwnd == null) return error.Unexpected;
         errdefer _ = win.DestroyWindow(hwnd);
-        if (create_window_visible and self.ci_smoke_mode != .disabled and !self.ci_smoke_window_ready_logged) {
-            self.ci_smoke_window_ready_logged = true;
-            log.info("ci.win32.window_ready", .{});
-        }
 
         traceWin32InitStep("create_window.runtime_surface_alloc.begin");
         const surface = try self.core_app.alloc.create(Surface);
@@ -893,13 +885,15 @@ pub const App = struct {
         try self.surfaces.append(self.core_app.alloc, surface);
         traceWin32InitStep("create_window.runtime_surface_list_append.ready");
 
-        if (!create_window_visible) {
-            traceWin32InitStep("create_window.show_window.begin");
-            _ = win.ShowWindow(hwnd, win.SW_SHOW);
-            traceWin32InitStep("create_window.show_window.ready");
-            traceWin32InitStep("create_window.update_window.begin");
-            _ = win.UpdateWindow(hwnd);
-            traceWin32InitStep("create_window.update_window.ready");
+        traceWin32InitStep("create_window.show_window.begin");
+        _ = win.ShowWindow(hwnd, win.SW_SHOW);
+        traceWin32InitStep("create_window.show_window.ready");
+        traceWin32InitStep("create_window.update_window.begin");
+        _ = win.UpdateWindow(hwnd);
+        traceWin32InitStep("create_window.update_window.ready");
+        if (self.ci_smoke_mode != .disabled and !self.ci_smoke_window_ready_logged) {
+            self.ci_smoke_window_ready_logged = true;
+            log.info("ci.win32.window_ready", .{});
         }
         if (self.ci_smoke_mode == .core_draw and !self.ci_smoke_core_surface_ready_logged) {
             self.ci_smoke_core_surface_ready_logged = true;
