@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: project-ci-${{ github.ref }}
+  group: project-ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:

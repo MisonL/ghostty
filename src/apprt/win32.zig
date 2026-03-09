@@ -1069,6 +1069,10 @@ pub const App = struct {
             win.WM_NCACTIVATE,
             win.WM_GETICON,
             win.WM_ACTIVATE,
+            win.WM_IME_SETCONTEXT,
+            win.WM_IME_NOTIFY,
+            win.WM_NCPAINT,
+            win.WM_ERASEBKGND,
             => blk: {
                 if (surface == null) break :blk 0;
                 break :blk win.DefWindowProcW(hwnd, msg, w_param, l_param);
