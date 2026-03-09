@@ -101,7 +101,10 @@ pub const Texture = struct {
 
     pub const Options = struct {
         owner: *D3D12,
-        format: u32,
+        resource_format: u32,
+        copy_format: u32,
+        srv_format: ?u32 = null,
+        rtv_format: ?u32 = null,
         bytes_per_pixel: u32,
         render_target: bool = false,
         sampled: bool = true,
@@ -110,7 +113,10 @@ pub const Texture = struct {
     pub const Data = struct {
         owner: *D3D12,
         resource: *winos.graphics.ID3D12Resource,
-        format: u32,
+        resource_format: u32,
+        copy_format: u32,
+        srv_format: ?u32,
+        rtv_format: ?u32,
         bytes_per_pixel: u32,
         render_target: bool,
         sampled: bool,
@@ -136,7 +142,10 @@ pub const Texture = struct {
         data.* = .{
             .owner = opts.owner,
             .resource = try createTextureResource(opts, width, height),
-            .format = opts.format,
+            .resource_format = opts.resource_format,
+            .copy_format = opts.copy_format,
+            .srv_format = opts.srv_format,
+            .rtv_format = opts.rtv_format,
             .bytes_per_pixel = opts.bytes_per_pixel,
             .render_target = opts.render_target,
             .sampled = opts.sampled,
@@ -771,7 +780,7 @@ pub fn publishSoftwareFrame(
             .PlacedFootprint = .{
                 .Offset = 0,
                 .Footprint = .{
-                    .Format = target.texture.data.format,
+                    .Format = target.texture.data.copy_format,
                     .Width = width_px,
                     .Height = height_px,
                     .Depth = 1,
@@ -838,9 +847,13 @@ pub const imageBufferOptions = bufferOptions;
 pub const bgImageBufferOptions = bufferOptions;
 
 pub fn textureOptions(self: *const D3D12) Texture.Options {
+    const format = self.renderTargetViewFormat();
     return .{
         .owner = @constCast(self),
-        .format = self.renderTargetFormat(),
+        .resource_format = renderTargetResourceFormat(format),
+        .copy_format = renderTargetCopyFormat(format),
+        .srv_format = format,
+        .rtv_format = format,
         .bytes_per_pixel = 4,
         .render_target = true,
         .sampled = true,
@@ -856,9 +869,12 @@ pub fn imageTextureOptions(
     format: ImageTextureFormat,
     srgb: bool,
 ) Texture.Options {
+    const format_u32 = imageDxgiFormat(format, srgb);
     return .{
         .owner = @constCast(self),
-        .format = imageDxgiFormat(format, srgb),
+        .resource_format = format_u32,
+        .copy_format = format_u32,
+        .srv_format = format_u32,
         .bytes_per_pixel = switch (format) {
             .grayscale => 1,
             .bgra, .rgba => 4,
@@ -981,9 +997,10 @@ fn releaseSrvIndex(self: *D3D12, index: u32) void {
 fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     const resource = nativePtr(*winos.c.ID3D12Resource, texture.resource);
+    const format = texture.srv_format orelse return error.Unexpected;
     var desc: winos.c.D3D12_SHADER_RESOURCE_VIEW_DESC =
         std.mem.zeroes(winos.c.D3D12_SHADER_RESOURCE_VIEW_DESC);
-    desc.Format = texture.format;
+    desc.Format = format;
     desc.ViewDimension = winos.c.D3D12_SRV_DIMENSION_TEXTURE2D;
     desc.Shader4ComponentMapping = winos.c.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     desc.unnamed_0.Texture2D = .{
@@ -1002,18 +1019,19 @@ fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
 
 fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+    const format = texture.rtv_format orelse return error.Unexpected;
 
-    var desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC =
+    var heap_desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC =
         std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
-    desc.Type = winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    desc.NumDescriptors = 1;
-    desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    desc.NodeMask = 0;
+    heap_desc.Type = winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    heap_desc.NumDescriptors = 1;
+    heap_desc.Flags = winos.c.D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    heap_desc.NodeMask = 0;
 
     var raw_heap: ?*anyopaque = null;
     if (device.lpVtbl[0].CreateDescriptorHeap.?(
         device,
-        &desc,
+        &heap_desc,
         &winos.c.IID_ID3D12DescriptorHeap,
         &raw_heap,
     ) != winos.S_OK or raw_heap == null) {
@@ -1026,10 +1044,18 @@ fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
         heap,
         &texture.rtv_handle,
     );
+    var view_desc: winos.c.D3D12_RENDER_TARGET_VIEW_DESC =
+        std.mem.zeroes(winos.c.D3D12_RENDER_TARGET_VIEW_DESC);
+    view_desc.Format = format;
+    view_desc.ViewDimension = winos.c.D3D12_RTV_DIMENSION_TEXTURE2D;
+    view_desc.unnamed_0.Texture2D = .{
+        .MipSlice = 0,
+        .PlaneSlice = 0,
+    };
     device.lpVtbl[0].CreateRenderTargetView.?(
         device,
         nativePtr(*winos.c.ID3D12Resource, texture.resource),
-        null,
+        &view_desc,
         texture.rtv_handle,
     );
 }
@@ -1140,7 +1166,7 @@ fn uploadTextureRegion(
             .PlacedFootprint = .{
                 .Offset = 0,
                 .Footprint = .{
-                    .Format = texture.format,
+                    .Format = texture.copy_format,
                     .Width = @intCast(width),
                     .Height = @intCast(height),
                     .Depth = 1,
@@ -1412,11 +1438,27 @@ fn updateCurrentFrameIndex(self: *D3D12, sc: *winos.c.IDXGISwapChain3) void {
     }
 }
 
-fn renderTargetFormat(self: *const D3D12) u32 {
-    _ = self;
-    // Hosted Windows runners currently reject BGRA8_SRGB render-target resources.
-    // Keep offscreen targets on UNORM until we add typeless resources + SRGB views.
-    return @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM);
+fn renderTargetViewFormat(self: *const D3D12) u32 {
+    return if (self.blending.isLinear())
+        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+    else
+        @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM);
+}
+
+fn renderTargetResourceFormat(view_format: u32) u32 {
+    return switch (view_format) {
+        winos.c.DXGI_FORMAT_B8G8R8A8_UNORM,
+        winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+        => @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_TYPELESS),
+        else => view_format,
+    };
+}
+
+fn renderTargetCopyFormat(view_format: u32) u32 {
+    return switch (view_format) {
+        winos.c.DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => @intCast(winos.c.DXGI_FORMAT_B8G8R8A8_UNORM),
+        else => view_format,
+    };
 }
 
 fn srvCpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
@@ -1512,7 +1554,7 @@ fn createTextureResource(
     desc.Height = @intCast(height);
     desc.DepthOrArraySize = 1;
     desc.MipLevels = 1;
-    desc.Format = opts.format;
+    desc.Format = opts.resource_format;
     desc.SampleDesc = .{ .Count = 1, .Quality = 0 };
     desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_UNKNOWN;
     desc.Flags = if (opts.render_target)
