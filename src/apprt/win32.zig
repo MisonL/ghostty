@@ -1722,6 +1722,7 @@ pub const Surface = struct {
     pub const GraphicsState = struct {
         d3d12_device: ?*winos.c.ID3D12Device = null,
         dxgi_factory: ?*winos.c.IDXGIFactory4 = null,
+        dxgi_adapter: ?*winos.c.IDXGIAdapter1 = null,
         command_queue: ?*winos.c.ID3D12CommandQueue = null,
         command_allocator: ?*winos.c.ID3D12CommandAllocator = null,
         command_list: ?*winos.c.ID3D12GraphicsCommandList = null,
@@ -1873,6 +1874,8 @@ pub const Surface = struct {
         }
         winos.graphics.release(@ptrCast(self.graphics.d3d12_device));
         self.graphics.d3d12_device = null;
+        winos.graphics.release(@ptrCast(self.graphics.dxgi_adapter));
+        self.graphics.dxgi_adapter = null;
         winos.graphics.release(@ptrCast(self.graphics.dxgi_factory));
         self.graphics.dxgi_factory = null;
         winos.graphics.release(@ptrCast(self.graphics.dwrite_factory));
@@ -1900,7 +1903,7 @@ pub const Surface = struct {
         const iid_idxgi_adapter1 = windows.GUID.parse("{29038f61-3839-4626-91fd-086879011a05}");
 
         var warp_adapter: ?*winos.c.IDXGIAdapter1 = null;
-        defer if (warp_adapter) |adapter| winos.graphics.release(@ptrCast(adapter));
+        errdefer if (warp_adapter) |adapter| winos.graphics.release(@ptrCast(adapter));
         if (shouldUseWarpD3D12Device()) {
             const EnumWarpAdapterFn = *const fn (
                 *winos.c.IDXGIFactory4,
@@ -1915,6 +1918,7 @@ pub const Surface = struct {
                 &iid_idxgi_adapter1,
                 @ptrCast(&warp_adapter),
             ) != winos.S_OK or warp_adapter == null) return error.Unexpected;
+            self.graphics.dxgi_adapter = warp_adapter;
             log.info("using WARP D3D12 adapter for win32 ci smoke", .{});
             traceWin32InitStep("surface.init.graphics.d3d12_adapter.warp.ready");
         }
