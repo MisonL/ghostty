@@ -168,6 +168,7 @@ const win = struct {
     };
 
     pub extern "kernel32" fn GetModuleHandleW(lpModuleName: LPCWSTR) callconv(.winapi) HINSTANCE;
+    pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) DWORD;
     pub extern "user32" fn RegisterClassW(lpWndClass: *const WNDCLASSW) callconv(.winapi) ATOM;
     pub extern "user32" fn UnregisterClassW(lpClassName: LPCWSTR, hInstance: HINSTANCE) callconv(.winapi) BOOL;
     pub extern "user32" fn CreateWindowExW(
@@ -192,6 +193,7 @@ const win = struct {
     pub extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
     pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
     pub extern "user32" fn PostMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
+    pub extern "user32" fn PostThreadMessageW(idThread: DWORD, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
     pub extern "user32" fn PostQuitMessage(nExitCode: i32) callconv(.winapi) void;
     pub extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: i32, dwNewLong: LONG_PTR) callconv(.winapi) LONG_PTR;
     pub extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: i32) callconv(.winapi) LONG_PTR;
@@ -200,6 +202,7 @@ const win = struct {
     pub extern "user32" fn GetDC(hWnd: HWND) callconv(.winapi) HDC;
     pub extern "user32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.winapi) i32;
     pub extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+    pub extern "user32" fn GetDpiForWindow(hWnd: HWND) callconv(.winapi) UINT;
     pub extern "user32" fn SetWindowPos(
         hWnd: HWND,
         hWndInsertAfter: HWND,
@@ -294,8 +297,10 @@ const win = struct {
     pub const WM_XBUTTONDOWN = 0x020B;
     pub const WM_XBUTTONUP = 0x020C;
     pub const WM_MOUSEHWHEEL = 0x020E;
+    pub const WM_DPICHANGED = 0x02E0;
     pub const WM_APP = 0x8000;
     pub const WM_GHOSTTY_WAKEUP = WM_APP + 1;
+    pub const WM_GHOSTTY_QUIT_TIMER = WM_APP + 2;
     pub const GWLP_USERDATA = -21;
     pub const GWL_STYLE = -16;
     pub const CF_UNICODETEXT = 13;
@@ -353,6 +358,7 @@ const win = struct {
     pub const MB_OKCANCEL = 0x00000001;
     pub const MB_ICONWARNING = 0x00000030;
     pub const IDOK = 1;
+    pub const USER_DEFAULT_SCREEN_DPI: UINT = 96;
 
     pub fn lowWord(value: LPARAM) u16 {
         return @truncate(@as(usize, @bitCast(value)));
@@ -372,6 +378,14 @@ const win = struct {
 
     pub fn signedHighWordWPARAM(value: WPARAM) i16 {
         return @bitCast(@as(u16, @truncate(value >> 16)));
+    }
+
+    pub fn lowWordWPARAM(value: WPARAM) u16 {
+        return @truncate(value);
+    }
+
+    pub fn highWordWPARAM(value: WPARAM) u16 {
+        return @truncate(value >> 16);
     }
 
     pub fn keyScanCode(value: LPARAM) u32 {
@@ -395,6 +409,8 @@ pub const App = struct {
     core_app: *CoreApp,
     config: configpkg.Config,
     ci_smoke_mode: CiSmokeMode,
+    thread_id: win.DWORD = 0,
+    quit_timer_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     ci_smoke_window_ready_logged: bool = false,
     ci_smoke_core_surface_ready_logged: bool = false,
     ci_smoke_core_draw_ready_logged: bool = false,
@@ -459,6 +475,7 @@ pub const App = struct {
     }
 
     pub fn run(self: *App) !void {
+        self.thread_id = win.GetCurrentThreadId();
         try self.createWindow(.{});
 
         var msg: win.MSG = undefined;
@@ -466,6 +483,20 @@ pub const App = struct {
             const status = win.GetMessageW(&msg, null, 0, 0);
             if (status == -1) return error.Unexpected;
             if (status == 0) break;
+            if (msg.hwnd == null) {
+                switch (msg.message) {
+                    win.WM_GHOSTTY_WAKEUP => {
+                        try self.drainPendingWindowRequests();
+                        try self.core_app.tick(self);
+                        continue;
+                    },
+                    win.WM_GHOSTTY_QUIT_TIMER => {
+                        self.handleQuitTimer(@intCast(msg.wParam));
+                        continue;
+                    },
+                    else => {},
+                }
+            }
             _ = win.TranslateMessage(&msg);
             _ = win.DispatchMessageW(&msg);
             try self.drainPendingWindowRequests();
@@ -497,6 +528,8 @@ pub const App = struct {
         if (self.surfaces.items.len > 0) {
             const hwnd = self.surfaces.items[0].hwnd;
             _ = win.PostMessageW(hwnd, win.WM_GHOSTTY_WAKEUP, 0, 0);
+        } else if (self.thread_id != 0) {
+            _ = win.PostThreadMessageW(self.thread_id, win.WM_GHOSTTY_WAKEUP, 0, 0);
         }
     }
 
@@ -513,8 +546,8 @@ pub const App = struct {
         const surface = self.targetSurface(target);
         return switch (action) {
             .quit => blk: {
-                for (self.surfaces.items) |surface| {
-                    _ = win.PostMessageW(surface.hwnd, win.WM_CLOSE, 0, 0);
+                for (self.surfaces.items) |rt_surface| {
+                    _ = win.PostMessageW(rt_surface.hwnd, win.WM_CLOSE, 0, 0);
                 }
                 break :blk true;
             },
@@ -566,7 +599,10 @@ pub const App = struct {
                 break :blk true;
             },
             .toggle_visibility => blk: {
-                if (surface) |rt_surface| rt_surface.toggleVisibility();
+                switch (target) {
+                    .app => self.toggleAllWindowsVisibility(),
+                    .surface => if (surface) |rt_surface| rt_surface.toggleVisibility(),
+                }
                 break :blk true;
             },
             .toggle_fullscreen => blk: {
@@ -594,13 +630,14 @@ pub const App = struct {
                 break :blk true;
             },
             .desktop_notification,
-            .show_child_exited,
             .progress_report,
             .command_finished,
             => blk: {
                 self.warnOnce(&self.warned_notification_actions, action, "Win32 当前使用最小 fallback 处理通知类 action");
                 break :blk true;
             },
+            .show_child_exited => false,
+            .scrollbar => true,
             .readonly,
             .pwd,
             .renderer_health,
@@ -631,6 +668,12 @@ pub const App = struct {
             => blk: {
                 self.warnOnce(&self.warned_container_actions, action, "Win32 当前仅支持单窗口 runtime，不支持 tabs/splits/inspector 容器动作");
                 break :blk true;
+            },
+            .goto_window => blk: {
+                break :blk self.gotoWindow(switch (target) {
+                    .surface => surface,
+                    .app => self.focusedOrFirstSurface(),
+                }, value);
             },
             .cell_size, .size_limit, .config_change => blk: {
                 break :blk switch (action) {
@@ -667,15 +710,21 @@ pub const App = struct {
             .end_search,
             .search_total,
             .search_selected,
-            .close_surface,
-            .focus_split,
-            .toggle_readonly,
+            .copy_title_to_clipboard,
+            .reset_window_size,
             => blk: {
                 break :blk switch (action) {
                     .initial_size => if (surface) |rt_surface| blk2: {
                         rt_surface.applyInitialSize(value);
                         break :blk2 true;
                     } else true,
+                    .copy_title_to_clipboard => if (surface) |rt_surface|
+                        rt_surface.copyTitleToClipboard()
+                    else
+                        false,
+                    .reset_window_size => if (surface) |rt_surface| blk2: {
+                        break :blk2 rt_surface.resetWindowSize();
+                    } else false,
                     .prompt_title,
                     .toggle_background_opacity,
                     .check_for_updates,
@@ -693,9 +742,6 @@ pub const App = struct {
                         break :blk2 true;
                     },
                     .mouse_over_link,
-                    .close_surface,
-                    .focus_split,
-                    .toggle_readonly,
                     => true,
                     else => unreachable,
                 };
@@ -704,7 +750,10 @@ pub const App = struct {
                 try self.openConfigFile();
                 break :blk true;
             },
-            .quit_timer => true,
+            .quit_timer => blk: {
+                self.updateQuitTimer(value);
+                break :blk true;
+            },
         };
     }
 
@@ -793,14 +842,97 @@ pub const App = struct {
             .window,
         );
 
-        const inheritance = try collectWindowInheritance(
+        const inheritance = try Surface.collectWindowInheritance(
             config.arenaAlloc(),
             &self.config,
             parent orelse self.core_app.focusedSurface(),
         );
-        try applyWindowInheritance(&config, config.arenaAlloc(), inheritance);
+        try Surface.applyWindowInheritance(&config, config.arenaAlloc(), inheritance);
 
         return config;
+    }
+
+    fn focusedOrFirstSurface(self: *App) ?*Surface {
+        if (self.core_app.focusedSurface()) |core_surface| {
+            if (self.findRuntimeSurface(core_surface)) |surface| return surface;
+        }
+        return if (self.surfaces.items.len > 0) self.surfaces.items[0] else null;
+    }
+
+    fn toggleAllWindowsVisibility(self: *App) void {
+        var any_visible = false;
+        for (self.surfaces.items) |surface| {
+            if (surface.isVisible()) {
+                any_visible = true;
+                break;
+            }
+        }
+        for (self.surfaces.items) |surface| {
+            surface.setVisible(!any_visible);
+        }
+    }
+
+    fn gotoWindow(
+        self: *App,
+        current: ?*Surface,
+        direction: apprt.action.GotoWindow,
+    ) bool {
+        if (self.surfaces.items.len <= 1) return false;
+
+        const current_surface = current orelse self.focusedOrFirstSurface() orelse return false;
+        const start_index = self.indexOfSurface(current_surface) orelse return false;
+        const total = self.surfaces.items.len;
+
+        var step: usize = 1;
+        while (step < total) : (step += 1) {
+            const index = switch (direction) {
+                .next => (start_index + step) % total,
+                .previous => (start_index + total - (step % total)) % total,
+            };
+            const candidate = self.surfaces.items[index];
+            if (!candidate.isVisible()) continue;
+            candidate.presentTerminal();
+            return true;
+        }
+
+        return false;
+    }
+
+    fn indexOfSurface(self: *App, target: *Surface) ?usize {
+        for (self.surfaces.items, 0..) |surface, i| {
+            if (surface == target) return i;
+        }
+        return null;
+    }
+
+    fn updateQuitTimer(self: *App, value: apprt.action.QuitTimer) void {
+        const generation = self.quit_timer_generation.fetchAdd(1, .seq_cst) + 1;
+        switch (value) {
+            .stop => return,
+            .start => {
+                if (!self.config.@"quit-after-last-window-closed") return;
+                if (self.surfaces.items.len != 0) return;
+                if (self.config.@"quit-after-last-window-closed-delay") |delay| {
+                    const delay_ns = delay.asMilliseconds() * std.time.ns_per_ms;
+                    const timer_generation = generation;
+                    const thread = std.Thread.spawn(.{}, quitTimerThreadMain, .{
+                        self,
+                        timer_generation,
+                        delay_ns,
+                    }) catch return;
+                    thread.detach();
+                    return;
+                }
+                self.handleQuitTimer(generation);
+            },
+        }
+    }
+
+    fn handleQuitTimer(self: *App, generation: u32) void {
+        if (self.quit_timer_generation.load(.seq_cst) != generation) return;
+        if (!self.config.@"quit-after-last-window-closed") return;
+        if (self.surfaces.items.len != 0) return;
+        win.PostQuitMessage(0);
     }
 
     fn handleMessage(
@@ -822,7 +954,6 @@ pub const App = struct {
                     rt_surface.deinit();
                     self.core_app.alloc.destroy(rt_surface);
                 }
-                if (self.surfaces.items.len == 0) win.PostQuitMessage(0);
                 break :blk 0;
             },
             win.WM_SIZE => blk: {
@@ -900,6 +1031,25 @@ pub const App = struct {
                     const delta = @as(f64, @floatFromInt(win.signedHighWordWPARAM(w_param))) /
                         @as(f64, @floatFromInt(win.WHEEL_DELTA));
                     rt_surface.scrollCallback(delta, 0, .{});
+                }
+                break :blk 0;
+            },
+            win.WM_DPICHANGED => blk: {
+                if (surface) |rt_surface| {
+                    rt_surface.updateContentScale(
+                        @as(f32, @floatFromInt(win.lowWordWPARAM(w_param))) / @as(f32, @floatFromInt(win.USER_DEFAULT_SCREEN_DPI)),
+                        @as(f32, @floatFromInt(win.highWordWPARAM(w_param))) / @as(f32, @floatFromInt(win.USER_DEFAULT_SCREEN_DPI)),
+                    );
+                    const suggested: *const win.RECT = @ptrFromInt(@as(usize, @bitCast(l_param)));
+                    _ = win.SetWindowPos(
+                        hwnd,
+                        null,
+                        suggested.left,
+                        suggested.top,
+                        suggested.right - suggested.left,
+                        suggested.bottom - suggested.top,
+                        win.SWP_NOZORDER | win.SWP_NOOWNERZORDER,
+                    );
                 }
                 break :blk 0;
             },
@@ -1362,6 +1512,13 @@ fn ipcThreadMain(app: *App) void {
     };
 }
 
+fn quitTimerThreadMain(app: *App, generation: u32, delay_ns: u64) void {
+    std.Thread.sleep(delay_ns);
+    if (app.quit_timer_generation.load(.seq_cst) != generation) return;
+    if (app.thread_id == 0) return;
+    _ = win.PostThreadMessageW(app.thread_id, win.WM_GHOSTTY_QUIT_TIMER, generation, 0);
+}
+
 fn ipcThreadMainFallible(app: *App) !void {
     while (!app.ipc_shutdown.load(.seq_cst)) {
         const pipe = std.os.windows.kernel32.CreateNamedPipeW(
@@ -1468,6 +1625,7 @@ pub const Surface = struct {
             .hwnd = hwnd,
             .size = .{ .width = width, .height = height },
         };
+        self.updateContentScaleFromWindow();
         try self.initGraphics();
         errdefer self.deinitGraphics();
 
@@ -1863,6 +2021,15 @@ pub const Surface = struct {
         }
     }
 
+    fn copyTitleToClipboard(self: *Surface) bool {
+        const title = self.title orelse return false;
+        self.setClipboard(.standard, &.{.{
+            .mime = "text/plain",
+            .data = title,
+        }}, false) catch return false;
+        return true;
+    }
+
     fn confirmClipboardAccess(self: *Surface, prompt_utf8: []const u8) bool {
         const prompt = std.unicode.utf8ToUtf16LeAllocZ(self.app.core_app.alloc, prompt_utf8) catch
             return false;
@@ -1946,13 +2113,20 @@ pub const Surface = struct {
         _ = win.SetForegroundWindow(self.hwnd);
     }
 
+    fn isVisible(self: *const Surface) bool {
+        return (win.GetWindowLongPtrW(self.hwnd, win.GWL_STYLE) & @as(win.LONG_PTR, win.WS_VISIBLE)) != 0;
+    }
+
+    fn setVisible(self: *Surface, visible: bool) void {
+        _ = win.ShowWindow(self.hwnd, if (visible) win.SW_SHOW else win.SW_HIDE);
+    }
+
     fn toggleMaximize(self: *Surface) void {
         _ = win.ShowWindow(self.hwnd, if (win.IsZoomed(self.hwnd) != 0) win.SW_RESTORE else win.SW_MAXIMIZE);
     }
 
     fn toggleVisibility(self: *Surface) void {
-        const style = win.GetWindowLongPtrW(self.hwnd, win.GWL_STYLE);
-        _ = win.ShowWindow(self.hwnd, if ((style & @as(win.LONG_PTR, win.WS_VISIBLE)) != 0) win.SW_HIDE else win.SW_SHOW);
+        self.setVisible(!self.isVisible());
     }
 
     fn toggleFullscreen(self: *Surface, _: apprt.action.Fullscreen) !void {
@@ -2065,6 +2239,27 @@ pub const Surface = struct {
         );
     }
 
+    fn resetWindowSize(self: *Surface) bool {
+        const core_surface = self.core_surface orelse return false;
+        if (core_surface.config.window_height == 0 or core_surface.config.window_width == 0) {
+            return false;
+        }
+        if (self.content_scale.x == 0 or self.content_scale.y == 0) return false;
+
+        const width_px = @max(core_surface.config.window_width, 10) * core_surface.size.cell.width;
+        const height_px = @max(core_surface.config.window_height, 4) * core_surface.size.cell.height;
+        const final_width: u32 =
+            @as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(width_px)) / self.content_scale.x))) +
+            core_surface.size.padding.left +
+            core_surface.size.padding.right;
+        const final_height: u32 =
+            @as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(height_px)) / self.content_scale.y))) +
+            core_surface.size.padding.top +
+            core_surface.size.padding.bottom;
+        self.applyInitialSize(.{ .width = final_width, .height = final_height });
+        return true;
+    }
+
     fn setSizeLimit(self: *Surface, value: apprt.action.SizeLimit) void {
         self.min_width_px = value.min_width;
         self.min_height_px = value.min_height;
@@ -2094,6 +2289,25 @@ pub const Surface = struct {
         if (self.core_surface) |core_surface| {
             core_surface.sizeCallback(self.size) catch |err| {
                 log.err("error in win32 size callback err={}", .{err});
+            };
+        }
+    }
+
+    fn updateContentScaleFromWindow(self: *Surface) void {
+        const dpi = win.GetDpiForWindow(self.hwnd);
+        if (dpi == 0) return;
+        self.updateContentScale(
+            @as(f32, @floatFromInt(dpi)) / @as(f32, @floatFromInt(win.USER_DEFAULT_SCREEN_DPI)),
+            @as(f32, @floatFromInt(dpi)) / @as(f32, @floatFromInt(win.USER_DEFAULT_SCREEN_DPI)),
+        );
+    }
+
+    fn updateContentScale(self: *Surface, x: f32, y: f32) void {
+        if (x <= 0 or y <= 0) return;
+        self.content_scale = .{ .x = x, .y = y };
+        if (self.core_surface) |core_surface| {
+            core_surface.contentScaleCallback(self.content_scale) catch |err| {
+                log.err("error in win32 content scale callback err={}", .{err});
             };
         }
     }

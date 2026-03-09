@@ -233,39 +233,55 @@ macOS 额外必填：
 
 ### 8.1.1 项目仓库专属 `Project CI` 工作流
 
-当前项目仓库的 `Project CI` 不再作为日常 `push/pull_request` 自动验证入口，而是只保留为**手动触发的最小 smoke 工作流**：
+当前项目仓库的 Windows 验收现在拆成两层：
 
 - `.github/workflows/project-ci.yml`
-- 触发方式：`workflow_dispatch`
+- `.github/workflows/windows-strict-runtime.yml`
 
-工作流当前仅保留一条**手动最小 Win32 native smoke 链**：
+触发方式：
+
+- `Project CI`：默认分支 `push` 自动触发，同时保留 `workflow_dispatch`
+- `Windows Strict Runtime Acceptance`：仅 `workflow_dispatch`
+
+其中 `Project CI` 承担 GitHub-hosted 的快速 hosted 验收：
 
 - `Linux Build Windows Native Smoke Artifact`
 - `Windows Win32 D3D12 Native Smoke`
+- `Windows Win32 D3D12 Core Draw Smoke`
+- `Windows Win32 D3D12 Basic Interaction`
+
+`Windows Strict Runtime Acceptance` 承担 self-hosted Windows 严格验收：
+
+- `Build Windows Default Full Runtime`
+- `Strict Native Runtime`
+- `Strict Core Draw Runtime`
+- `Strict Real Interaction`
 
 职责边界：
 
-- `Linux Build Windows Native Smoke Artifact`：只负责为 Windows native smoke 产出最小可执行文件；
-- `Windows Win32 D3D12 Native Smoke`：验证 Win32 runtime + D3D12 native present smoke 仍能通过；
-- 所有更慢的核心测试、software-renderer 兼容矩阵、macOS 非 UI 验证与完整 UI 验证，统一转移到本地机器或专用 runner 执行。
+- `Project CI`：只负责 hosted Windows 的快速 smoke，包括 `native`、`core-draw` 和基础交互；
+- `Windows Strict Runtime Acceptance`：只跑在 self-hosted Windows runner 上，验证完整 build graph、默认 runtime 路径以及更严格的真实交互；
+- 所有更慢的核心测试、software-renderer 兼容矩阵、macOS 非 UI 验证与完整 UI 验证，继续转移到本地机器或专用 runner 执行。
 
 换句话说：
 
-- `Project CI` 现在只负责项目专属的快速 smoke；
-- 更完整、更慢的验证默认不再放在线上自动跑。
+- hosted 层负责自动快速 smoke；
+- self-hosted 层负责手动严格验收；
+- 更完整、更慢的跨平台验证默认不再放在线上 hosted runner 自动跑。
 
 ### 8.1.2 本地优先的验证边界
 
 当前推荐的验证策略是：
 
-- 线上：只保留最小 smoke，避免 GitHub-hosted runner 长时间占用与假运行噪音；
+- 线上 hosted：只保留快速 smoke，避免 GitHub-hosted runner 长时间占用与假运行噪音；
+- 线上 self-hosted：只保留 Windows 严格验收，在真实桌面会话里执行；
 - 本地：承担 `zig build test`、software-renderer 兼容脚本、runtime diagnostics smoke、macOS 非 UI 验证；
 - 专用本机 runner：承担完整 macOS UI tests（如果需要）。
 
 因此不应再把项目仓库上的 `Project CI` 结果理解为“完整产品验证”，它只代表：
 
-- 最小 `libghostty` software-host 路径可跑；
-- Win32/D3D12 smoke 构建与最小运行可跑。
+- Win32/D3D12 hosted smoke 构建与快速交互可跑；
+- self-hosted Windows 严格验收是否通过，需要单独看 `Windows Strict Runtime Acceptance`。
 
 ### 8.2 常用可选项
 
@@ -342,7 +358,8 @@ zig build test --system "$SYSTEM_PATH"
 当前项目的**默认验收**是：
 
 1. 本地执行 `scripts/local-project-smoke.sh`
-2. 线上手动触发一次 `Project CI`
+2. 线上确认 `Project CI` hosted 层通过
+3. 需要切 Windows 默认 runtime 或做发布前收口时，再手动触发一次 `Windows Strict Runtime Acceptance`
 
 若只想走一条默认的本地项目验收，可直接执行：
 
@@ -367,6 +384,8 @@ scripts/local-project-smoke.sh --full
 ```bash
 scripts/local-project-smoke.sh --win32-native
 scripts/local-project-smoke.sh --win32-core-draw
+scripts/local-project-smoke.sh --win32-basic-interaction
+scripts/local-project-smoke.sh --win32-strict
 ```
 
 若只想单独跑 software-renderer contracts，可执行：
@@ -378,8 +397,8 @@ scripts/local-project-smoke.sh --software-renderer-contracts
 脚本跳过语义：
 
 - 无 `nix` 时，会明确跳过 `libghostty` 与 `software-renderer contracts` 的主机运行项；
-- 非 Windows 主机上，`--win32-native` / `--win32-core-draw` 会明确以 `host-not-windows` 跳过；
-- `Project CI` 线上仍只保留手动最小 native smoke，不承载完整本地验收。
+- 非 Windows 主机上，`--win32-native` / `--win32-core-draw` / `--win32-basic-interaction` / `--win32-strict` 会明确以 `host-not-windows` 跳过；
+- `Project CI` 承担 hosted 自动 smoke；`Windows Strict Runtime Acceptance` 承担 self-hosted 手动严格验收；两者都不替代完整本地慢测。
 
 以下验证已从自动 `Project CI` 移出，默认建议在本地执行：
 

@@ -1,0 +1,189 @@
+name: Windows Strict Runtime Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_scope:
+        description: Strict acceptance scope
+        type: choice
+        required: true
+        default: full
+        options:
+          - native-only
+          - core-only
+          - full
+      log_level:
+        description: Interaction log verbosity hint
+        type: choice
+        required: true
+        default: info
+        options:
+          - info
+          - debug
+      build_runtime:
+        description: Build strict runtime using current explicit win32 or current default runtime
+        type: choice
+        required: true
+        default: explicit-win32
+        options:
+          - explicit-win32
+          - default
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-strict-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-default-full:
+    name: Build Windows Default Full Runtime
+    runs-on: [self-hosted, windows, x64, ghostty-win32]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build full Windows runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-logs, windows-strict-artifact | Out-Null
+          $buildArgs = @(
+            "build",
+            "-Dtarget=x86_64-windows-gnu",
+            "-Dfont-backend=directwrite",
+            "-Drenderer=d3d12",
+            "-Demit-exe=true"
+          )
+          if ("${{ github.event.inputs.build_runtime }}" -eq "explicit-win32") {
+            $buildArgs += "-Dapp-runtime=win32"
+          }
+          & zig @buildArgs 2>&1 | Tee-Object -FilePath ci-logs/windows-strict-build.log -Append
+          if ($LASTEXITCODE -ne 0) {
+            throw "Full Windows runtime build failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path zig-out/bin/ghostty.exe)) {
+            throw "Expected executable not found: zig-out/bin/ghostty.exe"
+          }
+          Copy-Item zig-out/bin/ghostty.exe windows-strict-artifact/ghostty.exe -Force
+
+      - name: Build explicit libghostty none runtime
+        shell: pwsh
+        run: |
+          zig build `
+            -Dtarget=x86_64-windows-gnu `
+            -Dapp-runtime=none 2>&1 | Tee-Object -FilePath ci-logs/windows-strict-libghostty-none.log -Append
+          if ($LASTEXITCODE -ne 0) {
+            throw "Explicit app-runtime=none build failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload strict Windows executable
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-strict-exe
+          path: windows-strict-artifact/
+          if-no-files-found: error
+
+      - name: Upload strict Windows build logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-strict-build-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  strict-native-runtime:
+    name: Strict Native Runtime
+    if: ${{ github.event.inputs.smoke_scope == 'native-only' || github.event.inputs.smoke_scope == 'full' }}
+    runs-on: [self-hosted, windows, x64, ghostty-win32]
+    timeout-minutes: 30
+    needs: build-windows-default-full
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download strict Windows executable
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: windows-win32-d3d12-strict-exe
+          path: windows-strict-artifact
+
+      - name: Run strict native smoke
+        shell: pwsh
+        env:
+          GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-strict-artifact\ghostty.exe
+          GHOSTTY_CI_WIN32_SMOKE_LAYER: self-hosted
+          GHOSTTY_CI_WIN32_REQUIRE_WINDOW: "true"
+        run: .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode native
+
+      - name: Upload strict native logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-strict-native-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  strict-core-draw-runtime:
+    name: Strict Core Draw Runtime
+    if: ${{ github.event.inputs.smoke_scope == 'core-only' || github.event.inputs.smoke_scope == 'full' }}
+    runs-on: [self-hosted, windows, x64, ghostty-win32]
+    timeout-minutes: 30
+    needs: build-windows-default-full
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download strict Windows executable
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: windows-win32-d3d12-strict-exe
+          path: windows-strict-artifact
+
+      - name: Run strict core draw smoke
+        shell: pwsh
+        env:
+          GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-strict-artifact\ghostty.exe
+          GHOSTTY_CI_WIN32_SMOKE_LAYER: self-hosted
+          GHOSTTY_CI_WIN32_REQUIRE_WINDOW: "true"
+        run: .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode core-draw
+
+      - name: Upload strict core draw logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-strict-core-draw-logs
+          path: ci-logs/
+          if-no-files-found: error
+
+  strict-real-interaction:
+    name: Strict Real Interaction
+    if: ${{ github.event.inputs.smoke_scope == 'full' }}
+    runs-on: [self-hosted, windows, x64, ghostty-win32]
+    timeout-minutes: 30
+    needs: build-windows-default-full
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download strict Windows executable
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: windows-win32-d3d12-strict-exe
+          path: windows-strict-artifact
+
+      - name: Run strict interaction acceptance
+        shell: pwsh
+        env:
+          GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-strict-artifact\ghostty.exe
+          GHOSTTY_CI_LOG_LEVEL: ${{ github.event.inputs.log_level }}
+        run: .\.github\scripts\windows-win32-d3d12-interaction.ps1 -Mode strict
+
+      - name: Upload strict interaction logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-win32-d3d12-strict-interaction-logs
+          path: ci-logs/
+          if-no-files-found: error

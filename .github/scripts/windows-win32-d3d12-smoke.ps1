@@ -11,13 +11,14 @@ Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
-$logPath = Join-Path $logsDir ("windows-win32-d3d12-smoke-{0}.log" -f $Mode)
+$layer = if ([string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_LAYER)) { "default" } else { $env:GHOSTTY_CI_WIN32_SMOKE_LAYER }
+$logPath = Join-Path $logsDir ("windows-win32-d3d12-smoke-{0}-{1}.log" -f $layer, $Mode)
 if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
 
-Write-Host "Running Windows Win32 D3D12 smoke mode: $Mode"
-"Running Windows Win32 D3D12 smoke mode: $Mode" | Out-File -FilePath $logPath -Append -Encoding utf8
+Write-Host "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode"
+"Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode" | Out-File -FilePath $logPath -Append -Encoding utf8
 
 $exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
 if ([string]::IsNullOrWhiteSpace($exePath)) {
@@ -28,13 +29,24 @@ if ([string]::IsNullOrWhiteSpace($exePath)) {
 
   Write-Host "Using Zig executable: $zigExe"
 
-  & $zigExe build `
-    -Dtarget=x86_64-windows-gnu `
-    -Dfont-backend=directwrite `
-    -Dapp-runtime=win32 `
-    -Drenderer=d3d12 `
-    -Dci-windows-smoke-minimal=true `
-    -Demit-exe=true 2>&1 | Tee-Object -FilePath $logPath -Append
+  $buildArgs = @(
+    "build",
+    "-Dtarget=x86_64-windows-gnu",
+    "-Dfont-backend=directwrite",
+    "-Drenderer=d3d12",
+    "-Demit-exe=true"
+  )
+  $useDefaultRuntime = $env:GHOSTTY_CI_WIN32_BUILD_USE_DEFAULT_RUNTIME
+  if ([string]::IsNullOrWhiteSpace($useDefaultRuntime) -or $useDefaultRuntime -eq "0" -or $useDefaultRuntime -eq "false") {
+    $buildArgs += "-Dapp-runtime=win32"
+  }
+
+  $buildMinimal = $env:GHOSTTY_CI_WIN32_BUILD_MINIMAL
+  if ([string]::IsNullOrWhiteSpace($buildMinimal) -or $buildMinimal -eq "1" -or $buildMinimal -eq "true") {
+    $buildArgs += "-Dci-windows-smoke-minimal=true"
+  }
+
+  & $zigExe @buildArgs 2>&1 | Tee-Object -FilePath $logPath -Append
   if ($LASTEXITCODE -ne 0) {
     throw "Windows D3D12 smoke build failed with exit code $LASTEXITCODE"
   }
@@ -169,6 +181,10 @@ if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
 }
 if (-not $sawWindow) {
   Write-Host "Smoke process never exposed a non-zero MainWindowHandle"
+  $requireWindow = $env:GHOSTTY_CI_WIN32_REQUIRE_WINDOW
+  if ([string]::IsNullOrWhiteSpace($requireWindow) -or $requireWindow -eq "1" -or $requireWindow -eq "true") {
+    $failed = $true
+  }
 }
 if ($missingMarkers.Count -gt 0) {
   Write-Host "Missing smoke markers: $($missingMarkers -join ', ')"

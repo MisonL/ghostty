@@ -5,11 +5,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 用法:
-  scripts/local-project-smoke.sh [--quick] [--full] [--skip-windows] [--skip-core] [--skip-libghostty] [--win32-native] [--win32-core-draw] [--software-renderer-contracts]
+  scripts/local-project-smoke.sh [--quick] [--full] [--skip-windows] [--skip-core] [--skip-libghostty] [--win32-native] [--win32-core-draw] [--win32-basic-interaction] [--win32-strict] [--software-renderer-contracts]
 
 说明:
   这是本项目本地优先的默认验收入口。
-  默认验收 = 本地脚本 + 手动触发 Project CI 的最小 Win32 native smoke。
+  默认验收 = 本地脚本 + 项目仓库 Project CI hosted 层 + self-hosted Windows 严格验收。
 
 默认执行:
   1. Zig 核心测试: zig build test -Dskip-macos-ui-tests=true
@@ -19,12 +19,14 @@ usage() {
 
 可选项:
   --quick                        只跑 Zig 核心测试 + Windows D3D12 smoke 交叉构建
-  --full                         在默认验收上追加本机可执行的 Win32 native/core-draw smoke
-  --skip-windows                 跳过 Windows 相关 smoke（交叉构建 + native + core-draw）
+  --full                         在默认验收上追加本机可执行的 Win32 native/core-draw/basic/strict smoke
+  --skip-windows                 跳过 Windows 相关 smoke（交叉构建 + native + core-draw + basic + strict）
   --skip-core       跳过 Zig 核心测试
   --skip-libghostty 跳过 libghostty software-host 示例
   --win32-native                 追加运行本机 Win32 native smoke（仅 Windows）
   --win32-core-draw              追加运行本机 Win32 core-draw smoke（仅 Windows）
+  --win32-basic-interaction      追加运行本机 Win32 basic interaction smoke（仅 Windows）
+  --win32-strict                 追加运行本机 Win32 strict interaction smoke（仅 Windows）
   --software-renderer-contracts  追加运行 software-renderer contracts（可覆盖 --quick）
   -h, --help        显示帮助
 EOF
@@ -36,6 +38,8 @@ run_libghostty=true
 run_software_renderer_contracts=true
 run_win32_native=false
 run_win32_core_draw=false
+run_win32_basic_interaction=false
+run_win32_strict=false
 
 while (($# > 0)); do
   case "$1" in
@@ -44,6 +48,8 @@ while (($# > 0)); do
       run_software_renderer_contracts=false
       run_win32_native=false
       run_win32_core_draw=false
+      run_win32_basic_interaction=false
+      run_win32_strict=false
       shift
       ;;
     --full)
@@ -51,12 +57,16 @@ while (($# > 0)); do
       run_software_renderer_contracts=true
       run_win32_native=true
       run_win32_core_draw=true
+      run_win32_basic_interaction=true
+      run_win32_strict=true
       shift
       ;;
     --skip-windows)
       run_windows=false
       run_win32_native=false
       run_win32_core_draw=false
+      run_win32_basic_interaction=false
+      run_win32_strict=false
       shift
       ;;
     --skip-core)
@@ -73,6 +83,14 @@ while (($# > 0)); do
       ;;
     --win32-core-draw)
       run_win32_core_draw=true
+      shift
+      ;;
+    --win32-basic-interaction)
+      run_win32_basic_interaction=true
+      shift
+      ;;
+    --win32-strict)
+      run_win32_strict=true
       shift
       ;;
     --software-renderer-contracts)
@@ -199,12 +217,38 @@ run_windows_runtime_smoke() {
     "$pwsh_cmd" -NoLogo -NoProfile -File ./.github/scripts/windows-win32-d3d12-smoke.ps1 -Mode "$mode"
 }
 
+run_windows_interaction_smoke() {
+  local mode="$1"
+  local label="$2"
+
+  if [[ "$host_os" != "windows" ]]; then
+    echo "[local-smoke] phase=$label skipped reason=host-not-windows host=$host_os"
+    return
+  fi
+  if [[ -z "$pwsh_cmd" ]]; then
+    echo "[local-smoke] phase=$label skipped reason=pwsh-not-found"
+    return
+  fi
+
+  run_step \
+    "$label" \
+    "$pwsh_cmd" -NoLogo -NoProfile -File ./.github/scripts/windows-win32-d3d12-interaction.ps1 -Mode "$mode"
+}
+
 if [[ "$run_win32_native" == true ]]; then
   run_windows_runtime_smoke native windows-win32-native-smoke
 fi
 
 if [[ "$run_win32_core_draw" == true ]]; then
   run_windows_runtime_smoke core-draw windows-win32-core-draw-smoke
+fi
+
+if [[ "$run_win32_basic_interaction" == true ]]; then
+  run_windows_interaction_smoke basic windows-win32-basic-interaction
+fi
+
+if [[ "$run_win32_strict" == true ]]; then
+  run_windows_interaction_smoke strict windows-win32-strict-interaction
 fi
 
 echo "[local-smoke] success"
