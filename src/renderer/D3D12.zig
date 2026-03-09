@@ -108,6 +108,7 @@ pub const Texture = struct {
         bytes_per_pixel: u32,
         render_target: bool = false,
         sampled: bool = true,
+        swizzle_bgra_to_rgba: bool = false,
         debug_name: ?[]const u8 = null,
     };
 
@@ -121,6 +122,7 @@ pub const Texture = struct {
         bytes_per_pixel: u32,
         render_target: bool,
         sampled: bool,
+        swizzle_bgra_to_rgba: bool,
         state: u32,
         srv_index: ?u32 = null,
         rtv_heap: ?*winos.graphics.ID3D12DescriptorHeap = null,
@@ -150,6 +152,7 @@ pub const Texture = struct {
             .bytes_per_pixel = opts.bytes_per_pixel,
             .render_target = opts.render_target,
             .sampled = opts.sampled,
+            .swizzle_bgra_to_rgba = opts.swizzle_bgra_to_rgba,
             .state = if (bytes != null) @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST) else if (opts.render_target)
                 @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET)
             else
@@ -858,6 +861,7 @@ pub fn textureOptions(self: *const D3D12) Texture.Options {
         .bytes_per_pixel = 4,
         .render_target = true,
         .sampled = true,
+        .swizzle_bgra_to_rgba = false,
         .debug_name = "render-target",
     };
 }
@@ -883,6 +887,7 @@ pub fn imageTextureOptions(
         },
         .render_target = false,
         .sampled = true,
+        .swizzle_bgra_to_rgba = false,
         .debug_name = switch (format) {
             .grayscale => "image-grayscale",
             .bgra => if (srgb) "image-bgra-srgb" else "image-bgra",
@@ -898,10 +903,17 @@ pub fn initAtlasTexture(
     const format: ImageTextureFormat = switch (atlas.format) {
         .grayscale => .grayscale,
         .bgr => return error.Unexpected,
-        .bgra => .bgra,
+        .bgra => .rgba,
     };
+    var opts = @constCast(self).imageTextureOptions(format, atlas.format == .bgra);
+    if (atlas.format == .bgra) {
+        opts.swizzle_bgra_to_rgba = true;
+        opts.debug_name = "atlas-color-rgba-srgb";
+    } else {
+        opts.debug_name = "atlas-grayscale";
+    }
     return try Texture.init(
-        @constCast(self).imageTextureOptions(format, atlas.format == .bgra),
+        opts,
         atlas.size,
         atlas.size,
         atlas.data,
@@ -1146,10 +1158,19 @@ fn uploadTextureRegion(
     while (row < height) : (row += 1) {
         const src_off = row * src_stride;
         const dst_off = row * @as(usize, row_pitch);
-        @memcpy(
-            dst[dst_off .. dst_off + src_stride],
-            bytes[src_off .. src_off + src_stride],
-        );
+        const src_row = bytes[src_off .. src_off + src_stride];
+        const dst_row = dst[dst_off .. dst_off + src_stride];
+        if (texture.swizzle_bgra_to_rgba) {
+            var px: usize = 0;
+            while (px < src_stride) : (px += 4) {
+                dst_row[px + 0] = src_row[px + 2];
+                dst_row[px + 1] = src_row[px + 1];
+                dst_row[px + 2] = src_row[px + 0];
+                dst_row[px + 3] = src_row[px + 3];
+            }
+        } else {
+            @memcpy(dst_row, src_row);
+        }
         if (@as(usize, row_pitch) > src_stride) {
             @memset(dst[dst_off + src_stride .. dst_off + @as(usize, row_pitch)], 0);
         }
