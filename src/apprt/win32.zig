@@ -60,6 +60,20 @@ fn ciSmokeMode() CiSmokeMode {
     return .native;
 }
 
+fn shouldUseWarpD3D12Device() bool {
+    const alloc = std.heap.page_allocator;
+    const layer = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE_LAYER") catch null;
+    defer if (layer) |value| alloc.free(value);
+    if (layer) |value| return std.ascii.eqlIgnoreCase(value, "hosted");
+
+    if (std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null) |value| {
+        defer alloc.free(value);
+        return true;
+    }
+
+    return ciSmokeMode() != .disabled;
+}
+
 fn shouldTraceWin32Init() bool {
     return trace_win32_init_enabled;
 }
@@ -1882,10 +1896,33 @@ pub const Surface = struct {
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.dxgi_factory = raw_factory.?;
         traceWin32InitStep("surface.init.graphics.dxgi_factory.ready");
+        const factory = self.graphics.dxgi_factory.?;
+        const iid_idxgi_adapter1 = windows.GUID.parse("{29038f61-3839-4626-91fd-086879011a05}");
+
+        var warp_adapter: ?*winos.c.IDXGIAdapter1 = null;
+        defer if (warp_adapter) |adapter| winos.graphics.release(@ptrCast(adapter));
+        if (shouldUseWarpD3D12Device()) {
+            const EnumWarpAdapterFn = *const fn (
+                *winos.c.IDXGIFactory4,
+                *const windows.GUID,
+                ?*?*anyopaque,
+            ) callconv(.winapi) winos.graphics.HRESULT;
+            const enum_warp_adapter: EnumWarpAdapterFn =
+                @ptrCast(factory.lpVtbl[0].EnumWarpAdapter.?);
+            traceWin32InitStep("surface.init.graphics.d3d12_adapter.warp.begin");
+            if (enum_warp_adapter(
+                factory,
+                &iid_idxgi_adapter1,
+                @ptrCast(&warp_adapter),
+            ) != winos.S_OK or warp_adapter == null) return error.Unexpected;
+            log.info("using WARP D3D12 adapter for win32 ci smoke", .{});
+            traceWin32InitStep("surface.init.graphics.d3d12_adapter.warp.ready");
+        }
+
         var raw_device: ?*winos.c.ID3D12Device = null;
         traceWin32InitStep("surface.init.graphics.d3d12_device.begin");
         if (winos.graphics.D3D12CreateDevice(
-            null,
+            if (warp_adapter) |adapter| @ptrCast(adapter) else null,
             .@"11_0",
             &winos.graphics.IID_ID3D12Device,
             @ptrCast(&raw_device),
@@ -1925,7 +1962,6 @@ pub const Surface = struct {
         swap_chain_desc.AlphaMode = winos.c.DXGI_ALPHA_MODE_IGNORE;
         swap_chain_desc.Flags = 0;
 
-        const factory = self.graphics.dxgi_factory.?;
         const command_queue = self.graphics.command_queue.?;
         const CreateSwapChainForHwndFn = *const fn (
             *winos.c.IDXGIFactory4,

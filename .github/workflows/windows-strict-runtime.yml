@@ -178,6 +178,7 @@ jobs:
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-strict-artifact\ghostty.exe
           GHOSTTY_CI_LOG_LEVEL: ${{ github.event.inputs.log_level }}
+          GHOSTTY_CI_WIN32_SMOKE_LAYER: self-hosted
         run: .\.github\scripts\windows-win32-d3d12-interaction.ps1 -Mode strict
 
       - name: Upload strict interaction logs

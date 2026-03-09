@@ -15,6 +15,7 @@ Set-Location $repoRoot
 $logsDir = Join-Path $repoRoot "ci-logs"
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 $logPath = Join-Path $logsDir ("windows-win32-d3d12-interaction-{0}.log" -f $Mode)
+$interactionLayer = if ([string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_LAYER)) { $null } else { $env:GHOSTTY_CI_WIN32_SMOKE_LAYER }
 if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
@@ -91,6 +92,9 @@ function Start-GhosttyInteractive {
   $psi.ArgumentList.Add("/q")
   $psi.ArgumentList.Add("/k")
   $psi.Environment["GHOSTTY_CI_INTERACTION_LABEL"] = $Label
+  if (-not [string]::IsNullOrWhiteSpace($interactionLayer)) {
+    $psi.Environment["GHOSTTY_CI_WIN32_SMOKE_LAYER"] = $interactionLayer
+  }
 
   $process = [System.Diagnostics.Process]::new()
   $process.StartInfo = $psi

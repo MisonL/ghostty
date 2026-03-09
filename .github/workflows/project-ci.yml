@@ -139,6 +139,7 @@ jobs:
         shell: pwsh
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
+          GHOSTTY_CI_WIN32_SMOKE_LAYER: hosted
         run: .\.github\scripts\windows-win32-d3d12-interaction.ps1 -Mode basic
 
       - name: Upload Windows interaction smoke logs

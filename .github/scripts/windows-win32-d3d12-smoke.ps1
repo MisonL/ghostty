@@ -95,6 +95,9 @@ $psi.ArgumentList.Add("/c")
 $psi.ArgumentList.Add("echo ghostty-ci-smoke & ping -n 3 127.0.0.1 >nul")
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE"] = "1"
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE_MODE"] = $Mode
+if (-not [string]::IsNullOrWhiteSpace($layer)) {
+  $psi.Environment["GHOSTTY_CI_WIN32_SMOKE_LAYER"] = $layer
+}
 
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $psi
