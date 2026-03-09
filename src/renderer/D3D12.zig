@@ -1567,17 +1567,29 @@ fn createTextureResource(
     else
         @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST);
 
+    var clear_value: winos.c.D3D12_CLEAR_VALUE = std.mem.zeroes(winos.c.D3D12_CLEAR_VALUE);
+    const clear_value_ptr: ?*const winos.c.D3D12_CLEAR_VALUE = if (opts.render_target) blk: {
+        clear_value.Format = opts.rtv_format orelse return error.Unexpected;
+        clear_value.unnamed_0.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+        break :blk &clear_value;
+    } else null;
+
     var raw_resource: ?*anyopaque = null;
-    if (device.lpVtbl[0].CreateCommittedResource.?(
+    const hr = device.lpVtbl[0].CreateCommittedResource.?(
         device,
         &heap_props,
         winos.c.D3D12_HEAP_FLAG_NONE,
         &desc,
         initial_state,
-        null,
+        clear_value_ptr,
         &winos.c.IID_ID3D12Resource,
         &raw_resource,
-    ) != winos.S_OK or raw_resource == null) {
+    );
+    if (hr != winos.S_OK or raw_resource == null) {
+        log.err(
+            "failed to create d3d12 texture resource hr=0x{x} resource_format=0x{x} copy_format=0x{x} rtv_format=0x{x}",
+            .{ hr, opts.resource_format, opts.copy_format, opts.rtv_format orelse 0 },
+        );
         return error.D3D12TextureCreateFailed;
     }
 
