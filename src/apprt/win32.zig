@@ -81,6 +81,25 @@ fn traceWin32WindowProc(msg: win.UINT, step: []const u8) void {
     );
 }
 
+fn shouldTraceHandledWin32Message(msg: win.UINT) bool {
+    return switch (msg) {
+        win.WM_SHOWWINDOW,
+        win.WM_WINDOWPOSCHANGING,
+        win.WM_WINDOWPOSCHANGED,
+        win.WM_ACTIVATEAPP,
+        win.WM_NCACTIVATE,
+        win.WM_GETICON,
+        win.WM_ACTIVATE,
+        win.WM_IME_SETCONTEXT,
+        win.WM_IME_NOTIFY,
+        win.WM_SETFOCUS,
+        win.WM_NCPAINT,
+        win.WM_ERASEBKGND,
+        => true,
+        else => false,
+    };
+}
+
 fn nativePtr(comptime T: type, raw: anytype) T {
     return @ptrFromInt(@intFromPtr(raw));
 }
@@ -295,16 +314,27 @@ const win = struct {
     pub const WM_DESTROY = 0x0002;
     pub const WM_SIZE = 0x0005;
     pub const WM_GETMINMAXINFO = 0x0024;
+    pub const WM_SHOWWINDOW = 0x0018;
+    pub const WM_WINDOWPOSCHANGING = 0x0046;
+    pub const WM_WINDOWPOSCHANGED = 0x0047;
+    pub const WM_ACTIVATE = 0x0006;
+    pub const WM_ACTIVATEAPP = 0x001C;
     pub const WM_SETFOCUS = 0x0007;
     pub const WM_KILLFOCUS = 0x0008;
     pub const WM_PAINT = 0x000F;
     pub const WM_SETCURSOR = 0x0020;
+    pub const WM_NCACTIVATE = 0x0086;
+    pub const WM_NCPAINT = 0x0085;
+    pub const WM_GETICON = 0x007F;
+    pub const WM_ERASEBKGND = 0x0014;
     pub const WM_CHAR = 0x0102;
     pub const WM_KEYDOWN = 0x0100;
     pub const WM_KEYUP = 0x0101;
     pub const WM_SYSKEYDOWN = 0x0104;
     pub const WM_SYSKEYUP = 0x0105;
     pub const WM_INPUTLANGCHANGE = 0x0051;
+    pub const WM_IME_SETCONTEXT = 0x0281;
+    pub const WM_IME_NOTIFY = 0x0282;
     pub const WM_IME_STARTCOMPOSITION = 0x010D;
     pub const WM_IME_ENDCOMPOSITION = 0x010E;
     pub const WM_IME_COMPOSITION = 0x010F;
@@ -845,10 +875,16 @@ pub const App = struct {
         try surface.init(self, hwnd, 1280, 800, &config);
         traceWin32InitStep("create_window.runtime_surface_init.ready");
         errdefer surface.deinit();
+        traceWin32InitStep("create_window.runtime_surface_list_append.begin");
         try self.surfaces.append(self.core_app.alloc, surface);
+        traceWin32InitStep("create_window.runtime_surface_list_append.ready");
 
+        traceWin32InitStep("create_window.show_window.begin");
         _ = win.ShowWindow(hwnd, win.SW_SHOW);
+        traceWin32InitStep("create_window.show_window.ready");
+        traceWin32InitStep("create_window.update_window.begin");
         _ = win.UpdateWindow(hwnd);
+        traceWin32InitStep("create_window.update_window.ready");
         if (self.ci_smoke_mode != .disabled and !self.ci_smoke_window_ready_logged) {
             self.ci_smoke_window_ready_logged = true;
             log.info("ci.win32.window_ready", .{});
@@ -975,8 +1011,13 @@ pub const App = struct {
                 "info(win32_apprt): ci.win32.handle_message.msg=0x{x} surface=none\n",
                 .{msg},
             );
+        } else if (surface != null and shouldTraceWin32Init() and shouldTraceHandledWin32Message(msg)) {
+            std.debug.print(
+                "info(win32_apprt): ci.win32.handle_message.msg=0x{x} surface=ready step=begin\n",
+                .{msg},
+            );
         }
-        return switch (msg) {
+        const result: win.LRESULT = switch (msg) {
             win.WM_CLOSE => blk: {
                 _ = win.DestroyWindow(hwnd);
                 break :blk 0;
@@ -1142,6 +1183,13 @@ pub const App = struct {
             },
             else => win.DefWindowProcW(hwnd, msg, w_param, l_param),
         };
+        if (surface != null and shouldTraceWin32Init() and shouldTraceHandledWin32Message(msg)) {
+            std.debug.print(
+                "info(win32_apprt): ci.win32.handle_message.msg=0x{x} surface=ready step=ready\n",
+                .{msg},
+            );
+        }
+        return result;
     }
 
     fn fromWindow(hwnd: win.HWND) ?*App {
@@ -1803,12 +1851,15 @@ pub const Surface = struct {
         if (comptime @import("builtin").target.os.tag != .windows) return;
 
         var raw_factory: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.dxgi_factory.begin");
         if (winos.graphics.CreateDXGIFactory1(
             &winos.graphics.IID_IDXGIFactory4,
             &raw_factory,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.dxgi_factory = raw_factory.?;
+        traceWin32InitStep("surface.init.graphics.dxgi_factory.ready");
         var raw_device: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.d3d12_device.begin");
         if (winos.graphics.D3D12CreateDevice(
             null,
             .@"11_0",
@@ -1816,6 +1867,7 @@ pub const Surface = struct {
             &raw_device,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.d3d12_device = raw_device.?;
+        traceWin32InitStep("surface.init.graphics.d3d12_device.ready");
 
         var queue_desc: winos.c.D3D12_COMMAND_QUEUE_DESC = std.mem.zeroes(winos.c.D3D12_COMMAND_QUEUE_DESC);
         queue_desc.Type = winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -1826,6 +1878,7 @@ pub const Surface = struct {
         const device: *winos.c.ID3D12Device = @ptrFromInt(@intFromPtr(self.graphics.d3d12_device.?));
 
         var raw_queue: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.command_queue.begin");
         if (device.lpVtbl[0].CreateCommandQueue.?(
             device,
             &queue_desc,
@@ -1833,6 +1886,7 @@ pub const Surface = struct {
             &raw_queue,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_queue = raw_queue.?;
+        traceWin32InitStep("surface.init.graphics.command_queue.ready");
 
         var swap_chain_desc: winos.c.DXGI_SWAP_CHAIN_DESC1 = std.mem.zeroes(winos.c.DXGI_SWAP_CHAIN_DESC1);
         swap_chain_desc.Width = self.size.width;
@@ -1851,6 +1905,7 @@ pub const Surface = struct {
         const command_queue: *winos.c.ID3D12CommandQueue = @ptrFromInt(@intFromPtr(self.graphics.command_queue.?));
 
         var swap_chain1: ?*winos.c.IDXGISwapChain1 = null;
+        traceWin32InitStep("surface.init.graphics.swap_chain.begin");
         if (factory.lpVtbl[0].CreateSwapChainForHwnd.?(
             factory,
             @ptrFromInt(@intFromPtr(command_queue)),
@@ -1871,6 +1926,7 @@ pub const Surface = struct {
         const swap_chain3: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(self.graphics.swap_chain.?));
         self.graphics.frame_index = swap_chain3.lpVtbl[0].GetCurrentBackBufferIndex.?(swap_chain3);
         winos.graphics.release(@ptrCast(swap_chain1));
+        traceWin32InitStep("surface.init.graphics.swap_chain.ready");
 
         var rtv_heap_desc: winos.c.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(winos.c.D3D12_DESCRIPTOR_HEAP_DESC);
         rtv_heap_desc.Type = winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -1879,6 +1935,7 @@ pub const Surface = struct {
         rtv_heap_desc.NodeMask = 0;
 
         var raw_rtv_heap: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.rtv_heap.begin");
         if (device.lpVtbl[0].CreateDescriptorHeap.?(
             device,
             &rtv_heap_desc,
@@ -1887,8 +1944,10 @@ pub const Surface = struct {
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.rtv_heap = raw_rtv_heap.?;
         self.graphics.rtv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(device, winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        traceWin32InitStep("surface.init.graphics.rtv_heap.ready");
 
         var raw_command_allocator: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.command_allocator.begin");
         if (device.lpVtbl[0].CreateCommandAllocator.?(
             device,
             winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -1896,10 +1955,12 @@ pub const Surface = struct {
             &raw_command_allocator,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_allocator = raw_command_allocator.?;
+        traceWin32InitStep("surface.init.graphics.command_allocator.ready");
 
         const command_allocator: *winos.c.ID3D12CommandAllocator = @ptrFromInt(@intFromPtr(self.graphics.command_allocator.?));
 
         var raw_command_list: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.command_list.begin");
         if (device.lpVtbl[0].CreateCommandList.?(
             device,
             0,
@@ -1910,10 +1971,12 @@ pub const Surface = struct {
             &raw_command_list,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.command_list = raw_command_list.?;
+        traceWin32InitStep("surface.init.graphics.command_list.ready");
 
         const command_list: *winos.c.ID3D12GraphicsCommandList = @ptrFromInt(@intFromPtr(self.graphics.command_list.?));
         if (command_list.lpVtbl[0].Close.?(command_list) != winos.S_OK) return error.Unexpected;
         var raw_fence: ?*anyopaque = null;
+        traceWin32InitStep("surface.init.graphics.fence.begin");
         if (device.lpVtbl[0].CreateFence.?(
             device,
             0,
@@ -1922,6 +1985,7 @@ pub const Surface = struct {
             &raw_fence,
         ) != winos.S_OK) return error.Unexpected;
         self.graphics.fence = raw_fence.?;
+        traceWin32InitStep("surface.init.graphics.fence.ready");
         self.graphics.fence_value = 0;
         self.graphics.fence_event = winos.c.CreateEventW(null, winos.FALSE, winos.FALSE, null);
         if (self.graphics.fence_event == null) return error.Unexpected;
