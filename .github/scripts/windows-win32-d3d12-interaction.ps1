@@ -7,31 +7,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class GhosttyWin32Interaction {
-  [DllImport("user32.dll")]
-  public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-  [DllImport("user32.dll")]
-  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-  [DllImport("user32.dll", SetLastError = true)]
-  public static extern bool SetWindowPos(
-    IntPtr hWnd,
-    IntPtr hWndInsertAfter,
-    int X,
-    int Y,
-    int cx,
-    int cy,
-    uint uFlags
-  );
-}
-"@
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
 Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
@@ -128,46 +106,23 @@ function Wait-ForWindow {
     [string]$Label
   )
 
-  $deadline = (Get-Date).AddSeconds(30)
-  while (-not $Process.HasExited -and (Get-Date) -lt $deadline) {
-    $Process.Refresh()
-    if ($Process.MainWindowHandle -ne 0) {
-      Write-Log "Window ready label=$Label hwnd=$($Process.MainWindowHandle)"
-      return $Process.MainWindowHandle
-    }
-    Start-Sleep -Milliseconds 250
-  }
-
-  throw "Ghostty interaction window was not created in time ($Label)"
+  $hwnd = Wait-GhosttyVisibleWindowHandle -Process $Process -Label $Label
+  Write-Log "Window ready label=$Label hwnd=$hwnd"
+  return $hwnd
 }
 
 function Focus-Window {
-  param([System.Diagnostics.Process]$Process)
-  $Process.Refresh()
-  [void][GhosttyWin32Interaction]::ShowWindow($Process.MainWindowHandle, 5)
-  Start-Sleep -Milliseconds 200
-  [void][GhosttyWin32Interaction]::SetForegroundWindow($Process.MainWindowHandle)
-  Start-Sleep -Milliseconds 300
+  param([IntPtr]$Hwnd)
+  Focus-GhosttyWindow -Hwnd $Hwnd
 }
 
 function Resize-Window {
   param(
-    [System.Diagnostics.Process]$Process,
+    [IntPtr]$Hwnd,
     [int]$Width,
     [int]$Height
   )
-  $SWP_NOZORDER = 0x0004
-  $SWP_NOMOVE = 0x0002
-  [void][GhosttyWin32Interaction]::SetWindowPos(
-    $Process.MainWindowHandle,
-    [IntPtr]::Zero,
-    0,
-    0,
-    $Width,
-    $Height,
-    $SWP_NOZORDER -bor $SWP_NOMOVE
-  )
-  Start-Sleep -Milliseconds 300
+  Resize-GhosttyWindow -Hwnd $Hwnd -Width $Width -Height $Height
 }
 
 function Send-Keys {
@@ -190,10 +145,41 @@ function Wait-ForExit {
   }
 }
 
-function Stop-ProcessBestEffort {
+function Capture-ProcessLogs {
   param([System.Diagnostics.Process]$Process)
 
   if ($null -eq $Process) { return }
+  try {
+    $stdout = $Process.StandardOutput.ReadToEnd()
+    if ($stdout) {
+      $stdout | Out-File -FilePath $logPath -Append -Encoding utf8
+    }
+  } catch {
+  }
+  try {
+    $stderr = $Process.StandardError.ReadToEnd()
+    if ($stderr) {
+      $stderr | Out-File -FilePath $logPath -Append -Encoding utf8
+    }
+  } catch {
+  }
+}
+
+function Stop-ProcessBestEffort {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [IntPtr]$Hwnd = [IntPtr]::Zero
+  )
+
+  if ($null -eq $Process) { return }
+  try {
+    if (-not $Process.HasExited) {
+      Close-GhosttyWindowBestEffort -Hwnd $Hwnd
+      Start-Sleep -Seconds 2
+      $Process.Refresh()
+    }
+  } catch {
+  }
   try {
     if (-not $Process.HasExited) {
       $null = $Process.CloseMainWindow()
@@ -215,11 +201,13 @@ Write-Log "Running Windows interaction mode=$Mode exe=$exePath"
 
 $primary = $null
 $secondary = $null
+$primaryHwnd = [IntPtr]::Zero
+$secondaryHwnd = [IntPtr]::Zero
 try {
   $primary = Start-GhosttyInteractive -ExePath $exePath -Label "primary"
-  [void](Wait-ForWindow -Process $primary -Label "primary")
-  Focus-Window -Process $primary
-  Resize-Window -Process $primary -Width 1240 -Height 820
+  $primaryHwnd = Wait-ForWindow -Process $primary -Label "primary"
+  Focus-Window -Hwnd $primaryHwnd
+  Resize-Window -Hwnd $primaryHwnd -Width 1240 -Height 820
   Send-Keys "echo ghostty-ci-basic{ENTER}"
 
   if ($Mode -eq "strict") {
@@ -227,21 +215,25 @@ try {
     Send-Keys "^v{ENTER}"
 
     $secondary = Start-GhosttyInteractive -ExePath $exePath -Label "secondary"
-    [void](Wait-ForWindow -Process $secondary -Label "secondary")
-    Focus-Window -Process $secondary
-    Resize-Window -Process $secondary -Width 1040 -Height 720
+    $secondaryHwnd = Wait-ForWindow -Process $secondary -Label "secondary"
+    Focus-Window -Hwnd $secondaryHwnd
+    Resize-Window -Hwnd $secondaryHwnd -Width 1040 -Height 720
     Send-Keys "echo ghostty-ci-second-window{ENTER}"
     Send-Keys "exit{ENTER}"
     Wait-ForExit -Process $secondary -Label "secondary"
+    Capture-ProcessLogs -Process $secondary
   }
 
-  Focus-Window -Process $primary
+  Focus-Window -Hwnd $primaryHwnd
   Send-Keys "exit{ENTER}"
   Wait-ForExit -Process $primary -Label "primary"
+  Capture-ProcessLogs -Process $primary
 
   Write-Log "Windows interaction passed mode=$Mode"
 }
 finally {
-  Stop-ProcessBestEffort -Process $secondary
-  Stop-ProcessBestEffort -Process $primary
+  Capture-ProcessLogs -Process $secondary
+  Capture-ProcessLogs -Process $primary
+  Stop-ProcessBestEffort -Process $secondary -Hwnd $secondaryHwnd
+  Stop-ProcessBestEffort -Process $primary -Hwnd $primaryHwnd
 }

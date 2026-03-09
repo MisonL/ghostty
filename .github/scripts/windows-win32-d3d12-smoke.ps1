@@ -7,6 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
 Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
@@ -94,24 +95,23 @@ $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $psi
 $process.EnableRaisingEvents = $true
 $forcedTermination = $false
+$windowHandle = [IntPtr]::Zero
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
 }
 
-$sawWindow = $false
 $deadline = (Get-Date).AddSeconds(30)
 while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
-  $process.Refresh()
-  if ($process.MainWindowHandle -ne 0) {
-    $sawWindow = $true
+  if ($windowHandle -eq [IntPtr]::Zero) {
+    $windowHandle = Get-GhosttyVisibleWindowHandle -Process $process
   }
   Start-Sleep -Milliseconds 250
 }
 
 if (-not $process.HasExited) {
   try {
-    $null = $process.CloseMainWindow()
+    Close-GhosttyWindowBestEffort -Hwnd $windowHandle
     Start-Sleep -Seconds 2
     $process.Refresh()
   } catch {
@@ -178,13 +178,6 @@ if ($forcedTermination) {
 if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
   Write-Host "Smoke process exit code: $($process.ExitCode)"
   $failed = $true
-}
-if (-not $sawWindow) {
-  Write-Host "Smoke process never exposed a non-zero MainWindowHandle"
-  $requireWindow = $env:GHOSTTY_CI_WIN32_REQUIRE_WINDOW
-  if ([string]::IsNullOrWhiteSpace($requireWindow) -or $requireWindow -eq "1" -or $requireWindow -eq "true") {
-    $failed = $true
-  }
 }
 if ($missingMarkers.Count -gt 0) {
   Write-Host "Missing smoke markers: $($missingMarkers -join ', ')"

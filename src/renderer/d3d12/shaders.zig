@@ -455,10 +455,6 @@ const full_screen_vertex_hlsl = common_hlsl ++
 ;
 
 const bg_color_fragment_hlsl = common_hlsl ++
-    \\struct FullScreenVertexOut {
-    \\    float4 position : SV_Position;
-    \\};
-    \\
     \\float4 bg_color_fragment(FullScreenVertexOut input) : SV_Target0 {
     \\    bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0u;
     \\    return load_color_packed(bg_color_packed_4u8, use_linear_blending);
@@ -466,10 +462,6 @@ const bg_color_fragment_hlsl = common_hlsl ++
 ;
 
 const cell_bg_fragment_hlsl = common_hlsl ++
-    \\struct FullScreenVertexOut {
-    \\    float4 position : SV_Position;
-    \\};
-    \\
     \\float4 cell_bg_fragment(FullScreenVertexOut input) : SV_Target0 {
     \\    uint2 grid_size = unpack2u16(grid_size_packed_2u16);
     \\    int2 grid_pos = int2(floor((input.position.xy - float2(grid_padding.w, grid_padding.x)) / cell_size));
