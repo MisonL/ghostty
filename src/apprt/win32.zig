@@ -1068,6 +1068,17 @@ pub const App = struct {
                 if (surface) |rt_surface| rt_surface.updateFocus(false);
                 break :blk 0;
             },
+            win.WM_SHOWWINDOW,
+            win.WM_WINDOWPOSCHANGING,
+            win.WM_WINDOWPOSCHANGED,
+            win.WM_ACTIVATEAPP,
+            win.WM_NCACTIVATE,
+            win.WM_GETICON,
+            win.WM_ACTIVATE,
+            => blk: {
+                if (surface == null) break :blk 0;
+                break :blk win.DefWindowProcW(hwnd, msg, w_param, l_param);
+            },
             win.WM_MOUSEMOVE => blk: {
                 if (surface) |rt_surface| {
                     rt_surface.updateCursorPos(
