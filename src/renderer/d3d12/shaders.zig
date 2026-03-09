@@ -454,7 +454,7 @@ const full_screen_vertex_hlsl = common_hlsl ++
     \\}
 ;
 
-const bg_color_fragment_hlsl =
+const bg_color_fragment_hlsl = common_hlsl ++
     \\struct FullScreenVertexOut {
     \\    float4 position : SV_Position;
     \\};

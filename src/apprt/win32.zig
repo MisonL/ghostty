@@ -1590,24 +1590,24 @@ pub const Surface = struct {
     graphics: GraphicsState = .{},
 
     pub const GraphicsState = struct {
-        d3d12_device: ?*winos.graphics.ID3D12Device = null,
-        dxgi_factory: ?*winos.graphics.IDXGIFactory4 = null,
-        command_queue: ?*winos.graphics.ID3D12CommandQueue = null,
+        d3d12_device: ?*anyopaque = null,
+        dxgi_factory: ?*anyopaque = null,
+        command_queue: ?*anyopaque = null,
         command_allocator: ?*anyopaque = null,
         command_list: ?*anyopaque = null,
-        swap_chain: ?*winos.graphics.IDXGISwapChain3 = null,
-        rtv_heap: ?*winos.graphics.ID3D12DescriptorHeap = null,
-        srv_heap: ?*winos.graphics.ID3D12DescriptorHeap = null,
+        swap_chain: ?*anyopaque = null,
+        rtv_heap: ?*anyopaque = null,
+        srv_heap: ?*anyopaque = null,
         backbuffers: [swap_chain_buffer_count]?*anyopaque = .{null} ** swap_chain_buffer_count,
         rtv_descriptor_size: u32 = 0,
         rtv_heap_start_ptr: u64 = 0,
         software_upload: ?*anyopaque = null,
         software_upload_capacity: u64 = 0,
         software_upload_row_pitch: u32 = 0,
-        fence: ?*winos.graphics.ID3D12Fence = null,
+        fence: ?*anyopaque = null,
         fence_event: ?winos.HANDLE = null,
         fence_value: u64 = 0,
-        dwrite_factory: ?*winos.graphics.IDWriteFactory = null,
+        dwrite_factory: ?*anyopaque = null,
         frame_index: u32 = 0,
         last_present_generation: u64 = 0,
     };
@@ -1715,25 +1715,25 @@ pub const Surface = struct {
         self.graphics.command_allocator = null;
         winos.graphics.release(self.graphics.software_upload);
         self.graphics.software_upload = null;
-        winos.graphics.release(@ptrCast(self.graphics.swap_chain));
+        winos.graphics.release(self.graphics.swap_chain);
         self.graphics.swap_chain = null;
-        winos.graphics.release(@ptrCast(self.graphics.command_queue));
+        winos.graphics.release(self.graphics.command_queue);
         self.graphics.command_queue = null;
-        winos.graphics.release(@ptrCast(self.graphics.rtv_heap));
+        winos.graphics.release(self.graphics.rtv_heap);
         self.graphics.rtv_heap = null;
-        winos.graphics.release(@ptrCast(self.graphics.srv_heap));
+        winos.graphics.release(self.graphics.srv_heap);
         self.graphics.srv_heap = null;
-        winos.graphics.release(@ptrCast(self.graphics.fence));
+        winos.graphics.release(self.graphics.fence);
         self.graphics.fence = null;
         if (self.graphics.fence_event != null) {
             _ = winos.CloseHandle(self.graphics.fence_event.?);
             self.graphics.fence_event = null;
         }
-        winos.graphics.release(@ptrCast(self.graphics.d3d12_device));
+        winos.graphics.release(self.graphics.d3d12_device);
         self.graphics.d3d12_device = null;
-        winos.graphics.release(@ptrCast(self.graphics.dxgi_factory));
+        winos.graphics.release(self.graphics.dxgi_factory);
         self.graphics.dxgi_factory = null;
-        winos.graphics.release(@ptrCast(self.graphics.dwrite_factory));
+        winos.graphics.release(self.graphics.dwrite_factory);
         self.graphics.dwrite_factory = null;
         self.graphics.rtv_descriptor_size = 0;
         self.graphics.rtv_heap_start_ptr = 0;
@@ -1751,7 +1751,7 @@ pub const Surface = struct {
             &winos.graphics.IID_IDXGIFactory4,
             &raw_factory,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.dxgi_factory = @ptrCast(raw_factory.?);
+        self.graphics.dxgi_factory = raw_factory.?;
 
         var raw_device: ?*anyopaque = null;
         if (winos.graphics.D3D12CreateDevice(
@@ -1760,7 +1760,7 @@ pub const Surface = struct {
             &winos.graphics.IID_ID3D12Device,
             &raw_device,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.d3d12_device = @ptrCast(raw_device.?);
+        self.graphics.d3d12_device = raw_device.?;
 
         var raw_dwrite: ?*winos.graphics.IUnknown = null;
         if (winos.graphics.DWriteCreateFactory(
@@ -1768,7 +1768,7 @@ pub const Surface = struct {
             &winos.graphics.IID_IDWriteFactory,
             &raw_dwrite,
         ) == winos.S_OK and raw_dwrite != null) {
-            self.graphics.dwrite_factory = @ptrCast(raw_dwrite);
+            self.graphics.dwrite_factory = @ptrFromInt(@intFromPtr(raw_dwrite.?));
         }
 
         var queue_desc: winos.c.D3D12_COMMAND_QUEUE_DESC = std.mem.zeroes(winos.c.D3D12_COMMAND_QUEUE_DESC);
@@ -1786,7 +1786,7 @@ pub const Surface = struct {
             &winos.c.IID_ID3D12CommandQueue,
             &raw_queue,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.command_queue = @ptrCast(raw_queue.?);
+        self.graphics.command_queue = raw_queue.?;
 
         var swap_chain_desc: winos.c.DXGI_SWAP_CHAIN_DESC1 = std.mem.zeroes(winos.c.DXGI_SWAP_CHAIN_DESC1);
         swap_chain_desc.Width = self.size.width;
@@ -1821,7 +1821,7 @@ pub const Surface = struct {
             &winos.c.IID_IDXGISwapChain3,
             &raw_swap_chain3,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.swap_chain = @ptrCast(raw_swap_chain3.?);
+        self.graphics.swap_chain = raw_swap_chain3.?;
         const swap_chain3: *winos.c.IDXGISwapChain3 = @ptrFromInt(@intFromPtr(self.graphics.swap_chain.?));
         self.graphics.frame_index = swap_chain3.lpVtbl[0].GetCurrentBackBufferIndex.?(swap_chain3);
         winos.graphics.release(@ptrCast(swap_chain1));
@@ -1839,7 +1839,7 @@ pub const Surface = struct {
             &winos.c.IID_ID3D12DescriptorHeap,
             &raw_rtv_heap,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.rtv_heap = @ptrCast(raw_rtv_heap.?);
+        self.graphics.rtv_heap = raw_rtv_heap.?;
         self.graphics.rtv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(device, winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         var raw_command_allocator: ?*anyopaque = null;
@@ -1876,7 +1876,7 @@ pub const Surface = struct {
             &winos.c.IID_ID3D12Fence,
             &raw_fence,
         ) != winos.S_OK) return error.Unexpected;
-        self.graphics.fence = @ptrCast(raw_fence.?);
+        self.graphics.fence = raw_fence.?;
         self.graphics.fence_value = 0;
         self.graphics.fence_event = winos.c.CreateEventW(null, winos.FALSE, winos.FALSE, null);
         if (self.graphics.fence_event == null) return error.Unexpected;

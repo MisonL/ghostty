@@ -606,11 +606,21 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
     };
     result.rt_surface = opts.rt_surface;
     if (@hasField(@TypeOf(opts.rt_surface.*), "graphics")) {
-        result.dxgi_factory = opts.rt_surface.graphics.dxgi_factory;
-        result.d3d12_device = opts.rt_surface.graphics.d3d12_device;
-        result.dwrite_factory = opts.rt_surface.graphics.dwrite_factory;
-        result.swap_chain = opts.rt_surface.graphics.swap_chain;
-        result.command_queue = opts.rt_surface.graphics.command_queue;
+        if (opts.rt_surface.graphics.dxgi_factory) |raw| {
+            result.dxgi_factory = nativePtr(*winos.graphics.IDXGIFactory4, raw);
+        }
+        if (opts.rt_surface.graphics.d3d12_device) |raw| {
+            result.d3d12_device = nativePtr(*winos.graphics.ID3D12Device, raw);
+        }
+        if (opts.rt_surface.graphics.dwrite_factory) |raw| {
+            result.dwrite_factory = nativePtr(*winos.graphics.IDWriteFactory, raw);
+        }
+        if (opts.rt_surface.graphics.swap_chain) |raw| {
+            result.swap_chain = nativePtr(*winos.graphics.IDXGISwapChain3, raw);
+        }
+        if (opts.rt_surface.graphics.command_queue) |raw| {
+            result.command_queue = nativePtr(*winos.graphics.ID3D12CommandQueue, raw);
+        }
     }
     result.has_native_present_path = result.swap_chain != null;
     if (result.d3d12_device != null) try result.ensureSrvHeap();
@@ -908,7 +918,7 @@ fn ensureSrvHeap(self: *D3D12) !void {
 
     if (self.rt_surface) |surface| {
         if (@hasField(@TypeOf(surface.*), "graphics")) {
-            surface.graphics.srv_heap = @ptrCast(raw_heap.?);
+            surface.graphics.srv_heap = raw_heap.?;
         }
     }
 
@@ -1359,7 +1369,10 @@ fn currentSwapChain(self: *const D3D12) ?*winos.c.IDXGISwapChain3 {
 fn srvHeap(self: *const D3D12) ?*winos.graphics.ID3D12DescriptorHeap {
     const surface = self.rt_surface orelse return null;
     if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return surface.graphics.srv_heap;
+    return if (surface.graphics.srv_heap) |raw|
+        nativePtr(*winos.graphics.ID3D12DescriptorHeap, raw)
+    else
+        null;
 }
 
 fn currentBackbufferResource(self: *const D3D12) ?*winos.c.ID3D12Resource {
