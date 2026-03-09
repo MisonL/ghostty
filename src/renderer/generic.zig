@@ -43,6 +43,26 @@ const DisplayLink = switch (builtin.os.tag) {
 };
 
 const log = std.log.scoped(.generic_renderer);
+fn shouldTraceWin32RendererInit() bool {
+    if (comptime builtin.target.os.tag != .windows) return false;
+    const alloc = std.heap.page_allocator;
+
+    const smoke = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch null;
+    defer if (smoke) |value| alloc.free(value);
+    if (smoke) |value| {
+        if (value.len > 0 and !std.mem.eql(u8, value, "0")) return true;
+    }
+
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32RendererInitStep(step: []const u8) void {
+    if (!shouldTraceWin32RendererInit()) return;
+    std.debug.print("info(renderer_generic): ci.win32.renderer_init.step={s}\n", .{step});
+}
+
 const software_renderer_cpu_effective =
     if (build_config.renderer == .d3d12)
         true
@@ -1671,6 +1691,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const BgImageBuffer = Buffer(shaderpkg.BgImage);
 
             pub fn init(api: GraphicsAPI, custom_shaders: bool) !FrameState {
+                var grayscale_placeholder = [_]u8{0};
+                var color_placeholder = [_]u8{ 0, 0, 0, 0 };
+
                 // Uniform buffer contains exactly 1 uniform struct. The
                 // uniform data will be undefined so this must be set before
                 // a frame is drawn.
@@ -1693,13 +1716,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // As with the buffers above, we start these off as small
                 // as possible since they'll inevitably be resized anyway.
                 const grayscale = try api.initAtlasTexture(&.{
-                    .data = undefined,
+                    .data = grayscale_placeholder[0..],
                     .size = 1,
                     .format = .grayscale,
                 });
                 errdefer grayscale.deinit();
                 const color = try api.initAtlasTexture(&.{
-                    .data = undefined,
+                    .data = color_placeholder[0..],
                     .size = 1,
                     .format = .bgra,
                 });
@@ -1988,6 +2011,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // surface provided by the apprt and set up any API-specific
             // GPU resources.
             var api = try GraphicsAPI.init(alloc, options);
+            traceWin32RendererInitStep("graphics_api.ready");
             errdefer api.deinit();
 
             const has_custom_shaders = options.config.custom_shaders.value.items.len > 0;
@@ -1997,12 +2021,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 api,
                 has_custom_shaders,
             );
+            traceWin32RendererInitStep("swap_chain.ready");
             errdefer swap_chain.deinit();
 
             // Create the font shaper.
             var font_shaper = try font.Shaper.init(alloc, .{
                 .features = options.config.font_features.items,
             });
+            traceWin32RendererInitStep("font_shaper.ready");
             errdefer font_shaper.deinit();
 
             // Initialize all the data that requires a critical font section.
@@ -2115,12 +2141,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             };
 
             try result.initShaders();
+            traceWin32RendererInitStep("init_shaders.ready");
 
             // Ensure our undefined values above are correctly initialized.
             result.updateFontGridUniforms();
+            traceWin32RendererInitStep("font_grid_uniforms.ready");
             result.updateScreenSizeUniforms();
+            traceWin32RendererInitStep("screen_size_uniforms.ready");
             result.updateBgImageBuffer();
+            traceWin32RendererInitStep("bg_image_buffer.ready");
             try result.prepBackgroundImage();
+            traceWin32RendererInitStep("prep_background_image.ready");
 
             return result;
         }

@@ -73,6 +73,14 @@ fn traceWin32InitStep(step: []const u8) void {
     std.debug.print("info(win32_apprt): ci.win32.surface_init.step={s}\n", .{step});
 }
 
+fn traceWin32WindowProc(msg: win.UINT, step: []const u8) void {
+    if (!shouldTraceWin32Init()) return;
+    std.debug.print(
+        "info(win32_apprt): ci.win32.window_proc.msg=0x{x} step={s}\n",
+        .{ msg, step },
+    );
+}
+
 fn nativePtr(comptime T: type, raw: anytype) T {
     return @ptrFromInt(@intFromPtr(raw));
 }
@@ -824,13 +832,18 @@ pub const App = struct {
             self.hinstance,
             self,
         );
+        traceWin32InitStep("create_window.create_window_ex.ready");
         if (hwnd == null) return error.Unexpected;
         errdefer _ = win.DestroyWindow(hwnd);
 
+        traceWin32InitStep("create_window.runtime_surface_alloc.begin");
         const surface = try self.core_app.alloc.create(Surface);
+        traceWin32InitStep("create_window.runtime_surface_alloc.ready");
         errdefer self.core_app.alloc.destroy(surface);
         surface.* = .{};
+        traceWin32InitStep("create_window.runtime_surface_init.begin");
         try surface.init(self, hwnd, 1280, 800, &config);
+        traceWin32InitStep("create_window.runtime_surface_init.ready");
         errdefer surface.deinit();
         try self.surfaces.append(self.core_app.alloc, surface);
 
@@ -957,6 +970,12 @@ pub const App = struct {
         l_param: win.LPARAM,
     ) win.LRESULT {
         const surface = self.findSurfaceByHwnd(hwnd);
+        if (surface == null and shouldTraceWin32Init()) {
+            std.debug.print(
+                "info(win32_apprt): ci.win32.handle_message.msg=0x{x} surface=none\n",
+                .{msg},
+            );
+        }
         return switch (msg) {
             win.WM_CLOSE => blk: {
                 _ = win.DestroyWindow(hwnd);
@@ -1326,12 +1345,16 @@ pub const App = struct {
         l_param: win.LPARAM,
     ) callconv(.winapi) win.LRESULT {
         if (msg == win.WM_NCCREATE) {
+            traceWin32WindowProc(msg, "wm_nccreate.begin");
             const create_struct: *const win.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(l_param)));
             const app: *App = @ptrFromInt(@intFromPtr(create_struct.lpCreateParams.?));
             _ = win.SetWindowLongPtrW(hwnd, win.GWLP_USERDATA, @intCast(@intFromPtr(app)));
+            traceWin32WindowProc(msg, "wm_nccreate.ready");
         }
 
+        traceWin32WindowProc(msg, "from_window.begin");
         const app = fromWindow(hwnd) orelse return win.DefWindowProcW(hwnd, msg, w_param, l_param);
+        traceWin32WindowProc(msg, "from_window.ready");
         return app.handleMessage(hwnd, msg, w_param, l_param);
     }
 };
