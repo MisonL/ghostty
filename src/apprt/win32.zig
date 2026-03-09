@@ -1146,6 +1146,12 @@ pub const App = struct {
 
     fn fromWindow(hwnd: win.HWND) ?*App {
         const ptr = win.GetWindowLongPtrW(hwnd, win.GWLP_USERDATA);
+        if (shouldTraceWin32Init()) {
+            std.debug.print(
+                "info(win32_apprt): ci.win32.from_window.ptr=0x{x}\n",
+                .{@as(usize, @bitCast(ptr))},
+            );
+        }
         if (ptr == 0) return null;
         return @ptrFromInt(@as(usize, @intCast(ptr)));
     }
@@ -1665,8 +1671,12 @@ pub const Surface = struct {
             .hwnd = hwnd,
             .size = .{ .width = width, .height = height },
         };
+        traceWin32InitStep("surface.init.enter");
         self.updateContentScaleFromWindow();
+        traceWin32InitStep("surface.init.content_scale.ready");
+        traceWin32InitStep("surface.init.graphics.begin");
         try self.initGraphics();
+        traceWin32InitStep("surface.init.graphics.ready");
         errdefer self.deinitGraphics();
 
         if (app.ci_smoke_mode == .native) return;
