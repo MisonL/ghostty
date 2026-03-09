@@ -67,6 +67,7 @@ fn shouldTraceWin32Init() bool {
 inline fn traceWin32InitStep(comptime step: []const u8) void {
     if (!shouldTraceWin32Init()) return;
     std.debug.print("info(win32_apprt): ci.win32.surface_init.step=" ++ step ++ "\n", .{});
+    log.info("ci.win32.surface_init.step=" ++ step, .{});
 }
 
 fn traceWin32WindowProc(msg: win.UINT, step: []const u8) void {
