@@ -11,34 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-libghostty-software-host:
-    name: Linux libghostty Software Host Smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Build and run libghostty software-host demo
-        run: |
-          mkdir -p ci-logs
-          set -o pipefail
-          cd example/c-libghostty-software-host
-          nix --accept-flake-config develop -c zig build run 2>&1 | tee ../../ci-logs/linux-libghostty-software-host.log
-
-      - name: Upload libghostty software-host logs
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: linux-libghostty-software-host-logs
-          path: ci-logs/
-          if-no-files-found: error
-
-  linux-build-windows-smoke-artifact:
-    name: Linux Build Windows Smoke Artifact
+  linux-build-windows-native-smoke-artifact:
+    name: Linux Build Windows Native Smoke Artifact
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -77,11 +51,11 @@ jobs:
           path: ci-logs/
           if-no-files-found: error
 
-  windows-win32-d3d12-smoke:
-    name: Windows Win32 D3D12 Smoke
+  windows-win32-d3d12-native-smoke:
+    name: Windows Win32 D3D12 Native Smoke
     runs-on: windows-2022
     timeout-minutes: 30
-    needs: linux-build-windows-smoke-artifact
+    needs: linux-build-windows-native-smoke-artifact
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -96,7 +70,8 @@ jobs:
         shell: pwsh
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
-        run: .\.github\scripts\windows-win32-d3d12-smoke.ps1
+          GHOSTTY_CI_WIN32_SMOKE_MODE: native
+        run: .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode native
 
       - name: Upload Windows smoke logs
         if: always()

@@ -1,3 +1,8 @@
+param(
+  [ValidateSet("native", "core-draw")]
+  [string]$Mode = $(if ([string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_MODE)) { "native" } else { $env:GHOSTTY_CI_WIN32_SMOKE_MODE })
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -6,10 +11,13 @@ Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
-$logPath = Join-Path $logsDir "windows-win32-d3d12-smoke.log"
+$logPath = Join-Path $logsDir ("windows-win32-d3d12-smoke-{0}.log" -f $Mode)
 if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
+
+Write-Host "Running Windows Win32 D3D12 smoke mode: $Mode"
+"Running Windows Win32 D3D12 smoke mode: $Mode" | Out-File -FilePath $logPath -Append -Encoding utf8
 
 $exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
 if ([string]::IsNullOrWhiteSpace($exePath)) {
@@ -68,6 +76,7 @@ $psi.ArgumentList.Add($cmdExe)
 $psi.ArgumentList.Add("/c")
 $psi.ArgumentList.Add("echo ghostty-ci-smoke & ping -n 3 127.0.0.1 >nul")
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE"] = "1"
+$psi.Environment["GHOSTTY_CI_WIN32_SMOKE_MODE"] = $Mode
 
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $psi
@@ -124,11 +133,23 @@ if (-not (Test-Path $logPath)) {
 }
 
 $logContent = Get-Content -Path $logPath -Raw
-$requiredMarkers = @(
-  "ci.win32.window_ready",
-  "ci.win32.native_draw_ready",
-  "ci.win32.present_ok"
-)
+$requiredMarkers = switch ($Mode) {
+  "core-draw" {
+    @(
+      "ci.win32.window_ready",
+      "ci.win32.core_surface_ready",
+      "ci.win32.core_draw_ready",
+      "ci.win32.present_ok"
+    )
+  }
+  default {
+    @(
+      "ci.win32.window_ready",
+      "ci.win32.native_draw_ready",
+      "ci.win32.present_ok"
+    )
+  }
+}
 
 $missingMarkers = @()
 foreach ($marker in $requiredMarkers) {
@@ -161,7 +182,7 @@ if ($failed) {
   Get-Process ghostty -ErrorAction SilentlyContinue |
     Select-Object Id, ProcessName, MainWindowTitle, MainWindowHandle |
     Format-List
-  throw "Windows Win32 D3D12 smoke failed"
+  throw "Windows Win32 D3D12 smoke failed (mode=$Mode)"
 }
 
-Write-Host "Windows Win32 D3D12 smoke passed"
+Write-Host "Windows Win32 D3D12 smoke passed (mode=$Mode)"

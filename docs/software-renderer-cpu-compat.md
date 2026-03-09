@@ -238,17 +238,15 @@ macOS 额外必填：
 - `.github/workflows/project-ci.yml`
 - 触发方式：`workflow_dispatch`
 
-工作流当前仅保留 3 个快验收 job：
+工作流当前仅保留一条**手动最小 Win32 native smoke 链**：
 
-- `Linux libghostty Software Host Smoke`
-- `Linux Build Windows Smoke Artifact`
-- `Windows Win32 D3D12 Smoke`
+- `Linux Build Windows Native Smoke Artifact`
+- `Windows Win32 D3D12 Native Smoke`
 
 职责边界：
 
-- `Linux libghostty Software Host Smoke`：验证 `example/c-libghostty-software-host` 的最小闭环；
-- `Linux Build Windows Smoke Artifact`：验证 Win32/D3D12 smoke 可执行文件能被交叉构建产出；
-- `Windows Win32 D3D12 Smoke`：验证 Win32 runtime + D3D12 native present smoke 仍能通过；
+- `Linux Build Windows Native Smoke Artifact`：只负责为 Windows native smoke 产出最小可执行文件；
+- `Windows Win32 D3D12 Native Smoke`：验证 Win32 runtime + D3D12 native present smoke 仍能通过；
 - 所有更慢的核心测试、software-renderer 兼容矩阵、macOS 非 UI 验证与完整 UI 验证，统一转移到本地机器或专用 runner 执行。
 
 换句话说：
@@ -341,7 +339,12 @@ zig build test --system "$SYSTEM_PATH"
 
 ### 8.2.2 本地执行项目专属慢测与兼容脚本
 
-若只想走一条最小的本地项目验收，可直接执行：
+当前项目的**默认验收**是：
+
+1. 本地执行 `scripts/local-project-smoke.sh`
+2. 线上手动触发一次 `Project CI`
+
+若只想走一条默认的本地项目验收，可直接执行：
 
 ```bash
 scripts/local-project-smoke.sh
@@ -352,6 +355,31 @@ scripts/local-project-smoke.sh
 ```bash
 scripts/local-project-smoke.sh --quick
 ```
+
+若要把本机可执行的项目 smoke 一次性拉满，可执行：
+
+```bash
+scripts/local-project-smoke.sh --full
+```
+
+若在 Windows 本机上只想单独跑 Win32 runtime smoke，可执行：
+
+```bash
+scripts/local-project-smoke.sh --win32-native
+scripts/local-project-smoke.sh --win32-core-draw
+```
+
+若只想单独跑 software-renderer contracts，可执行：
+
+```bash
+scripts/local-project-smoke.sh --software-renderer-contracts
+```
+
+脚本跳过语义：
+
+- 无 `nix` 时，会明确跳过 `libghostty` 与 `software-renderer contracts` 的主机运行项；
+- 非 Windows 主机上，`--win32-native` / `--win32-core-draw` 会明确以 `host-not-windows` 跳过；
+- `Project CI` 线上仍只保留手动最小 native smoke，不承载完整本地验收。
 
 以下验证已从自动 `Project CI` 移出，默认建议在本地执行：
 

@@ -33,13 +33,29 @@ pub const must_draw_from_app_thread = false;
 const log = std.log.scoped(.win32_apprt);
 const swap_chain_buffer_count: usize = 2;
 const software_upload_row_pitch_alignment: u32 = 256;
+const ipc_pipe_prefix = "\\\\.\\pipe\\ghostty-win32-";
 
-fn ciSmokeEnabled() bool {
+const CiSmokeMode = enum {
+    disabled,
+    native,
+    core_draw,
+};
+
+fn ciSmokeMode() CiSmokeMode {
     const alloc = std.heap.page_allocator;
+    const mode_value = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE_MODE") catch null;
+    defer if (mode_value) |value| alloc.free(value);
+    if (mode_value) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "core-draw")) return .core_draw;
+        if (std.ascii.eqlIgnoreCase(value, "native")) return .native;
+    }
+
     const value = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch
-        return false;
+        return .disabled;
     defer alloc.free(value);
-    return value.len > 0 and !std.mem.eql(u8, value, "0");
+    if (value.len == 0 or std.mem.eql(u8, value, "0")) return .disabled;
+    if (std.ascii.eqlIgnoreCase(value, "core-draw")) return .core_draw;
+    return .native;
 }
 
 fn nativePtr(comptime T: type, raw: anytype) T {
@@ -50,7 +66,11 @@ const win = struct {
     const UINT = u32;
     const DWORD = u32;
     const WORD = u16;
+    const SHORT = i16;
+    const LONG = i32;
+    const BYTE = u8;
     const BOOL = i32;
+    const INT = i32;
     const LPARAM = isize;
     const WPARAM = usize;
     const LRESULT = isize;
@@ -66,6 +86,8 @@ const win = struct {
     const HGLRC = ?*anyopaque;
     const HANDLE = ?*anyopaque;
     const HGLOBAL = ?*anyopaque;
+    const HKL = ?*anyopaque;
+    const HIMC = ?*anyopaque;
     const LPCWSTR = ?[*:0]const u16;
     const LPVOID = ?*anyopaque;
     const BOOL_TRUE: BOOL = 1;
@@ -122,6 +144,12 @@ const win = struct {
         lpszClassName: LPCWSTR,
     };
 
+    const COMPOSITIONFORM = extern struct {
+        dwStyle: DWORD,
+        ptCurrentPos: POINT,
+        rcArea: RECT,
+    };
+
     pub extern "kernel32" fn GetModuleHandleW(lpModuleName: LPCWSTR) callconv(.winapi) HINSTANCE;
     pub extern "user32" fn RegisterClassW(lpWndClass: *const WNDCLASSW) callconv(.winapi) ATOM;
     pub extern "user32" fn UnregisterClassW(lpClassName: LPCWSTR, hInstance: HINSTANCE) callconv(.winapi) BOOL;
@@ -154,6 +182,21 @@ const win = struct {
     pub extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
     pub extern "user32" fn GetDC(hWnd: HWND) callconv(.winapi) HDC;
     pub extern "user32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.winapi) i32;
+    pub extern "user32" fn GetKeyState(nVirtKey: i32) callconv(.winapi) SHORT;
+    pub extern "user32" fn GetKeyboardState(lpKeyState: [*]BYTE) callconv(.winapi) BOOL;
+    pub extern "user32" fn GetKeyboardLayout(idThread: DWORD) callconv(.winapi) HKL;
+    pub extern "user32" fn GetKeyboardLayoutNameW(pwszKLID: [*:0]u16) callconv(.winapi) BOOL;
+    pub extern "user32" fn MapVirtualKeyExW(uCode: UINT, uMapType: UINT, dwhkl: HKL) callconv(.winapi) UINT;
+    pub extern "user32" fn ToUnicodeEx(
+        wVirtKey: UINT,
+        wScanCode: UINT,
+        lpKeyState: [*]const BYTE,
+        pwszBuff: [*]u16,
+        cchBuff: INT,
+        wFlags: UINT,
+        dwhkl: HKL,
+    ) callconv(.winapi) INT;
+    pub extern "user32" fn MessageBoxW(hWnd: HWND, lpText: LPCWSTR, lpCaption: LPCWSTR, uType: UINT) callconv(.winapi) INT;
     pub extern "user32" fn OpenClipboard(hWndNewOwner: HWND) callconv(.winapi) BOOL;
     pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
     pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
@@ -166,6 +209,12 @@ const win = struct {
     pub extern "kernel32" fn GlobalUnlock(hMem: HGLOBAL) callconv(.winapi) BOOL;
     pub extern "kernel32" fn GlobalSize(hMem: HGLOBAL) callconv(.winapi) usize;
     pub extern "kernel32" fn GlobalFree(hMem: HGLOBAL) callconv(.winapi) HGLOBAL;
+    pub extern "kernel32" fn WaitNamedPipeW(lpNamedPipeName: LPCWSTR, nTimeOut: DWORD) callconv(.winapi) BOOL;
+    pub extern "kernel32" fn ConnectNamedPipe(hNamedPipe: HANDLE, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
+    pub extern "imm32" fn ImmGetContext(hWnd: HWND) callconv(.winapi) HIMC;
+    pub extern "imm32" fn ImmReleaseContext(hWnd: HWND, hIMC: HIMC) callconv(.winapi) BOOL;
+    pub extern "imm32" fn ImmGetCompositionStringW(hIMC: HIMC, dwIndex: DWORD, lpBuf: LPVOID, dwBufLen: DWORD) callconv(.winapi) LONG;
+    pub extern "imm32" fn ImmSetCompositionWindow(hIMC: HIMC, lpCompForm: *const COMPOSITIONFORM) callconv(.winapi) BOOL;
 
     pub const CS_VREDRAW = 0x0001;
     pub const CS_HREDRAW = 0x0002;
@@ -187,12 +236,56 @@ const win = struct {
     pub const WM_KILLFOCUS = 0x0008;
     pub const WM_PAINT = 0x000F;
     pub const WM_CHAR = 0x0102;
+    pub const WM_KEYDOWN = 0x0100;
+    pub const WM_KEYUP = 0x0101;
+    pub const WM_SYSKEYDOWN = 0x0104;
+    pub const WM_SYSKEYUP = 0x0105;
+    pub const WM_INPUTLANGCHANGE = 0x0051;
+    pub const WM_IME_STARTCOMPOSITION = 0x010D;
+    pub const WM_IME_ENDCOMPOSITION = 0x010E;
+    pub const WM_IME_COMPOSITION = 0x010F;
     pub const WM_MOUSEMOVE = 0x0200;
+    pub const WM_LBUTTONDOWN = 0x0201;
+    pub const WM_LBUTTONUP = 0x0202;
+    pub const WM_RBUTTONDOWN = 0x0204;
+    pub const WM_RBUTTONUP = 0x0205;
+    pub const WM_MBUTTONDOWN = 0x0207;
+    pub const WM_MBUTTONUP = 0x0208;
+    pub const WM_MOUSEWHEEL = 0x020A;
+    pub const WM_XBUTTONDOWN = 0x020B;
+    pub const WM_XBUTTONUP = 0x020C;
+    pub const WM_MOUSEHWHEEL = 0x020E;
     pub const WM_APP = 0x8000;
     pub const WM_GHOSTTY_WAKEUP = WM_APP + 1;
     pub const GWLP_USERDATA = -21;
     pub const CF_UNICODETEXT = 13;
     pub const GMEM_MOVEABLE = 0x0002;
+    pub const WHEEL_DELTA: SHORT = 120;
+    pub const MK_SHIFT = 0x0004;
+    pub const MK_CONTROL = 0x0008;
+    pub const XBUTTON1 = 0x0001;
+    pub const XBUTTON2 = 0x0002;
+    pub const VK_MENU = 0x12;
+    pub const VK_CONTROL = 0x11;
+    pub const VK_SHIFT = 0x10;
+    pub const VK_LSHIFT = 0xA0;
+    pub const VK_RSHIFT = 0xA1;
+    pub const VK_LCONTROL = 0xA2;
+    pub const VK_RCONTROL = 0xA3;
+    pub const VK_LMENU = 0xA4;
+    pub const VK_RMENU = 0xA5;
+    pub const VK_LWIN = 0x5B;
+    pub const VK_RWIN = 0x5C;
+    pub const VK_CAPITAL = 0x14;
+    pub const VK_NUMLOCK = 0x90;
+    pub const MAPVK_VK_TO_VSC = 0x0;
+    pub const MAPVK_VK_TO_CHAR = 0x2;
+    pub const GCS_COMPSTR = 0x0008;
+    pub const GCS_RESULTSTR = 0x0800;
+    pub const CFS_POINT = 0x0002;
+    pub const MB_OKCANCEL = 0x00000001;
+    pub const MB_ICONWARNING = 0x00000030;
+    pub const IDOK = 1;
 
     pub fn lowWord(value: LPARAM) u16 {
         return @truncate(@as(usize, @bitCast(value)));
@@ -209,47 +302,87 @@ const win = struct {
     pub fn signedHighWord(value: LPARAM) i16 {
         return @bitCast(highWord(value));
     }
+
+    pub fn signedHighWordWPARAM(value: WPARAM) i16 {
+        return @bitCast(@as(u16, @truncate(value >> 16)));
+    }
+
+    pub fn keyScanCode(value: LPARAM) u32 {
+        return @intCast((@as(usize, @bitCast(value)) >> 16) & 0xFF);
+    }
+
+    pub fn keyIsExtended(value: LPARAM) bool {
+        return ((@as(usize, @bitCast(value)) >> 24) & 0x01) != 0;
+    }
+
+    pub fn keyWasDown(value: LPARAM) bool {
+        return ((@as(usize, @bitCast(value)) >> 30) & 0x01) != 0;
+    }
 };
 
 pub const App = struct {
     core_app: *CoreApp,
     config: configpkg.Config,
-    ci_smoke_enabled: bool,
+    ci_smoke_mode: CiSmokeMode,
     ci_smoke_window_ready_logged: bool = false,
+    ci_smoke_core_surface_ready_logged: bool = false,
+    ci_smoke_core_draw_ready_logged: bool = false,
     ci_smoke_native_draw_ready_logged: bool = false,
     ci_smoke_software_frame_ready_logged: bool = false,
     ci_smoke_present_ok_logged: bool = false,
+    keyboard_layout: input.KeyboardLayout = .unknown,
     hinstance: win.HINSTANCE,
     class_name: [:0]const u16,
     title: [:0]const u16,
-    window: ?Window = null,
-    surface: ?*Surface = null,
+    ipc_pipe_name_utf8: [:0]const u8,
+    ipc_pipe_name_utf16: [:0]const u16,
+    ipc_thread: ?std.Thread = null,
+    ipc_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    surfaces: std.ArrayListUnmanaged(*Surface) = .{},
+    pending_window_requests: std.ArrayListUnmanaged(PendingWindowRequest) = .{},
+    pending_window_requests_mutex: std.Thread.Mutex = .{},
 
     pub fn init(self: *App, core_app: *CoreApp, opts: struct {}) !void {
         _ = opts;
 
+        const smoke_mode = ciSmokeMode();
         self.* = .{
             .core_app = core_app,
             .config = .{},
-            .ci_smoke_enabled = ciSmokeEnabled(),
+            .ci_smoke_mode = smoke_mode,
             .hinstance = win.GetModuleHandleW(null),
             .class_name = try std.unicode.utf8ToUtf16LeAllocZ(core_app.alloc, "GhosttyWin32Runtime"),
             .title = try std.unicode.utf8ToUtf16LeAllocZ(core_app.alloc, "Ghostty Windows Runtime Scaffold"),
+            .ipc_pipe_name_utf8 = undefined,
+            .ipc_pipe_name_utf16 = undefined,
+            .keyboard_layout = detectKeyboardLayout(),
         };
         errdefer core_app.alloc.free(self.class_name);
         errdefer core_app.alloc.free(self.title);
 
-        self.config = if (self.ci_smoke_enabled)
+        self.config = if (smoke_mode != .disabled)
             try configpkg.Config.default(core_app.alloc)
         else
             try configpkg.Config.load(core_app.alloc);
         errdefer self.config.deinit();
 
+        self.ipc_pipe_name_utf8 = try buildPipeNameUtf8(core_app.alloc, &self.config);
+        errdefer core_app.alloc.free(self.ipc_pipe_name_utf8);
+        self.ipc_pipe_name_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(
+            core_app.alloc,
+            self.ipc_pipe_name_utf8,
+        );
+        errdefer core_app.alloc.free(self.ipc_pipe_name_utf16);
+
         try self.registerWindowClass();
+
+        if (smoke_mode == .disabled) {
+            self.ipc_thread = try std.Thread.spawn(.{}, ipcThreadMain, .{self});
+        }
     }
 
     pub fn run(self: *App) !void {
-        try self.ensureWindow();
+        try self.createWindow(.{});
 
         var msg: win.MSG = undefined;
         while (true) {
@@ -258,35 +391,40 @@ pub const App = struct {
             if (status == 0) break;
             _ = win.TranslateMessage(&msg);
             _ = win.DispatchMessageW(&msg);
+            try self.drainPendingWindowRequests();
             try self.core_app.tick(self);
         }
     }
 
     pub fn terminate(self: *App) void {
-        if (self.surface) |surface| {
+        self.stopIpcServer();
+
+        while (self.surfaces.pop()) |surface| {
             surface.deinit();
             self.core_app.alloc.destroy(surface);
-            self.surface = null;
         }
-        if (self.window) |*window| {
-            if (window.hwnd != null) _ = win.DestroyWindow(window.hwnd);
-            self.window = null;
+        for (self.pending_window_requests.items) |*request| {
+            request.deinit(self.core_app.alloc);
         }
+        self.pending_window_requests.deinit(self.core_app.alloc);
+        self.surfaces.deinit(self.core_app.alloc);
         _ = win.UnregisterClassW(self.class_name.ptr, self.hinstance);
         self.config.deinit();
+        self.core_app.alloc.free(self.ipc_pipe_name_utf16);
+        self.core_app.alloc.free(self.ipc_pipe_name_utf8);
         self.core_app.alloc.free(self.title);
         self.core_app.alloc.free(self.class_name);
     }
 
     pub fn wakeup(self: *App) void {
-        if (self.window) |window| {
-            _ = win.PostMessageW(window.hwnd, win.WM_GHOSTTY_WAKEUP, 0, 0);
+        if (self.surfaces.items.len > 0) {
+            const hwnd = self.surfaces.items[0].hwnd;
+            _ = win.PostMessageW(hwnd, win.WM_GHOSTTY_WAKEUP, 0, 0);
         }
     }
 
     pub fn keyboardLayout(self: *const App) input.KeyboardLayout {
-        _ = self;
-        return .unknown;
+        return self.keyboard_layout;
     }
 
     pub fn performAction(
@@ -295,42 +433,60 @@ pub const App = struct {
         comptime action: apprt.Action.Key,
         value: apprt.Action.Value(action),
     ) !bool {
-        _ = target;
-
         return switch (action) {
             .quit => blk: {
-                if (self.window) |window| _ = win.PostMessageW(window.hwnd, win.WM_CLOSE, 0, 0);
+                for (self.surfaces.items) |surface| {
+                    _ = win.PostMessageW(surface.hwnd, win.WM_CLOSE, 0, 0);
+                }
                 break :blk true;
             },
             .new_window => blk: {
-                try self.ensureWindow();
+                try self.createWindow(.{
+                    .parent = switch (target) {
+                        .surface => |core_surface| core_surface,
+                        .app => null,
+                    },
+                });
                 break :blk true;
             },
             .render => blk: {
-                if (self.window) |window| _ = win.InvalidateRect(window.hwnd, null, 0);
+                const surface = switch (target) {
+                    .surface => |core_surface| self.findRuntimeSurface(core_surface) orelse null,
+                    .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
+                };
+                if (surface) |rt_surface| _ = win.InvalidateRect(rt_surface.hwnd, null, 0);
                 break :blk true;
             },
             .set_title => blk: {
-                if (self.surface) |surface| try surface.setTitle(value.title);
+                const surface = switch (target) {
+                    .surface => |core_surface| self.findRuntimeSurface(core_surface),
+                    .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
+                };
+                if (surface) |rt_surface| try rt_surface.setTitle(value.title);
                 break :blk true;
             },
             .cell_size,
             .size_limit,
             .config_change,
             => true,
-            .open_config => false,
+            .open_config => blk: {
+                try self.openConfigFile();
+                break :blk true;
+            },
             .quit_timer => true,
             else => false,
         };
     }
 
     pub fn performIpc(
-        _: Allocator,
-        _: apprt.ipc.Target,
+        alloc: Allocator,
+        target: apprt.ipc.Target,
         comptime action: apprt.ipc.Action.Key,
-        _: apprt.ipc.Action.Value(action),
-    ) !bool {
-        return false;
+        value: apprt.ipc.Action.Value(action),
+    ) (Allocator.Error || std.os.windows.WriteFileError || apprt.ipc.Errors || error{ InvalidIPCMessage, InvalidUtf8, Unexpected })!bool {
+        switch (action) {
+            .new_window => return try sendIpcNewWindowRequest(alloc, target, value),
+        }
     }
 
     fn registerWindowClass(self: *App) !void {
@@ -350,9 +506,17 @@ pub const App = struct {
         if (win.RegisterClassW(&klass) == 0) return error.Unexpected;
     }
 
-    fn ensureWindow(self: *App) !void {
-        if (self.window != null) return;
-
+    fn createWindow(self: *App, request: PendingWindowRequest) !void {
+        var config = try self.deriveWindowConfig(request.parent);
+        defer config.deinit();
+        if (request.arguments) |arguments| {
+            const alloc = config.arenaAlloc();
+            const copied = try alloc.alloc([:0]const u8, arguments.len);
+            for (arguments, 0..) |argument, i| {
+                copied[i] = try alloc.dupeZ(u8, argument);
+            }
+            config.@"initial-command" = .{ .direct = copied };
+        }
         const hwnd = win.CreateWindowExW(
             0,
             self.class_name.ptr,
@@ -370,35 +534,43 @@ pub const App = struct {
         if (hwnd == null) return error.Unexpected;
         errdefer _ = win.DestroyWindow(hwnd);
 
-        self.window = .{
-            .hwnd = hwnd,
-            .hdc = win.GetDC(hwnd),
-        };
-        if (self.window.?.hdc == null) return error.Unexpected;
-        errdefer {
-            if (self.window) |window| {
-                if (window.hdc != null) _ = win.ReleaseDC(hwnd, window.hdc);
-            }
-            self.window = null;
-        }
-
         const surface = try self.core_app.alloc.create(Surface);
         errdefer self.core_app.alloc.destroy(surface);
         surface.* = .{};
-        try surface.init(self, hwnd, 1280, 800);
-        self.surface = surface;
+        try surface.init(self, hwnd, 1280, 800, &config);
+        errdefer surface.deinit();
+        try self.surfaces.append(self.core_app.alloc, surface);
 
         _ = win.ShowWindow(hwnd, win.SW_SHOW);
         _ = win.UpdateWindow(hwnd);
-        if (self.ci_smoke_enabled and !self.ci_smoke_window_ready_logged) {
+        if (self.ci_smoke_mode != .disabled and !self.ci_smoke_window_ready_logged) {
             self.ci_smoke_window_ready_logged = true;
             log.info("ci.win32.window_ready", .{});
         }
-        if (self.ci_smoke_enabled) {
-            if (self.surface) |rt_surface| {
-                try rt_surface.runCiSmoke();
-            }
+        if (self.ci_smoke_mode == .core_draw and !self.ci_smoke_core_surface_ready_logged) {
+            self.ci_smoke_core_surface_ready_logged = true;
+            log.info("ci.win32.core_surface_ready", .{});
         }
+        if (self.ci_smoke_mode != .disabled) {
+            try surface.runCiSmoke();
+        }
+    }
+
+    fn deriveWindowConfig(self: *App, parent: ?*CoreSurface) !configpkg.Config {
+        var config = try apprt.surface.newConfig(
+            self.core_app,
+            &self.config,
+            .window,
+        );
+
+        const inheritance = try collectWindowInheritance(
+            config.arenaAlloc(),
+            &self.config,
+            parent orelse self.core_app.focusedSurface(),
+        );
+        try applyWindowInheritance(&config, config.arenaAlloc(), inheritance);
+
+        return config;
     }
 
     fn handleMessage(
@@ -408,42 +580,116 @@ pub const App = struct {
         w_param: win.WPARAM,
         l_param: win.LPARAM,
     ) win.LRESULT {
+        const surface = self.findSurfaceByHwnd(hwnd);
         return switch (msg) {
             win.WM_CLOSE => blk: {
                 _ = win.DestroyWindow(hwnd);
                 break :blk 0;
             },
             win.WM_DESTROY => blk: {
-                if (self.window) |window| {
-                    if (window.hdc != null) _ = win.ReleaseDC(hwnd, window.hdc);
+                if (surface) |rt_surface| {
+                    self.removeSurface(rt_surface);
+                    rt_surface.deinit();
+                    self.core_app.alloc.destroy(rt_surface);
                 }
-                win.PostQuitMessage(0);
+                if (self.surfaces.items.len == 0) win.PostQuitMessage(0);
                 break :blk 0;
             },
             win.WM_SIZE => blk: {
-                if (self.surface) |surface| surface.updateSize(
+                if (surface) |rt_surface| rt_surface.updateSize(
                     @intCast(win.lowWord(l_param)),
                     @intCast(win.highWord(l_param)),
                 );
                 break :blk 0;
             },
             win.WM_SETFOCUS => blk: {
-                if (self.surface) |surface| surface.updateFocus(true);
+                if (surface) |rt_surface| rt_surface.updateFocus(true);
                 break :blk 0;
             },
             win.WM_KILLFOCUS => blk: {
-                if (self.surface) |surface| surface.updateFocus(false);
+                if (surface) |rt_surface| rt_surface.updateFocus(false);
                 break :blk 0;
             },
             win.WM_MOUSEMOVE => blk: {
-                if (self.surface) |surface| surface.updateCursorPos(
+                if (surface) |rt_surface| rt_surface.updateCursorPos(
                     @floatFromInt(win.signedLowWord(l_param)),
                     @floatFromInt(win.signedHighWord(l_param)),
                 );
                 break :blk 0;
             },
+            win.WM_LBUTTONDOWN,
+            win.WM_LBUTTONUP,
+            win.WM_RBUTTONDOWN,
+            win.WM_RBUTTONUP,
+            win.WM_MBUTTONDOWN,
+            win.WM_MBUTTONUP,
+            win.WM_XBUTTONDOWN,
+            win.WM_XBUTTONUP,
+            => blk: {
+                if (surface) |rt_surface| {
+                    rt_surface.updateCursorPos(
+                        @floatFromInt(win.signedLowWord(l_param)),
+                        @floatFromInt(win.signedHighWord(l_param)),
+                    );
+                    _ = rt_surface.mouseButtonCallback(
+                        messageMouseButtonState(msg),
+                        messageMouseButton(msg, w_param),
+                        messageMods(),
+                    );
+                }
+                break :blk 0;
+            },
+            win.WM_MOUSEWHEEL => blk: {
+                if (surface) |rt_surface| {
+                    const delta = @as(f64, @floatFromInt(win.signedHighWordWPARAM(w_param))) /
+                        @as(f64, @floatFromInt(win.WHEEL_DELTA));
+                    rt_surface.scrollCallback(0, delta, .{});
+                }
+                break :blk 0;
+            },
+            win.WM_MOUSEHWHEEL => blk: {
+                if (surface) |rt_surface| {
+                    const delta = @as(f64, @floatFromInt(win.signedHighWordWPARAM(w_param))) /
+                        @as(f64, @floatFromInt(win.WHEEL_DELTA));
+                    rt_surface.scrollCallback(delta, 0, .{});
+                }
+                break :blk 0;
+            },
             win.WM_CHAR => blk: {
-                if (self.surface) |surface| surface.cacheLastChar(@intCast(w_param));
+                if (surface) |rt_surface| {
+                    if (!rt_surface.consumeSuppressedCharMessage()) {
+                        rt_surface.cacheLastChar(@intCast(w_param));
+                    }
+                }
+                break :blk 0;
+            },
+            win.WM_KEYDOWN,
+            win.WM_KEYUP,
+            win.WM_SYSKEYDOWN,
+            win.WM_SYSKEYUP,
+            => blk: {
+                if (surface) |rt_surface| rt_surface.keyCallback(
+                    messageKeyAction(msg, l_param),
+                    @intCast(w_param),
+                    messageKey(l_param),
+                    messageMods(),
+                );
+                break :blk 0;
+            },
+            win.WM_INPUTLANGCHANGE => blk: {
+                self.keyboard_layout = detectKeyboardLayout();
+                break :blk win.DefWindowProcW(hwnd, msg, w_param, l_param);
+            },
+            win.WM_IME_STARTCOMPOSITION => blk: {
+                if (surface) |rt_surface| rt_surface.updateImeWindow();
+                break :blk 0;
+            },
+            win.WM_IME_COMPOSITION => blk: {
+                if (surface) |rt_surface| rt_surface.handleImeComposition(l_param);
+                break :blk 0;
+            },
+            win.WM_IME_ENDCOMPOSITION => blk: {
+                if (surface) |rt_surface| rt_surface.handleImeEndComposition();
                 break :blk 0;
             },
             win.WM_PAINT => blk: {
@@ -451,12 +697,12 @@ pub const App = struct {
                 _ = winos.c.BeginPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
                 defer _ = winos.c.EndPaint(@ptrFromInt(@intFromPtr(hwnd.?)), &ps);
 
-                if (self.surface) |surface| surface.markDirty();
+                if (surface) |rt_surface| rt_surface.markDirty();
                 break :blk 0;
             },
             win.WM_GHOSTTY_WAKEUP => blk: {
-                self.core_app.tick(self) catch |err| {
-                    log.err("error ticking core app err={}", .{err});
+                self.drainPendingWindowRequests() catch |err| {
+                    log.err("error draining win32 pending window requests err={}", .{err});
                 };
                 break :blk 0;
             },
@@ -468,6 +714,165 @@ pub const App = struct {
         const ptr = win.GetWindowLongPtrW(hwnd, win.GWLP_USERDATA);
         if (ptr == 0) return null;
         return @ptrFromInt(@as(usize, @intCast(ptr)));
+    }
+
+    fn findSurfaceByHwnd(self: *App, hwnd: win.HWND) ?*Surface {
+        for (self.surfaces.items) |surface| {
+            if (surface.hwnd == hwnd) return surface;
+        }
+
+        return null;
+    }
+
+    fn findRuntimeSurface(self: *App, core_surface: *CoreSurface) ?*Surface {
+        for (self.surfaces.items) |surface| {
+            if (surface.core_surface == core_surface) return surface;
+        }
+
+        return null;
+    }
+
+    fn removeSurface(self: *App, surface: *Surface) void {
+        var i: usize = 0;
+        while (i < self.surfaces.items.len) : (i += 1) {
+            if (self.surfaces.items[i] == surface) {
+                _ = self.surfaces.swapRemove(i);
+                return;
+            }
+        }
+    }
+
+    fn drainPendingWindowRequests(self: *App) !void {
+        var ready: std.ArrayListUnmanaged(PendingWindowRequest) = .{};
+        defer {
+            for (ready.items) |*request| request.deinit(self.core_app.alloc);
+            ready.deinit(self.core_app.alloc);
+        }
+
+        self.pending_window_requests_mutex.lock();
+        std.mem.swap(
+            std.ArrayListUnmanaged(PendingWindowRequest),
+            &ready,
+            &self.pending_window_requests,
+        );
+        self.pending_window_requests_mutex.unlock();
+
+        for (ready.items) |*request| {
+            try self.createWindow(request.*);
+        }
+    }
+
+    fn stopIpcServer(self: *App) void {
+        self.ipc_shutdown.store(true, .seq_cst);
+        pokePipeServer(self.ipc_pipe_name_utf16) catch {};
+        if (self.ipc_thread) |thread| thread.join();
+        self.ipc_thread = null;
+    }
+
+    fn openConfigFile(self: *App) !void {
+        const paths = self.config.@"config-file".value.items;
+        if (paths.len == 0) return error.FileNotFound;
+
+        const path = switch (paths[0]) {
+            .required => |v| v,
+            .optional => |v| v,
+        };
+        var child = std.process.Child.init(
+            &.{ "explorer.exe", path },
+            self.core_app.alloc,
+        );
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        try child.spawn();
+    }
+
+    fn messageMouseButtonState(msg: win.UINT) input.MouseButtonState {
+        return switch (msg) {
+            win.WM_LBUTTONDOWN,
+            win.WM_RBUTTONDOWN,
+            win.WM_MBUTTONDOWN,
+            win.WM_XBUTTONDOWN,
+            => .press,
+            else => .release,
+        };
+    }
+
+    fn messageMouseButton(msg: win.UINT, w_param: win.WPARAM) input.MouseButton {
+        return switch (msg) {
+            win.WM_LBUTTONDOWN,
+            win.WM_LBUTTONUP,
+            => .left,
+            win.WM_RBUTTONDOWN,
+            win.WM_RBUTTONUP,
+            => .right,
+            win.WM_MBUTTONDOWN,
+            win.WM_MBUTTONUP,
+            => .middle,
+            win.WM_XBUTTONDOWN,
+            win.WM_XBUTTONUP,
+            => switch (win.highWord(@bitCast(@as(win.LPARAM, @intCast(w_param))))) {
+                win.XBUTTON1 => .four,
+                win.XBUTTON2 => .five,
+                else => .unknown,
+            },
+            else => .unknown,
+        };
+    }
+
+    fn messageMods() input.Mods {
+        return .{
+            .shift = keyStatePressed(win.VK_SHIFT),
+            .ctrl = keyStatePressed(win.VK_CONTROL),
+            .alt = keyStatePressed(win.VK_MENU),
+            .super = keyStatePressed(win.VK_LWIN) or keyStatePressed(win.VK_RWIN),
+            .caps_lock = keyStateToggled(win.VK_CAPITAL),
+            .num_lock = keyStateToggled(win.VK_NUMLOCK),
+        };
+    }
+
+    fn messageKeyAction(msg: win.UINT, l_param: win.LPARAM) input.Action {
+        return switch (msg) {
+            win.WM_KEYUP, win.WM_SYSKEYUP => .release,
+            else => if (win.keyWasDown(l_param)) .repeat else .press,
+        };
+    }
+
+    fn messageKey(l_param: win.LPARAM) input.Key {
+        const scan_code = win.keyScanCode(l_param);
+        if (scan_code == 0) return .unidentified;
+        const native_code: u32 = if (win.keyIsExtended(l_param))
+            0xE000 | scan_code
+        else
+            scan_code;
+
+        for (input.keycodes.entries) |entry| {
+            if (entry.native == native_code) return entry.key;
+        }
+
+        return .unidentified;
+    }
+
+    fn keyStatePressed(vk: i32) bool {
+        return (win.GetKeyState(vk) & @as(win.SHORT, @bitCast(@as(u16, 0x8000)))) != 0;
+    }
+
+    fn keyStateToggled(vk: i32) bool {
+        return (win.GetKeyState(vk) & 0x0001) != 0;
+    }
+
+    fn detectKeyboardLayout() input.KeyboardLayout {
+        var klid: [9:0]u16 = [_:0]u16{0} ** 9;
+        if (win.GetKeyboardLayoutNameW(&klid) == 0) return .unknown;
+
+        var buf: [8]u8 = undefined;
+        for (&buf, 0..) |*slot, i| {
+            slot.* = @intCast(klid[i] & 0xFF);
+        }
+
+        if (std.mem.eql(u8, &buf, "00000409")) return .us_standard;
+        if (std.mem.eql(u8, &buf, "00020409")) return .us_international;
+        return .unknown;
     }
 
     fn windowProc(
@@ -485,12 +890,246 @@ pub const App = struct {
         const app = fromWindow(hwnd) orelse return win.DefWindowProcW(hwnd, msg, w_param, l_param);
         return app.handleMessage(hwnd, msg, w_param, l_param);
     }
-
-    const Window = struct {
-        hwnd: win.HWND,
-        hdc: win.HDC,
-    };
 };
+
+const PendingWindowRequest = struct {
+    parent: ?*CoreSurface = null,
+    arguments: ?[][:0]const u8 = null,
+
+    fn clone(self: PendingWindowRequest, alloc: Allocator) !PendingWindowRequest {
+        var result: PendingWindowRequest = .{
+            .parent = self.parent,
+        };
+        if (self.arguments) |arguments| {
+            const copied = try alloc.alloc([:0]const u8, arguments.len);
+            @memset(copied, "");
+            errdefer {
+                for (copied) |argument| {
+                    if (argument.len != 0) alloc.free(argument);
+                }
+                alloc.free(copied);
+            }
+            for (arguments, 0..) |argument, i| {
+                copied[i] = try alloc.dupeZ(u8, argument);
+            }
+            result.arguments = copied;
+        }
+
+        return result;
+    }
+
+    fn deinit(self: *PendingWindowRequest, alloc: Allocator) void {
+        if (self.arguments) |arguments| {
+            for (arguments) |argument| alloc.free(argument);
+            alloc.free(arguments);
+        }
+        self.* = undefined;
+    }
+};
+
+fn buildPipeNameUtf8(alloc: Allocator, config: *const configpkg.Config) ![:0]const u8 {
+    var builder: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer builder.deinit(alloc);
+
+    try builder.appendSlice(alloc, ipc_pipe_prefix);
+    const raw_name = config.class orelse "default";
+    for (raw_name) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_') {
+            try builder.append(alloc, std.ascii.toLower(c));
+        } else {
+            try builder.append(alloc, '_');
+        }
+    }
+
+    return try builder.toOwnedSliceSentinel(alloc, 0);
+}
+
+fn sendIpcNewWindowRequest(
+    alloc: Allocator,
+    target: apprt.ipc.Target,
+    value: apprt.ipc.Action.NewWindow,
+) (Allocator.Error || std.os.windows.WriteFileError || apprt.ipc.Errors || error{InvalidUtf8})!bool {
+    const pipe_name_utf8 = try pipeNameForTarget(alloc, target);
+    defer alloc.free(pipe_name_utf8);
+
+    const pipe_name_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, pipe_name_utf8);
+    defer alloc.free(pipe_name_utf16);
+
+    _ = win.WaitNamedPipeW(pipe_name_utf16.ptr, 1500);
+
+    const handle = std.os.windows.kernel32.CreateFileW(
+        pipe_name_utf16.ptr,
+        std.os.windows.GENERIC_WRITE,
+        0,
+        null,
+        std.os.windows.OPEN_EXISTING,
+        0,
+        null,
+    );
+    if (handle == std.os.windows.INVALID_HANDLE_VALUE) {
+        var buf: [256]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&buf);
+        const stderr = &stderr_writer.interface;
+        stderr.print(
+            "Windows IPC 连接失败，未找到运行中的实例: {s}\n",
+            .{pipe_name_utf8},
+        ) catch {};
+        stderr.flush() catch {};
+        return error.IPCFailed;
+    }
+    defer std.os.windows.CloseHandle(handle);
+
+    const payload = try encodeIpcNewWindowPayload(alloc, value.arguments);
+    defer alloc.free(payload);
+
+    _ = try std.os.windows.WriteFile(handle, payload, null);
+    _ = std.os.windows.kernel32.FlushFileBuffers(handle);
+    return true;
+}
+
+fn pipeNameForTarget(alloc: Allocator, target: apprt.ipc.Target) ![:0]const u8 {
+    const raw_name = switch (target) {
+        .class => |class| class,
+        .detect => "default",
+    };
+
+    var builder: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer builder.deinit(alloc);
+    try builder.appendSlice(alloc, ipc_pipe_prefix);
+    for (raw_name) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_') {
+            try builder.append(alloc, std.ascii.toLower(c));
+        } else {
+            try builder.append(alloc, '_');
+        }
+    }
+
+    return try builder.toOwnedSliceSentinel(alloc, 0);
+}
+
+fn encodeIpcNewWindowPayload(
+    alloc: Allocator,
+    arguments: ?[][:0]const u8,
+) ![]u8 {
+    var bytes: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer bytes.deinit(alloc);
+
+    try appendU32(&bytes, alloc, 1);
+    try appendU32(&bytes, alloc, if (arguments) |argv| @intCast(argv.len) else 0);
+    if (arguments) |argv| {
+        for (argv) |argument| {
+            try appendU32(&bytes, alloc, @intCast(argument.len));
+            try bytes.appendSlice(alloc, argument);
+        }
+    }
+
+    return try bytes.toOwnedSlice(alloc);
+}
+
+fn decodeIpcNewWindowPayload(alloc: Allocator, payload: []const u8) !PendingWindowRequest {
+    var cursor: usize = 0;
+    const version = try readU32(payload, &cursor);
+    if (version != 1) return error.InvalidIPCMessage;
+
+    const argc = try readU32(payload, &cursor);
+    if (argc == 0) return .{};
+
+    const args = try alloc.alloc([:0]const u8, argc);
+    @memset(args, "");
+    errdefer {
+        for (args) |argument| {
+            if (argument.len != 0) alloc.free(argument);
+        }
+        alloc.free(args);
+    }
+    for (args, 0..) |*slot, i| {
+        _ = i;
+        const len = try readU32(payload, &cursor);
+        if (cursor + len > payload.len) return error.InvalidIPCMessage;
+        slot.* = try alloc.dupeZ(u8, payload[cursor .. cursor + len]);
+        cursor += len;
+    }
+
+    return .{ .arguments = args };
+}
+
+fn appendU32(list: *std.ArrayListUnmanaged(u8), alloc: Allocator, value: u32) !void {
+    var buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buf, value, .little);
+    try list.appendSlice(alloc, &buf);
+}
+
+fn readU32(bytes: []const u8, cursor: *usize) !u32 {
+    if (cursor.* + 4 > bytes.len) return error.InvalidIPCMessage;
+    defer cursor.* += 4;
+    return std.mem.readInt(u32, bytes[cursor.* .. cursor.* + 4][0..4], .little);
+}
+
+fn pokePipeServer(pipe_name_utf16: [:0]const u16) !void {
+    const handle = std.os.windows.kernel32.CreateFileW(
+        pipe_name_utf16.ptr,
+        std.os.windows.GENERIC_WRITE,
+        0,
+        null,
+        std.os.windows.OPEN_EXISTING,
+        0,
+        null,
+    );
+    if (handle == std.os.windows.INVALID_HANDLE_VALUE) return;
+    defer std.os.windows.CloseHandle(handle);
+}
+
+fn ipcThreadMain(app: *App) void {
+    ipcThreadMainFallible(app) catch |err| {
+        log.err("win32 ipc server terminated err={}", .{err});
+    };
+}
+
+fn ipcThreadMainFallible(app: *App) !void {
+    while (!app.ipc_shutdown.load(.seq_cst)) {
+        const pipe = std.os.windows.kernel32.CreateNamedPipeW(
+            app.ipc_pipe_name_utf16.ptr,
+            std.os.windows.PIPE_ACCESS_INBOUND,
+            std.os.windows.PIPE_TYPE_BYTE | std.os.windows.PIPE_READMODE_BYTE | std.os.windows.PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            null,
+        );
+        if (pipe == std.os.windows.INVALID_HANDLE_VALUE) return;
+        defer std.os.windows.CloseHandle(pipe);
+
+        if (win.ConnectNamedPipe(pipe, null) == 0) {
+            const err = std.os.windows.GetLastError();
+            if (err != .PIPE_CONNECTED and !app.ipc_shutdown.load(.seq_cst)) {
+                return error.Unexpected;
+            }
+        }
+
+        var payload: std.ArrayListUnmanaged(u8) = .empty;
+        defer payload.deinit(app.core_app.alloc);
+        var buf: [512]u8 = undefined;
+        while (true) {
+            const read = std.os.windows.ReadFile(pipe, &buf, null) catch |err| switch (err) {
+                error.BrokenPipe => break,
+                else => return err,
+            };
+            if (read == 0) break;
+            try payload.appendSlice(app.core_app.alloc, buf[0..read]);
+            if (read < buf.len) break;
+        }
+
+        if (app.ipc_shutdown.load(.seq_cst) or payload.items.len == 0) continue;
+        var request = try decodeIpcNewWindowPayload(app.core_app.alloc, payload.items);
+        errdefer request.deinit(app.core_app.alloc);
+
+        app.pending_window_requests_mutex.lock();
+        defer app.pending_window_requests_mutex.unlock();
+        try app.pending_window_requests.append(app.core_app.alloc, request);
+        app.wakeup();
+    }
+}
 
 pub const Surface = struct {
     app: *App = undefined,
@@ -502,8 +1141,9 @@ pub const Surface = struct {
     cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
     focused: bool = false,
     dirty: bool = true,
-    last_text_input: [4]u8 = .{ 0, 0, 0, 0 },
+    last_text_input: [16]u8 = [_]u8{0} ** 16,
     last_text_input_len: u8 = 0,
+    suppress_char_messages: u8 = 0,
     graphics: GraphicsState = .{},
 
     pub const GraphicsState = struct {
@@ -529,7 +1169,14 @@ pub const Surface = struct {
         last_present_generation: u64 = 0,
     };
 
-    pub fn init(self: *Surface, app: *App, hwnd: win.HWND, width: u32, height: u32) !void {
+    pub fn init(
+        self: *Surface,
+        app: *App,
+        hwnd: win.HWND,
+        width: u32,
+        height: u32,
+        config: *const configpkg.Config,
+    ) !void {
         self.* = .{
             .app = app,
             .hwnd = hwnd,
@@ -538,7 +1185,7 @@ pub const Surface = struct {
         try self.initGraphics();
         errdefer self.deinitGraphics();
 
-        if (app.ci_smoke_enabled) return;
+        if (app.ci_smoke_mode == .native) return;
 
         try app.core_app.addSurface(self);
         errdefer app.core_app.deleteSurface(self);
@@ -548,7 +1195,7 @@ pub const Surface = struct {
 
         try core_surface.init(
             app.core_app.alloc,
-            &app.config,
+            config,
             app.core_app,
             app,
             self,
@@ -559,24 +1206,46 @@ pub const Surface = struct {
     }
 
     fn runCiSmoke(self: *Surface) !void {
-        if (!self.app.ci_smoke_enabled) return;
-        if (!self.app.ci_smoke_native_draw_ready_logged) {
-            self.app.ci_smoke_native_draw_ready_logged = true;
-            log.info("ci.win32.native_draw_ready", .{});
-        }
+        if (self.app.ci_smoke_mode == .disabled) return;
+        switch (self.app.ci_smoke_mode) {
+            .disabled => {},
+            .native => {
+                if (!self.app.ci_smoke_native_draw_ready_logged) {
+                    self.app.ci_smoke_native_draw_ready_logged = true;
+                    log.info("ci.win32.native_draw_ready", .{});
+                }
 
-        try self.recordNativeClear();
-        const sc: *winos.c.IDXGISwapChain3 =
-            nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
-        if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
-            return error.Unexpected;
+                try self.recordNativeClear();
+                const sc: *winos.c.IDXGISwapChain3 =
+                    nativePtr(*winos.c.IDXGISwapChain3, self.graphics.swap_chain.?);
+                if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
+                    return error.Unexpected;
+                }
+                if (!self.app.ci_smoke_present_ok_logged) {
+                    self.app.ci_smoke_present_ok_logged = true;
+                    log.info("ci.win32.present_ok", .{});
+                }
+                try self.waitForGpuIdle();
+                self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
+            },
+            .core_draw => {
+                const core_surface = self.core_surface orelse return error.Unexpected;
+                try core_surface.refreshCallback();
+                try core_surface.draw();
+                if (!self.app.ci_smoke_native_draw_ready_logged) {
+                    self.app.ci_smoke_native_draw_ready_logged = true;
+                    log.info("ci.win32.native_draw_ready", .{});
+                }
+                if (!self.app.ci_smoke_core_draw_ready_logged) {
+                    self.app.ci_smoke_core_draw_ready_logged = true;
+                    log.info("ci.win32.core_draw_ready", .{});
+                }
+                if (!self.app.ci_smoke_present_ok_logged) {
+                    self.app.ci_smoke_present_ok_logged = true;
+                    log.info("ci.win32.present_ok", .{});
+                }
+            },
         }
-        if (!self.app.ci_smoke_present_ok_logged) {
-            self.app.ci_smoke_present_ok_logged = true;
-            log.info("ci.win32.present_ok", .{});
-        }
-        try self.waitForGpuIdle();
-        self.graphics.frame_index = sc.lpVtbl[0].GetCurrentBackBufferIndex.?(sc);
         _ = win.PostMessageW(self.hwnd, win.WM_CLOSE, 0, 0);
     }
 
@@ -856,8 +1525,11 @@ pub const Surface = struct {
             error.UnsafePaste,
             error.UnauthorizedPaste,
             => {
-                log.warn("win32 clipboard request requires confirmation err={}", .{err});
-                return false;
+                if (!self.confirmClipboardAccess("允许将系统剪贴板内容粘贴到 Ghostty 吗？")) {
+                    log.warn("win32 clipboard request denied by user err={}", .{err});
+                    return false;
+                }
+                try surface.completeClipboardRequest(state, utf8, true);
             },
             else => return err,
         };
@@ -871,8 +1543,8 @@ pub const Surface = struct {
         contents: []const apprt.ClipboardContent,
         confirm: bool,
     ) !void {
-        _ = confirm;
         if (clipboard_type != .standard) return;
+        if (confirm and !self.confirmClipboardAccess("允许 Ghostty 写入系统剪贴板吗？")) return;
 
         var text: ?[:0]const u8 = null;
         for (contents) |content| {
@@ -905,6 +1577,22 @@ pub const Surface = struct {
         }
     }
 
+    fn confirmClipboardAccess(self: *Surface, prompt_utf8: []const u8) bool {
+        const prompt = std.unicode.utf8ToUtf16LeAllocZ(self.app.core_app.alloc, prompt_utf8) catch
+            return false;
+        defer self.app.core_app.alloc.free(prompt);
+        const title = std.unicode.utf8ToUtf16LeAllocZ(self.app.core_app.alloc, "Ghostty") catch
+            return false;
+        defer self.app.core_app.alloc.free(title);
+
+        return win.MessageBoxW(
+            self.hwnd,
+            prompt.ptr,
+            title.ptr,
+            win.MB_OKCANCEL | win.MB_ICONWARNING,
+        ) == win.IDOK;
+    }
+
     pub fn defaultTermioEnv(self: *Surface) !std.process.EnvMap {
         return try internal_os.getEnvMap(self.app.core_app.alloc);
     }
@@ -923,7 +1611,7 @@ pub const Surface = struct {
         if (frame.generation <= self.graphics.last_present_generation) return;
         if (frame.storage != .shared_cpu_bytes) return error.InvalidSoftwareFrame;
 
-        if (self.app.ci_smoke_enabled and !self.app.ci_smoke_software_frame_ready_logged) {
+        if (self.app.ci_smoke_mode != .disabled and !self.app.ci_smoke_software_frame_ready_logged) {
             self.app.ci_smoke_software_frame_ready_logged = true;
             log.info("ci.win32.software_frame_ready", .{});
         }
@@ -1003,14 +1691,237 @@ pub const Surface = struct {
         var buf: [4]u8 = undefined;
         const cp = std.math.cast(u21, codepoint) orelse return;
         const len = std.unicode.utf8Encode(cp, &buf) catch return;
-        @memset(&self.last_text_input, 0);
-        @memcpy(self.last_text_input[0..len], buf[0..len]);
-        self.last_text_input_len = @intCast(len);
+        self.textInputCallback(buf[0..len], false);
+    }
+
+    fn keyCallback(
+        self: *Surface,
+        action: input.Action,
+        virtual_key: u32,
+        key: input.Key,
+        mods: input.Mods,
+    ) void {
         if (self.core_surface) |core_surface| {
-            core_surface.textCallback(self.last_text_input[0..len]) catch |err| {
-                log.err("error in win32 text callback err={}", .{err});
+            const translation = if (action == .press or action == .repeat)
+                self.translateKeyEvent(virtual_key, mods)
+            else
+                KeyTranslation{};
+            _ = core_surface.keyCallback(.{
+                .action = action,
+                .key = key,
+                .mods = mods,
+                .consumed_mods = translation.consumed_mods,
+                .composing = false,
+                .utf8 = translation.text(),
+                .unshifted_codepoint = translation.unshifted_codepoint,
+            }) catch |err| {
+                log.err("error in win32 key callback err={}", .{err});
+                return;
             };
         }
+    }
+
+    fn mouseButtonCallback(
+        self: *Surface,
+        action: input.MouseButtonState,
+        button: input.MouseButton,
+        mods: input.Mods,
+    ) void {
+        if (self.core_surface) |core_surface| {
+            _ = core_surface.mouseButtonCallback(action, button, mods) catch |err| {
+                log.err("error in win32 mouse button callback err={}", .{err});
+                return;
+            };
+        }
+    }
+
+    fn scrollCallback(
+        self: *Surface,
+        xoff: f64,
+        yoff: f64,
+        mods: input.ScrollMods,
+    ) void {
+        if (self.core_surface) |core_surface| {
+            core_surface.scrollCallback(xoff, yoff, mods) catch |err| {
+                log.err("error in win32 scroll callback err={}", .{err});
+                return;
+            };
+        }
+    }
+
+    fn textInputCallback(self: *Surface, text: []const u8, composing: bool) void {
+        @memset(&self.last_text_input, 0);
+        const len = @min(text.len, self.last_text_input.len);
+        @memcpy(self.last_text_input[0..len], text[0..len]);
+        self.last_text_input_len = @intCast(len);
+
+        if (self.core_surface) |core_surface| {
+            _ = core_surface.keyCallback(.{
+                .action = .press,
+                .key = .unidentified,
+                .mods = .{},
+                .consumed_mods = .{},
+                .composing = composing,
+                .utf8 = self.last_text_input[0..len],
+            }) catch |err| {
+                log.err("error in win32 text input callback err={}", .{err});
+                return;
+            };
+        }
+    }
+
+    fn updateImeWindow(self: *Surface) void {
+        const himc = win.ImmGetContext(self.hwnd) orelse return;
+        defer _ = win.ImmReleaseContext(self.hwnd, himc);
+
+        const core_surface = self.core_surface orelse return;
+        const ime = core_surface.imePoint();
+        var form: win.COMPOSITIONFORM = .{
+            .dwStyle = win.CFS_POINT,
+            .ptCurrentPos = .{
+                .x = @intFromFloat(ime.x),
+                .y = @intFromFloat(ime.y),
+            },
+            .rcArea = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+        };
+        _ = win.ImmSetCompositionWindow(himc, &form);
+    }
+
+    fn handleImeComposition(self: *Surface, l_param: win.LPARAM) void {
+        const himc = win.ImmGetContext(self.hwnd) orelse return;
+        defer _ = win.ImmReleaseContext(self.hwnd, himc);
+        self.updateImeWindow();
+
+        if ((@as(usize, @bitCast(l_param)) & win.GCS_COMPSTR) != 0) {
+            self.emitImeString(himc, win.GCS_COMPSTR, true);
+        }
+        if ((@as(usize, @bitCast(l_param)) & win.GCS_RESULTSTR) != 0) {
+            self.emitImeString(himc, win.GCS_RESULTSTR, false);
+        }
+    }
+
+    fn handleImeEndComposition(self: *Surface) void {
+        self.textInputCallback("", false);
+    }
+
+    fn emitImeString(self: *Surface, himc: win.HIMC, kind: win.DWORD, composing: bool) void {
+        const len_bytes = win.ImmGetCompositionStringW(himc, kind, null, 0);
+        if (len_bytes <= 0) return;
+
+        const code_units = @divExact(@as(usize, @intCast(len_bytes)), @sizeOf(u16));
+        const utf16 = self.app.core_app.alloc.alloc(u16, code_units) catch return;
+        defer self.app.core_app.alloc.free(utf16);
+        if (win.ImmGetCompositionStringW(
+            himc,
+            kind,
+            utf16.ptr,
+            @intCast(len_bytes),
+        ) < 0) return;
+
+        const utf8 = std.unicode.utf16LeToUtf8Alloc(self.app.core_app.alloc, utf16) catch return;
+        defer self.app.core_app.alloc.free(utf8);
+        if (!composing) {
+            self.suppress_char_messages +|= @intCast(@min(code_units, std.math.maxInt(u8)));
+        }
+        self.textInputCallback(utf8, composing);
+    }
+
+    fn consumeSuppressedCharMessage(self: *Surface) bool {
+        if (self.suppress_char_messages == 0) return false;
+        self.suppress_char_messages -= 1;
+        return true;
+    }
+
+    fn unshiftedCodepoint(self: *Surface, virtual_key: u32) u21 {
+        _ = self;
+        var key_state: [256]u8 = [_]u8{0} ** 256;
+        if (win.GetKeyboardState(&key_state) == 0) return 0;
+
+        key_state[win.VK_SHIFT] = 0;
+        key_state[win.VK_LSHIFT] = 0;
+        key_state[win.VK_RSHIFT] = 0;
+        key_state[win.VK_CONTROL] = 0;
+        key_state[win.VK_LCONTROL] = 0;
+        key_state[win.VK_RCONTROL] = 0;
+        key_state[win.VK_MENU] = 0;
+        key_state[win.VK_LMENU] = 0;
+        key_state[win.VK_RMENU] = 0;
+
+        const layout = win.GetKeyboardLayout(0);
+        const scan_code = win.MapVirtualKeyExW(virtual_key, win.MAPVK_VK_TO_VSC, layout);
+        if (scan_code == 0) return 0;
+
+        var utf16: [4]u16 = [_]u16{0} ** 4;
+        const written = win.ToUnicodeEx(
+            virtual_key,
+            scan_code,
+            &key_state,
+            &utf16,
+            utf16.len,
+            0,
+            layout,
+        );
+        if (written <= 0) return 0;
+
+        const cp = utf16[0];
+        if (cp >= 0xD800 and cp <= 0xDFFF) return 0;
+        return @intCast(cp);
+    }
+
+    const KeyTranslation = struct {
+        bytes: [16]u8 = [_]u8{0} ** 16,
+        len: u8 = 0,
+        consumed_mods: input.Mods = .{},
+        unshifted_codepoint: u21 = 0,
+        suppress_char_messages: u8 = 0,
+
+        fn text(self: *const KeyTranslation) []const u8 {
+            return self.bytes[0..self.len];
+        }
+    };
+
+    fn translateKeyEvent(
+        self: *Surface,
+        virtual_key: u32,
+        mods: input.Mods,
+    ) KeyTranslation {
+        var result: KeyTranslation = .{
+            .unshifted_codepoint = self.unshiftedCodepoint(virtual_key),
+        };
+
+        var key_state: [256]u8 = [_]u8{0} ** 256;
+        if (win.GetKeyboardState(&key_state) == 0) return result;
+
+        const layout = win.GetKeyboardLayout(0);
+        const scan_code = win.MapVirtualKeyExW(virtual_key, win.MAPVK_VK_TO_VSC, layout);
+        if (scan_code == 0) return result;
+
+        var utf16: [8]u16 = [_]u16{0} ** 8;
+        const written = win.ToUnicodeEx(
+            virtual_key,
+            scan_code,
+            &key_state,
+            &utf16,
+            utf16.len,
+            0,
+            layout,
+        );
+        if (written <= 0) return result;
+
+        const units: usize = @intCast(written);
+        const utf8 = std.unicode.utf16LeToUtf8(result.bytes[0..], utf16[0..units]) catch
+            return result;
+        result.len = @intCast(utf8);
+        result.suppress_char_messages = suppressCharMessageCount(units);
+        result.consumed_mods = translatedTextConsumedMods(
+            mods,
+            result.text(),
+            result.unshifted_codepoint,
+            (win.GetKeyState(win.VK_RMENU) & @as(win.SHORT, @bitCast(@as(u16, 0x8000)))) != 0,
+        );
+
+        self.suppress_char_messages = result.suppress_char_messages;
+        return result;
     }
 
     fn markDirty(self: *Surface) void {
@@ -1401,7 +2312,7 @@ pub const Surface = struct {
         if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
             return error.Unexpected;
         }
-        if (self.app.ci_smoke_enabled and !self.app.ci_smoke_present_ok_logged) {
+        if (self.app.ci_smoke_mode != .disabled and !self.app.ci_smoke_present_ok_logged) {
             self.app.ci_smoke_present_ok_logged = true;
             log.info("ci.win32.present_ok", .{});
         }
@@ -1549,5 +2460,132 @@ pub const Surface = struct {
         const raw_pitch = std.math.mul(u32, width_px, 4) catch return error.OutOfMemory;
         const aligned = std.mem.alignForward(u32, raw_pitch, software_upload_row_pitch_alignment);
         return aligned;
+    }
+
+    const WindowInheritance = struct {
+        working_directory: ?[]const u8 = null,
+        font_size: ?f32 = null,
+    };
+
+    fn collectWindowInheritance(
+        alloc: Allocator,
+        config: *const configpkg.Config,
+        source: ?*CoreSurface,
+    ) !WindowInheritance {
+        const surface = source orelse return .{};
+        return .{
+            .working_directory = if (apprt.surface.shouldInheritWorkingDirectory(.window, config))
+                try surface.pwd(alloc)
+            else
+                null,
+            .font_size = if (config.@"window-inherit-font-size")
+                surface.font_size.points
+            else
+                null,
+        };
+    }
+
+    fn applyWindowInheritance(
+        config: *configpkg.Config,
+        alloc: Allocator,
+        inheritance: WindowInheritance,
+    ) !void {
+        if (inheritance.working_directory) |pwd| {
+            config.@"working-directory" = try alloc.dupe(u8, pwd);
+        }
+        if (inheritance.font_size) |font_size| {
+            config.@"font-size" = font_size;
+        }
+    }
+
+    fn suppressCharMessageCount(units: usize) u8 {
+        return @intCast(@min(units, std.math.maxInt(u8)));
+    }
+
+    fn translatedTextConsumedMods(
+        mods: input.Mods,
+        text: []const u8,
+        unshifted_codepoint: u21,
+        right_alt_down: bool,
+    ) input.Mods {
+        var result: input.Mods = .{};
+
+        if (mods.shift and unshifted_codepoint != 0 and text.len > 0) {
+            if (text[0] >= 'A' and text[0] <= 'Z') result.shift = true;
+        }
+
+        if (mods.ctrl and mods.alt and right_alt_down and text.len > 0) {
+            result.ctrl = true;
+            result.alt = true;
+        }
+
+        return result;
+    }
+
+    test "win32 ipc payload round trip preserves arguments" {
+        const testing = std.testing;
+
+        const payload = try encodeIpcNewWindowPayload(testing.allocator, &.{
+            "cmd",
+            "/c",
+            "echo ghostty",
+        });
+        defer testing.allocator.free(payload);
+
+        var request = try decodeIpcNewWindowPayload(testing.allocator, payload);
+        defer request.deinit(testing.allocator);
+
+        try testing.expect(request.arguments != null);
+        const arguments = request.arguments.?;
+        try testing.expectEqual(@as(usize, 3), arguments.len);
+        try testing.expectEqualStrings("cmd", arguments[0]);
+        try testing.expectEqualStrings("/c", arguments[1]);
+        try testing.expectEqualStrings("echo ghostty", arguments[2]);
+    }
+
+    test "win32 translated text consumed mods handles shift and altgr" {
+        const testing = std.testing;
+
+        const shift_result = translatedTextConsumedMods(
+            .{ .shift = true },
+            "A",
+            'a',
+            false,
+        );
+        try testing.expect(shift_result.shift);
+        try testing.expect(!shift_result.ctrl);
+        try testing.expect(!shift_result.alt);
+
+        const altgr_result = translatedTextConsumedMods(
+            .{ .ctrl = true, .alt = true },
+            "@",
+            '@',
+            true,
+        );
+        try testing.expect(altgr_result.ctrl);
+        try testing.expect(altgr_result.alt);
+    }
+
+    test "win32 suppress char message count saturates" {
+        const testing = std.testing;
+        try testing.expectEqual(@as(u8, 0), suppressCharMessageCount(0));
+        try testing.expectEqual(@as(u8, 3), suppressCharMessageCount(3));
+        try testing.expectEqual(std.math.maxInt(u8), suppressCharMessageCount(1024));
+    }
+
+    test "win32 apply window inheritance updates config" {
+        const testing = std.testing;
+
+        var config = try configpkg.Config.default(testing.allocator);
+        defer config.deinit();
+
+        try applyWindowInheritance(&config, config.arenaAlloc(), .{
+            .working_directory = "/tmp/ghostty-win32",
+            .font_size = 18,
+        });
+
+        try testing.expect(config.@"working-directory" != null);
+        try testing.expectEqualStrings("/tmp/ghostty-win32", config.@"working-directory".?);
+        try testing.expectEqual(@as(f32, 18), config.@"font-size");
     }
 };
