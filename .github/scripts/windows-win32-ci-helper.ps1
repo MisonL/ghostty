@@ -134,3 +134,111 @@ function Close-GhosttyWindowBestEffort {
   if ($Hwnd -eq [IntPtr]::Zero) { return }
   [void][GhosttyWin32Ci]::PostMessageW($Hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
 }
+
+if (-not ("GhosttyProcessLogCapture" -as [type])) {
+  Add-Type @"
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+public sealed class GhosttyProcessLogCapture : IDisposable {
+  private readonly Process process;
+  private readonly StreamWriter writer;
+  private readonly object syncRoot = new object();
+  private readonly DataReceivedEventHandler dataHandler;
+  private bool disposed;
+
+  public GhosttyProcessLogCapture(Process process, string logPath) {
+    this.process = process;
+    this.writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false));
+    this.writer.AutoFlush = true;
+    this.dataHandler = this.HandleData;
+    this.process.OutputDataReceived += this.dataHandler;
+    this.process.ErrorDataReceived += this.dataHandler;
+    this.process.BeginOutputReadLine();
+    this.process.BeginErrorReadLine();
+  }
+
+  private void HandleData(object sender, DataReceivedEventArgs args) {
+    if (args == null || args.Data == null) {
+      return;
+    }
+
+    lock (this.syncRoot) {
+      if (this.disposed) {
+        return;
+      }
+      this.writer.WriteLine(args.Data);
+    }
+  }
+
+  public void Stop() {
+    this.Dispose();
+  }
+
+  public void Dispose() {
+    bool shouldDispose;
+    lock (this.syncRoot) {
+      shouldDispose = !this.disposed;
+      this.disposed = true;
+    }
+
+    if (!shouldDispose) {
+      return;
+    }
+
+    try {
+      this.process.CancelOutputRead();
+    } catch {
+    }
+    try {
+      this.process.CancelErrorRead();
+    } catch {
+    }
+    try {
+      this.process.OutputDataReceived -= this.dataHandler;
+    } catch {
+    }
+    try {
+      this.process.ErrorDataReceived -= this.dataHandler;
+    } catch {
+    }
+
+    lock (this.syncRoot) {
+      try {
+        this.writer.Flush();
+      } catch {
+      }
+      this.writer.Dispose();
+    }
+  }
+}
+"@
+}
+
+function Start-GhosttyProcessLogCapture {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$LogPath
+  )
+
+  if ($null -eq $Process) {
+    return $null
+  }
+
+  return [GhosttyProcessLogCapture]::new($Process, $LogPath)
+}
+
+function Stop-GhosttyProcessLogCapture {
+  param($Capture)
+
+  if ($null -eq $Capture) {
+    return
+  }
+
+  try {
+    $Capture.Stop()
+  } catch {
+  }
+}

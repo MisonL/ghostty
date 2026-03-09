@@ -19,8 +19,13 @@ if (Test-Path $logPath) {
   Remove-Item -Path $logPath -Force
 }
 
-Write-Host "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode"
-"Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode" | Out-File -FilePath $logPath -Append -Encoding utf8
+function Write-Log {
+  param([string]$Message)
+  Write-Host $Message
+  $Message | Out-File -FilePath $logPath -Append -Encoding utf8
+}
+
+Write-Log "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode"
 
 $exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
 if ([string]::IsNullOrWhiteSpace($exePath)) {
@@ -55,7 +60,7 @@ if ([string]::IsNullOrWhiteSpace($exePath)) {
 
   $exePath = Join-Path $repoRoot "zig-out\bin\ghostty.exe"
 } else {
-  Write-Host "Using prebuilt smoke executable: $exePath"
+  Write-Log "Using prebuilt smoke executable: $exePath"
 }
 
 if (-not (Test-Path $exePath)) {
@@ -75,8 +80,7 @@ if (-not (Test-Path $cmdExe)) {
   throw "Expected Windows shell executable not found: $cmdExe"
 }
 
-"Using Windows shell executable: $cmdExe" | Out-File -FilePath $logPath -Append -Encoding utf8
-Write-Host "Using Windows shell executable: $cmdExe"
+Write-Log "Using Windows shell executable: $cmdExe"
 
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $exePath
@@ -97,25 +101,13 @@ $process.StartInfo = $psi
 $process.EnableRaisingEvents = $true
 $forcedTermination = $false
 $windowHandle = [IntPtr]::Zero
-$stdoutEvent = $null
-$stderrEvent = $null
+$logCapture = $null
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
 }
 
-$stdoutEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
-  if ($null -ne $EventArgs.Data) {
-    $EventArgs.Data | Out-File -FilePath $using:logPath -Append -Encoding utf8
-  }
-}
-$stderrEvent = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
-  if ($null -ne $EventArgs.Data) {
-    $EventArgs.Data | Out-File -FilePath $using:logPath -Append -Encoding utf8
-  }
-}
-$process.BeginOutputReadLine()
-$process.BeginErrorReadLine()
+$logCapture = Start-GhosttyProcessLogCapture -Process $process -LogPath $logPath
 
 $deadline = (Get-Date).AddSeconds(30)
 while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
@@ -147,27 +139,7 @@ try {
   $process.WaitForExit(1000) | Out-Null
 } catch {
 }
-
-if ($null -ne $stdoutEvent) {
-  try {
-    Unregister-Event -SourceIdentifier $stdoutEvent.Name -ErrorAction SilentlyContinue
-  } catch {
-  }
-  try {
-    $stdoutEvent.Action | Remove-Job -Force -ErrorAction SilentlyContinue
-  } catch {
-  }
-}
-if ($null -ne $stderrEvent) {
-  try {
-    Unregister-Event -SourceIdentifier $stderrEvent.Name -ErrorAction SilentlyContinue
-  } catch {
-  }
-  try {
-    $stderrEvent.Action | Remove-Job -Force -ErrorAction SilentlyContinue
-  } catch {
-  }
-}
+Stop-GhosttyProcessLogCapture -Capture $logCapture
 
 if (-not (Test-Path $logPath)) {
   throw "Smoke log missing: $logPath"

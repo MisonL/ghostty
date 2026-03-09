@@ -65,50 +65,6 @@ function Resolve-GhosttyExePath {
   return $builtExe
 }
 
-function Start-ProcessLogCapture {
-  param(
-    [System.Diagnostics.Process]$Process,
-    [string]$LogPath
-  )
-
-  if ($null -eq $Process) { return $null }
-
-  $stdoutEvent = Register-ObjectEvent -InputObject $Process -EventName OutputDataReceived -Action {
-    if ($null -ne $EventArgs.Data) {
-      $EventArgs.Data | Out-File -FilePath $using:LogPath -Append -Encoding utf8
-    }
-  }
-  $stderrEvent = Register-ObjectEvent -InputObject $Process -EventName ErrorDataReceived -Action {
-    if ($null -ne $EventArgs.Data) {
-      $EventArgs.Data | Out-File -FilePath $using:LogPath -Append -Encoding utf8
-    }
-  }
-  $Process.BeginOutputReadLine()
-  $Process.BeginErrorReadLine()
-
-  return [pscustomobject]@{
-    Stdout = $stdoutEvent
-    Stderr = $stderrEvent
-  }
-}
-
-function Stop-ProcessLogCapture {
-  param($Capture)
-
-  if ($null -eq $Capture) { return }
-  foreach ($subscription in @($Capture.Stdout, $Capture.Stderr)) {
-    if ($null -eq $subscription) { continue }
-    try {
-      Unregister-Event -SourceIdentifier $subscription.Name -ErrorAction SilentlyContinue
-    } catch {
-    }
-    try {
-      $subscription.Action | Remove-Job -Force -ErrorAction SilentlyContinue
-    } catch {
-    }
-  }
-}
-
 function Start-GhosttyInteractive {
   param(
     [string]$ExePath,
@@ -141,7 +97,7 @@ function Start-GhosttyInteractive {
   if (-not $process.Start()) {
     throw "Failed to start ghostty.exe for interaction ($Label)"
   }
-  $capture = Start-ProcessLogCapture -Process $process -LogPath $logPath
+  $capture = Start-GhosttyProcessLogCapture -Process $process -LogPath $logPath
   return [pscustomobject]@{
     Process = $process
     Capture = $capture
@@ -188,19 +144,9 @@ function Wait-ForExit {
   if (-not $Process.WaitForExit(15000)) {
     throw "Ghostty interaction process did not exit cleanly ($Label)"
   }
+  $Process.WaitForExit()
   if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne -1) {
     throw "Ghostty interaction process exited with code $($Process.ExitCode) ($Label)"
-  }
-}
-
-function Capture-ProcessLogs {
-  param([System.Diagnostics.Process]$Process)
-
-  if ($null -eq $Process) { return }
-  try {
-    if (-not $Process.HasExited) { return }
-  } catch {
-    return
   }
 }
 
@@ -231,6 +177,13 @@ function Stop-ProcessBestEffort {
     if (-not $Process.HasExited) {
       $Process.Kill($true)
     }
+  } catch {
+  }
+  try {
+    if (-not $Process.HasExited) {
+      $Process.WaitForExit(5000) | Out-Null
+    }
+    $Process.WaitForExit()
   } catch {
   }
 }
@@ -266,21 +219,17 @@ try {
     Send-Keys "echo ghostty-ci-second-window{ENTER}"
     Send-Keys "exit{ENTER}"
     Wait-ForExit -Process $secondary -Label "secondary"
-    Capture-ProcessLogs -Process $secondary
   }
 
   Focus-Window -Hwnd $primaryHwnd
   Send-Keys "exit{ENTER}"
   Wait-ForExit -Process $primary -Label "primary"
-  Capture-ProcessLogs -Process $primary
 
   Write-Log "Windows interaction passed mode=$Mode"
 }
 finally {
-  Capture-ProcessLogs -Process $secondary
-  Capture-ProcessLogs -Process $primary
-  Stop-ProcessLogCapture -Capture $secondaryCapture
-  Stop-ProcessLogCapture -Capture $primaryCapture
   Stop-ProcessBestEffort -Process $secondary -Hwnd $secondaryHwnd
   Stop-ProcessBestEffort -Process $primary -Hwnd $primaryHwnd
+  Stop-GhosttyProcessLogCapture -Capture $secondaryCapture
+  Stop-GhosttyProcessLogCapture -Capture $primaryCapture
 }
