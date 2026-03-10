@@ -5907,6 +5907,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // If we're part of a wide character, we move the cursor back
                 // to the actual character.
+                if (cursor_vp.x == 0) {
+                    log.warn("cursor wide tail reported at x=0; refusing to underflow", .{});
+                    return;
+                }
                 break :cell .{ true, cursor_vp.x - 1 };
             };
 
