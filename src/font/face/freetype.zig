@@ -674,9 +674,8 @@ pub const Face = struct {
                 var input_pixels = glyph_bitmap.buffer;
                 var input_pitch: i32 = glyph_bitmap.pitch;
                 if (input_pitch < 0) {
-                    const abs_pitch_i32 = std.math.absInt(input_pitch) catch
-                        return empty_glyph;
-                    const abs_pitch_u32: u32 = @intCast(abs_pitch_i32);
+                    if (input_pitch == std.math.minInt(i32)) return empty_glyph;
+                    const abs_pitch_u32: u32 = @intCast(@abs(input_pitch));
                     if (abs_pitch_u32 > 0 and abs_pitch_u32 < min_pitch) {
                         return empty_glyph;
                     }
