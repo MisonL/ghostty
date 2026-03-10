@@ -2044,6 +2044,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .metrics = grid.metrics,
                 };
             };
+            traceWin32RendererInitStep("font_critical.ready");
 
             const display_link: ?DisplayLink = switch (builtin.os.tag) {
                 .macos => if (options.config.vsync)
@@ -2053,6 +2054,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 else => null,
             };
             errdefer if (display_link) |v| v.release();
+            traceWin32RendererInitStep("display_link.ready");
 
             var result: Self = .{
                 .alloc = alloc,
@@ -2141,7 +2143,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .swap_chain = swap_chain,
                 .display_link = display_link,
             };
+            traceWin32RendererInitStep("result.ready");
 
+            traceWin32RendererInitStep("init_shaders.begin");
             try result.initShaders();
             traceWin32RendererInitStep("init_shaders.ready");
 
@@ -7619,17 +7623,20 @@ fn initDrawFrameSmokeRenderer(
     });
     errdefer font_shaper.deinit();
 
-    font_grid.lock.lockShared();
-    defer font_grid.lock.unlockShared();
+    // SharedGrid.metrics is populated during init and is currently immutable.
+    const grid_metrics = font_grid.metrics;
 
     var result: DrawFrameSmokeRenderer = .{
         .alloc = alloc,
         .config = try DrawFrameSmokeRenderer.DerivedConfig.init(alloc, raw_config),
         .surface_mailbox = surface_mailbox,
-        .grid_metrics = font_grid.metrics,
+        .grid_metrics = grid_metrics,
         .size = .{
             .screen = surface_size,
-            .cell = font_grid.cellSize(),
+            .cell = .{
+                .width = grid_metrics.cell_width,
+                .height = grid_metrics.cell_height,
+            },
             .padding = .{},
         },
         .focused = true,
