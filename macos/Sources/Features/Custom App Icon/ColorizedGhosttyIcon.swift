@@ -34,7 +34,7 @@ struct ColorizedGhosttyIcon {
         guard let tintedGhost = ghost.tint(color: ghostColor) else { return nil }
 
         // Combine our layers using the proper blending modes
-        return.combine(images: [
+        return NSImage.combine(images: [
             base,
             screen,
             screenGradient,
