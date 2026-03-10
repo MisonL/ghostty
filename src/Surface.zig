@@ -506,6 +506,7 @@ pub fn init(
 
     // Get our configuration
     var derived_config = try DerivedConfig.init(alloc, config);
+    traceWin32CoreInitStep("surface.init.derived_config.ready");
     errdefer derived_config.deinit();
 
     // Initialize our renderer with our initialized surface.
@@ -569,6 +570,7 @@ pub fn init(
 
         break :size size;
     };
+    traceWin32CoreInitStep("surface.init.size.ready");
 
     // Create our terminal grid with the initial size
     const app_mailbox: App.Mailbox = .{ .rt_app = rt_app, .mailbox = &app.mailbox };
@@ -604,6 +606,7 @@ pub fn init(
     var io_thread = try termio.Thread.init(alloc);
     errdefer io_thread.deinit();
 
+    traceWin32CoreInitStep("surface.init.struct.begin");
     self.* = .{
         .alloc = alloc,
         .app = app,
@@ -632,6 +635,7 @@ pub fn init(
         // lets us get the most likely correct color theme and so on.
         .config_conditional_state = app.config_conditional_state,
     };
+    traceWin32CoreInitStep("surface.init.struct.ready");
 
     // The command we're going to execute
     const command: ?configpkg.Command = if (app.first)
@@ -642,6 +646,7 @@ pub fn init(
     // Start our IO implementation
     // This separate block ({}) is important because our errdefers must
     // be scoped here to be valid.
+    traceWin32CoreInitStep("surface.init.termio.begin");
     {
         var env = rt_surface.defaultTermioEnv() catch |err| env: {
             // If an error occurs, we don't want to block surface startup.
@@ -686,11 +691,13 @@ pub fn init(
             .surface_mailbox = .{ .surface = self, .app = app_mailbox },
         });
     }
+    traceWin32CoreInitStep("surface.init.termio.ready");
     // Outside the block, IO has now taken ownership of our temporary state
     // so we can just defer this and not the subcomponents.
     errdefer self.io.deinit();
 
     // Report initial cell size on surface creation
+    traceWin32CoreInitStep("surface.init.initial_actions.begin");
     _ = try rt_app.performAction(
         .{ .surface = self },
         .cell_size,
@@ -708,33 +715,42 @@ pub fn init(
             .max_height = 0,
         },
     );
+    traceWin32CoreInitStep("surface.init.initial_actions.ready");
 
     // Call our size callback which handles all our retina setup
     // Note: this shouldn't be necessary and when we clean up the surface
     // init stuff we should get rid of this. But this is required because
     // sizeCallback does retina-aware stuff we don't do here and don't want
     // to duplicate.
+    traceWin32CoreInitStep("surface.init.resize.begin");
     try self.resize(self.size.screen);
+    traceWin32CoreInitStep("surface.init.resize.ready");
 
     // Give the renderer one more opportunity to finalize any surface
     // setup on the main thread prior to spinning up the rendering thread.
+    traceWin32CoreInitStep("surface.init.finalize_surface.begin");
     try renderer_impl.finalizeSurfaceInit(rt_surface);
+    traceWin32CoreInitStep("surface.init.finalize_surface.ready");
 
     // Start our renderer thread
+    traceWin32CoreInitStep("surface.init.spawn_renderer.begin");
     self.renderer_thr = try std.Thread.spawn(
         .{},
         rendererpkg.Thread.threadMain,
         .{&self.renderer_thread},
     );
     self.renderer_thr.setName("renderer") catch {};
+    traceWin32CoreInitStep("surface.init.spawn_renderer.ready");
 
     // Start our IO thread
+    traceWin32CoreInitStep("surface.init.spawn_io.begin");
     self.io_thr = try std.Thread.spawn(
         .{},
         termio.Thread.threadMain,
         .{ &self.io_thread, &self.io },
     );
     self.io_thr.setName("io") catch {};
+    traceWin32CoreInitStep("surface.init.spawn_io.ready");
 
     // Determine our initial window size if configured. We need to do this
     // quite late in the process because our height/width are in grid dimensions,

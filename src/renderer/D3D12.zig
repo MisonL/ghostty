@@ -697,7 +697,10 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    return try shaders.Shaders.init(alloc, self.d3d12_device, custom_shaders);
+    traceWin32D3D12Init("init_shaders.begin");
+    const result = try shaders.Shaders.init(alloc, self.d3d12_device, custom_shaders);
+    traceWin32D3D12Init("init_shaders.ready");
+    return result;
 }
 
 pub fn surfaceSize(self: *const D3D12) !struct { width: u32, height: u32 } {

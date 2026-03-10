@@ -1268,7 +1268,9 @@ pub const App = struct {
 
     fn targetSurface(self: *App, target: apprt.Target) ?*Surface {
         return switch (target) {
-            .surface => |core_surface| self.findRuntimeSurface(core_surface),
+            // 在 core surface 初始化期间，win32 Surface 还没加入 self.surfaces 列表，
+            // 但 core_surface.rt_surface 已经是稳定指针；用它避免丢失 init 阶段的 action。
+            .surface => |core_surface| @ptrCast(core_surface.rt_surface),
             .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
         };
     }

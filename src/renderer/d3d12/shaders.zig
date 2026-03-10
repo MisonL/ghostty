@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Pipeline = @import("Pipeline.zig");
 const OpenGLShaders = @import("../opengl/shaders.zig");
@@ -6,6 +7,34 @@ const internal_os = @import("../../os/main.zig");
 const winos = internal_os.windows;
 
 const log = std.log.scoped(.d3d12);
+
+fn shouldTraceWin32D3D12Shaders() bool {
+    if (comptime builtin.target.os.tag != .windows) return false;
+    const alloc = std.heap.page_allocator;
+
+    const smoke = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch null;
+    defer if (smoke) |value| alloc.free(value);
+    if (smoke) |value| {
+        if (value.len > 0 and !std.mem.eql(u8, value, "0")) return true;
+    }
+
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32D3D12ShaderStep(step: []const u8) void {
+    if (!shouldTraceWin32D3D12Shaders()) return;
+    std.debug.print("info(renderer_d3d12): ci.win32.d3d12.shader.step={s}\n", .{step});
+}
+
+fn traceWin32D3D12ShaderPipeline(name: []const u8, step: []const u8) void {
+    if (!shouldTraceWin32D3D12Shaders()) return;
+    std.debug.print(
+        "info(renderer_d3d12): ci.win32.d3d12.shader.pipeline={s} step={s}\n",
+        .{ name, step },
+    );
+}
 
 const semantic_texcoord: [*:0]const u8 = "TEXCOORD";
 
@@ -246,6 +275,7 @@ pub const Shaders = struct {
         device: ?*winos.graphics.ID3D12Device,
         post_shaders: []const [:0]const u8,
     ) !Shaders {
+        traceWin32D3D12ShaderStep("shaders.init.begin");
         var pipelines: PipelineCollection = undefined;
 
         var initialized_pipelines: usize = 0;
@@ -256,10 +286,13 @@ pub const Shaders = struct {
         };
 
         inline for (pipeline_descs) |pipeline| {
+            traceWin32D3D12ShaderPipeline(pipeline[0], "begin");
             @field(pipelines, pipeline[0]) = try pipeline[1].initPipeline(alloc, device);
             initialized_pipelines += 1;
+            traceWin32D3D12ShaderPipeline(pipeline[0], "ready");
         }
 
+        traceWin32D3D12ShaderStep("shaders.init.post_pipelines.begin");
         const post_pipelines: []const Pipeline = initPostPipelines(alloc, device, post_shaders) catch |err| err: {
             log.warn("error initializing d3d12 postprocess shaders err={}", .{err});
             break :err &.{};
@@ -269,6 +302,7 @@ pub const Shaders = struct {
             alloc.free(post_pipelines);
         };
 
+        traceWin32D3D12ShaderStep("shaders.init.ready");
         return .{
             .pipelines = pipelines,
             .post_pipelines = post_pipelines,

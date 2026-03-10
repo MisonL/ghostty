@@ -2411,11 +2411,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const has_custom_shaders = custom_shaders.len > 0;
 
+            traceWin32RendererInitStep("api.init_shaders.begin");
             var shaders = try self.api.initShaders(
                 self.alloc,
                 custom_shaders,
             );
             errdefer shaders.deinit(self.alloc);
+            traceWin32RendererInitStep("api.init_shaders.ready");
 
             self.shaders = shaders;
             self.has_custom_shaders = has_custom_shaders;

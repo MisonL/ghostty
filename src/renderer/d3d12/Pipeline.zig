@@ -7,6 +7,26 @@ const windows = std.os.windows;
 const internal_os = @import("../../os/main.zig");
 const winos = internal_os.windows;
 
+fn shouldTraceWin32D3D12Pipeline() bool {
+    if (comptime builtin.target.os.tag != .windows) return false;
+    const alloc = std.heap.page_allocator;
+
+    const smoke = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_WIN32_SMOKE") catch null;
+    defer if (smoke) |value| alloc.free(value);
+    if (smoke) |value| {
+        if (value.len > 0 and !std.mem.eql(u8, value, "0")) return true;
+    }
+
+    const label = std.process.getEnvVarOwned(alloc, "GHOSTTY_CI_INTERACTION_LABEL") catch null;
+    defer if (label) |value| alloc.free(value);
+    return if (label) |value| value.len > 0 else false;
+}
+
+fn traceWin32D3D12Pipeline(step: []const u8) void {
+    if (!shouldTraceWin32D3D12Pipeline()) return;
+    std.debug.print("info(renderer_d3d12): ci.win32.d3d12.pipeline.step={s}\n", .{step});
+}
+
 pub const Options = struct {
     alloc: Allocator,
     device: ?*winos.graphics.ID3D12Device = null,
@@ -61,21 +81,33 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     errdefer result.deinit(opts.alloc);
 
     if (builtin.target.os.tag == .windows) {
+        if (shouldTraceWin32D3D12Pipeline()) {
+            std.debug.print(
+                "info(renderer_d3d12): ci.win32.d3d12.pipeline.init entries vs={s} ps={s}\n",
+                .{ result.vertex_entry, result.fragment_entry },
+            );
+        }
+        traceWin32D3D12Pipeline("compile.vertex.begin");
         result.vertex_blob = try compileShader(
             result.vertex_source,
             result.vertex_entry,
             "vs_5_0",
         );
+        traceWin32D3D12Pipeline("compile.vertex.ready");
         errdefer result.vertex_blob.deinit();
+        traceWin32D3D12Pipeline("compile.fragment.begin");
         result.fragment_blob = try compileShader(
             result.fragment_source,
             result.fragment_entry,
             "ps_5_0",
         );
+        traceWin32D3D12Pipeline("compile.fragment.ready");
         errdefer result.fragment_blob.deinit();
 
         if (opts.device) |device| {
+            traceWin32D3D12Pipeline("graphics_objects.begin");
             try result.initGraphicsObjects(device);
+            traceWin32D3D12Pipeline("graphics_objects.ready");
         }
     }
 
@@ -141,6 +173,12 @@ fn compileShader(
     else
         0;
 
+    if (shouldTraceWin32D3D12Pipeline()) {
+        std.debug.print(
+            "info(renderer_d3d12): ci.win32.d3d12.pipeline.compile.call entry={s} profile={s} len={d}\n",
+            .{ entry, profile, source.len },
+        );
+    }
     const hr = d3d_compile(
         source.ptr,
         source.len,
@@ -154,6 +192,12 @@ fn compileShader(
         &raw_code,
         &raw_errors,
     );
+    if (shouldTraceWin32D3D12Pipeline()) {
+        std.debug.print(
+            "info(renderer_d3d12): ci.win32.d3d12.pipeline.compile.return entry={s} profile={s} hr=0x{x} code_null={}\n",
+            .{ entry, profile, @as(u32, @bitCast(hr)), raw_code == null },
+        );
+    }
     if (hr != winos.S_OK or raw_code == null) {
         if (raw_errors) |blob| {
             const ptr = blob.lpVtbl[0].GetBufferPointer.?(@ptrCast(blob));
