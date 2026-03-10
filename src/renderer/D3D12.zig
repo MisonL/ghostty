@@ -367,17 +367,19 @@ pub const RenderPass = struct {
             &viewport,
         );
 
+        const rect_right = std.math.cast(i32, switch (self.attachments[0].target) {
+            .texture => |t| t.width,
+            .target => |t| t.width,
+        }) orelse return error.Unexpected;
+        const rect_bottom = std.math.cast(i32, switch (self.attachments[0].target) {
+            .texture => |t| t.height,
+            .target => |t| t.height,
+        }) orelse return error.Unexpected;
         const rect = winos.c.D3D12_RECT{
             .left = 0,
             .top = 0,
-            .right = @intCast(switch (self.attachments[0].target) {
-                .texture => |t| t.width,
-                .target => |t| t.width,
-            }),
-            .bottom = @intCast(switch (self.attachments[0].target) {
-                .texture => |t| t.height,
-                .target => |t| t.height,
-            }),
+            .right = rect_right,
+            .bottom = rect_bottom,
         };
         command_list.lpVtbl[0].RSSetScissorRects.?(
             command_list,
@@ -461,7 +463,7 @@ pub const RenderPass = struct {
                     command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
                         command_list,
                         2,
-                        api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                        try api.srvGpuHandleForIndex(tex.data.srv_index.?),
                     );
                 }
             } else {
@@ -474,7 +476,7 @@ pub const RenderPass = struct {
                 command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
                     command_list,
                     2,
-                    api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                    try api.srvGpuHandleForIndex(tex.data.srv_index.?),
                 );
             }
             if (s.textures.len > 1) {
@@ -488,7 +490,7 @@ pub const RenderPass = struct {
                         command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
                             command_list,
                             3,
-                            api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                            try api.srvGpuHandleForIndex(tex.data.srv_index.?),
                         );
                     }
                 } else {
@@ -501,7 +503,7 @@ pub const RenderPass = struct {
                     command_list.lpVtbl[0].SetGraphicsRootDescriptorTable.?(
                         command_list,
                         3,
-                        api.srvGpuHandleForIndex(tex.data.srv_index.?),
+                        try api.srvGpuHandleForIndex(tex.data.srv_index.?),
                     );
                 }
             }
@@ -509,7 +511,7 @@ pub const RenderPass = struct {
 
         if (@hasField(@TypeOf(s), "buffers") and s.buffers.len > 0 and pipeline.vertex_stride > 0) {
             if (s.buffers[0]) |buffer| {
-                var view = vertexBufferView(buffer, pipeline.vertex_stride);
+                var view = try vertexBufferView(buffer, pipeline.vertex_stride);
                 command_list.lpVtbl[0].IASetVertexBuffers.?(
                     command_list,
                     0,
@@ -523,10 +525,18 @@ pub const RenderPass = struct {
             command_list,
             pipeline.primitive_topology,
         );
+        const vertex_count = std.math.cast(u32, s.draw.vertex_count) orelse {
+            log.err("d3d12 draw vertex_count overflow vertex_count={}", .{s.draw.vertex_count});
+            return error.Unexpected;
+        };
+        const instance_count_u32 = std.math.cast(u32, instance_count) orelse {
+            log.err("d3d12 draw instance_count overflow instance_count={}", .{instance_count});
+            return error.Unexpected;
+        };
         command_list.lpVtbl[0].DrawInstanced.?(
             command_list,
-            @intCast(s.draw.vertex_count),
-            @intCast(instance_count),
+            vertex_count,
+            instance_count_u32,
             0,
             0,
         );
@@ -763,9 +773,10 @@ pub fn publishSoftwareFrame(
 
     const width_px = target.width;
     const height_px = target.height;
+    const row_bytes = std.math.mul(u32, width_px, 4) catch return error.OutOfMemory;
     const row_pitch = std.mem.alignForward(
         u32,
-        width_px * 4,
+        row_bytes,
         winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
     );
     const data_len = std.math.mul(
@@ -1059,8 +1070,9 @@ fn releaseSrvIndex(self: *D3D12, index: u32) void {
 fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
     if (shouldTraceWin32D3D12Init()) {
         log.info(
-            "ci.win32.d3d12.write_texture_srv index={d} cpu=0x{x} desc={d}",
+            "ci.win32.d3d12.write_texture_srv name={s} index={d} cpu=0x{x} desc={d}",
             .{
+                texture.debug_name orelse "unnamed",
                 texture.srv_index orelse std.math.maxInt(u32),
                 self.srv_heap_cpu_start_ptr,
                 self.srv_descriptor_size,
@@ -1081,12 +1093,19 @@ fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
         .PlaneSlice = 0,
         .ResourceMinLODClamp = 0,
     };
+    const srv_handle = try self.srvCpuHandleForIndex(texture.srv_index.?);
     device.lpVtbl[0].CreateShaderResourceView.?(
         device,
         resource,
         &desc,
-        self.srvCpuHandleForIndex(texture.srv_index.?),
+        srv_handle,
     );
+    if (shouldTraceWin32D3D12Init()) {
+        log.info(
+            "ci.win32.d3d12.write_texture_srv.ready name={s} index={d}",
+            .{ texture.debug_name orelse "unnamed", texture.srv_index.? },
+        );
+    }
 }
 
 fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
@@ -1239,7 +1258,11 @@ fn uploadTextureRegion(
     );
 
     const dst: [*]u8 = @ptrCast(mapped.?);
-    const src_stride = width * texture.bytes_per_pixel;
+    const src_stride = std.math.mul(
+        usize,
+        width,
+        @as(usize, texture.bytes_per_pixel),
+    ) catch return error.OutOfMemory;
     if (row_size_in_bytes != src_stride) {
         log.warn(
             "d3d12 copy footprint row size differs from expected name={s} row_size={} expected_stride={} row_pitch={} rows={}",
@@ -1248,8 +1271,12 @@ fn uploadTextureRegion(
     }
     var row: usize = 0;
     while (row < height) : (row += 1) {
-        const src_off = row * src_stride;
-        const dst_off = row * @as(usize, row_pitch);
+        const src_off = std.math.mul(usize, row, src_stride) catch return error.OutOfMemory;
+        const dst_off = std.math.mul(
+            usize,
+            row,
+            @as(usize, row_pitch),
+        ) catch return error.OutOfMemory;
         const src_row = bytes[src_off .. src_off + src_stride];
         const dst_row = dst[dst_off .. dst_off + src_stride];
         if (texture.swizzle_bgra_to_rgba) {
@@ -1595,18 +1622,24 @@ fn renderTargetCopyFormat(view_format: u32) u32 {
     };
 }
 
-fn srvCpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
-    return .{
-        .ptr = self.srv_heap_cpu_start_ptr +%
-            (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
-    };
+fn srvCpuHandleForIndex(self: *const D3D12, index: u32) !winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
+    const offset = std.math.mul(
+        u64,
+        @as(u64, index),
+        @as(u64, self.srv_descriptor_size),
+    ) catch return error.Unexpected;
+    const ptr = std.math.add(u64, self.srv_heap_cpu_start_ptr, offset) catch return error.Unexpected;
+    return .{ .ptr = ptr };
 }
 
-fn srvGpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_GPU_DESCRIPTOR_HANDLE {
-    return .{
-        .ptr = self.srv_heap_gpu_start_ptr +%
-            (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
-    };
+fn srvGpuHandleForIndex(self: *const D3D12, index: u32) !winos.c.D3D12_GPU_DESCRIPTOR_HANDLE {
+    const offset = std.math.mul(
+        u64,
+        @as(u64, index),
+        @as(u64, self.srv_descriptor_size),
+    ) catch return error.Unexpected;
+    const ptr = std.math.add(u64, self.srv_heap_gpu_start_ptr, offset) catch return error.Unexpected;
+    return .{ .ptr = ptr };
 }
 
 fn flushDeferredBufferReleases(self: *D3D12) void {
@@ -1748,14 +1781,22 @@ fn imageDxgiFormat(format: ImageTextureFormat, srgb: bool) u32 {
 fn vertexBufferView(
     raw_buffer: *winos.graphics.ID3D12Resource,
     stride: usize,
-) winos.c.D3D12_VERTEX_BUFFER_VIEW {
+) !winos.c.D3D12_VERTEX_BUFFER_VIEW {
     const buffer = nativePtr(*winos.c.ID3D12Resource, raw_buffer);
     var desc: winos.c.D3D12_RESOURCE_DESC = std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
     _ = buffer.lpVtbl[0].GetDesc.?(buffer, &desc);
+    const size_in_bytes = std.math.cast(u32, desc.Width) orelse {
+        log.err("d3d12 vertex buffer size overflow width={}", .{desc.Width});
+        return error.Unexpected;
+    };
+    const stride_in_bytes = std.math.cast(u32, stride) orelse {
+        log.err("d3d12 vertex buffer stride overflow stride={}", .{stride});
+        return error.Unexpected;
+    };
     return .{
         .BufferLocation = buffer.lpVtbl[0].GetGPUVirtualAddress.?(buffer),
-        .SizeInBytes = @intCast(desc.Width),
-        .StrideInBytes = @intCast(stride),
+        .SizeInBytes = size_in_bytes,
+        .StrideInBytes = stride_in_bytes,
     };
 }
 

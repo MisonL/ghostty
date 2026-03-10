@@ -25,14 +25,14 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
 
         fn imagePendingPixelFormat(pixel_format: anytype) Module.Image.Pending.PixelFormat {
             return switch (@typeInfo(@TypeOf(pixel_format))) {
-                .@"enum" => switch (pixel_format) {
+                .@"enum" => @as(Module.Image.Pending.PixelFormat, switch (pixel_format) {
                     .gray => .gray,
                     .gray_alpha => .gray_alpha,
                     .rgb => .rgb,
                     .bgr => .bgr,
                     .rgba => .rgba,
                     .bgra => .bgra,
-                },
+                }),
                 .enum_literal => @as(Module.Image.Pending.PixelFormat, pixel_format),
                 else => comptime unreachable,
             };

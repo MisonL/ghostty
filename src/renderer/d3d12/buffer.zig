@@ -60,10 +60,12 @@ pub fn Buffer(comptime T: type) type {
             return native.lpVtbl[0].GetGPUVirtualAddress.?(native);
         }
 
-        pub fn vertexBufferView(self: *const Self) winos.c.D3D12_VERTEX_BUFFER_VIEW {
+        pub fn vertexBufferView(self: *const Self) !winos.c.D3D12_VERTEX_BUFFER_VIEW {
+            const size_bytes = try std.math.mul(usize, self.len, @sizeOf(T));
+            const size_in_bytes = std.math.cast(winos.c.UINT, size_bytes) orelse return error.Overflow;
             return .{
                 .BufferLocation = self.gpuVirtualAddress(),
-                .SizeInBytes = @intCast(self.len * @sizeOf(T)),
+                .SizeInBytes = size_in_bytes,
                 .StrideInBytes = @sizeOf(T),
             };
         }
@@ -73,7 +75,7 @@ pub fn Buffer(comptime T: type) type {
             self.len = data.len;
             if (data.len == 0) return;
 
-            const byte_len = data.len * @sizeOf(T);
+            const byte_len = try std.math.mul(usize, data.len, @sizeOf(T));
             const dst = self.mapped.?[0..byte_len];
             const src: [*]const u8 = @ptrCast(data.ptr);
             @memcpy(dst, src[0..byte_len]);
@@ -84,7 +86,7 @@ pub fn Buffer(comptime T: type) type {
             lists: []const std.ArrayListUnmanaged(T),
         ) !u32 {
             var total_len: usize = 0;
-            for (lists) |list| total_len += list.items.len;
+            for (lists) |list| total_len = try std.math.add(usize, total_len, list.items.len);
 
             try self.ensureCapacity(if (total_len == 0) 1 else total_len);
             self.len = total_len;
@@ -94,23 +96,24 @@ pub fn Buffer(comptime T: type) type {
             const dst = self.mapped.?;
             for (lists) |list| {
                 if (list.items.len == 0) continue;
-                const byte_len = list.items.len * @sizeOf(T);
+                const byte_len = try std.math.mul(usize, list.items.len, @sizeOf(T));
+                const end_off = try std.math.add(usize, write_off, byte_len);
                 const src: [*]const u8 = @ptrCast(list.items.ptr);
-                @memcpy(dst[write_off .. write_off + byte_len], src[0..byte_len]);
-                write_off += byte_len;
+                @memcpy(dst[write_off..end_off], src[0..byte_len]);
+                write_off = end_off;
             }
 
-            return @intCast(total_len);
+            return std.math.cast(u32, total_len) orelse return error.Overflow;
         }
 
         fn ensureCapacity(self: *Self, len: usize) !void {
-            const required_bytes = len * @sizeOf(T);
+            const required_bytes = try std.math.mul(usize, len, @sizeOf(T));
             if (required_bytes <= self.capacity_bytes) return;
 
             const new_capacity_bytes = if (self.capacity_bytes == 0)
                 required_bytes
             else
-                @max(required_bytes, self.capacity_bytes * 2);
+                @max(required_bytes, std.math.mul(usize, self.capacity_bytes, 2) catch required_bytes);
             const resource = try createUploadResource(self.opts, new_capacity_bytes);
             errdefer winos.graphics.release(@ptrCast(resource));
 
