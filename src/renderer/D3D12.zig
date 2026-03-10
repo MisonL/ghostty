@@ -1558,14 +1558,14 @@ fn renderTargetCopyFormat(view_format: u32) u32 {
 
 fn srvCpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_CPU_DESCRIPTOR_HANDLE {
     return .{
-        .ptr = self.srv_heap_cpu_start_ptr +
+        .ptr = self.srv_heap_cpu_start_ptr +%
             (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
     };
 }
 
 fn srvGpuHandleForIndex(self: *const D3D12, index: u32) winos.c.D3D12_GPU_DESCRIPTOR_HANDLE {
     return .{
-        .ptr = self.srv_heap_gpu_start_ptr +
+        .ptr = self.srv_heap_gpu_start_ptr +%
             (@as(u64, index) * @as(u64, self.srv_descriptor_size)),
     };
 }
