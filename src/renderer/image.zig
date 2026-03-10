@@ -18,13 +18,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
         fn pendingPixelFormatBpp(pixel_format: anytype) usize {
             return switch (@typeInfo(@TypeOf(pixel_format))) {
                 .@"enum" => pixel_format.bpp(),
-                .enum_literal => switch (pixel_format) {
-                    .gray => 1,
-                    .gray_alpha => 2,
-                    .rgb, .bgr => 3,
-                    .rgba, .bgra => 4,
-                    else => unreachable,
-                },
+                .enum_literal => @as(Module.Image.Pending.PixelFormat, pixel_format).bpp(),
                 else => comptime unreachable,
             };
         }
@@ -39,15 +33,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                     .rgba => .rgba,
                     .bgra => .bgra,
                 },
-                .enum_literal => switch (pixel_format) {
-                    .gray => .gray,
-                    .gray_alpha => .gray_alpha,
-                    .rgb => .rgb,
-                    .bgr => .bgr,
-                    .rgba => .rgba,
-                    .bgra => .bgra,
-                    else => unreachable,
-                },
+                .enum_literal => @as(Module.Image.Pending.PixelFormat, pixel_format),
                 else => comptime unreachable,
             };
         }
@@ -702,6 +688,14 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 image: *const terminal.kitty.graphics.Image,
                 repopulate_pending_if_missing: bool,
             ) PrepImageError!void {
+                const pixel_format: Module.Image.Pending.PixelFormat = switch (image.format) {
+                    .gray => .gray,
+                    .gray_alpha => .gray_alpha,
+                    .rgb => .rgb,
+                    .rgba => .rgba,
+                    .png => unreachable, // should be decoded by now
+                };
+
                 try self.prepImage(
                     alloc,
                     .{ .kitty = image.id },
@@ -709,13 +703,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                     .{
                         .width = image.width,
                         .height = image.height,
-                        .pixel_format = @as(Module.Image.Pending.PixelFormat, switch (image.format) {
-                            .gray => .gray,
-                            .gray_alpha => .gray_alpha,
-                            .rgb => .rgb,
-                            .rgba => .rgba,
-                            .png => unreachable, // should be decoded by now
-                        }),
+                        .pixel_format = pixel_format,
 
                         // constCasts are always gross but this one is safe is because
                         // the data is only read from here and copied into its own

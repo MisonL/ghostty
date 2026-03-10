@@ -7961,6 +7961,86 @@ test "drawFrame software cpu smoke mailbox backpressure keeps pending until plat
     try std.testing.expectEqual(@as(u32, 2), smoke.renderer.api.draw_frame_end_count);
 }
 
+test "drawFrame software cpu diagnostics smoke retry then published writes back state before platform route clears transients" {
+    if (build_config.renderer != .software) return error.SkipZigTest;
+    if (!software_renderer_cpu_effective) return error.SkipZigTest;
+    if (build_config.software_frame_transport_mode == .native) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const surface_size: renderer.ScreenSize = .{
+        .width = 4,
+        .height = 4,
+    };
+
+    var smoke: DrawFrameSmokeFixture = undefined;
+    try smoke.init(alloc, surface_size);
+    defer smoke.deinit();
+
+    // Phase 1: force mailbox backpressure to trigger publish retry and record diagnostics.
+    const filled_count = smoke.fillAppQueue();
+    try std.testing.expectEqual(@as(usize, 64), filled_count);
+    smoke.renderer.cells_rebuilt = true;
+    try smoke.renderer.drawFrame(true);
+
+    var snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(smoke.renderer.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "mailbox_backpressure",
+        snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        snapshot.cpu_publish_retry_mailbox_backpressure_count,
+    );
+    try std.testing.expectEqual(@as(?u64, null), snapshot.last_cpu_frame_ms);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(usize, 0), smoke.drainSurfaceMailboxAndReleaseFrames());
+
+    // Phase 2: clear backpressure and ensure a successful publish writes back pending state and duration.
+    while (smoke.app_queue.pop()) |_| {}
+    smoke.renderer.cells_rebuilt = false; // Make pending publish the reason we redraw.
+    try smoke.renderer.drawFrame(true);
+
+    snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expect(!smoke.renderer.cells_rebuilt);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "mailbox_backpressure",
+        snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expect(snapshot.last_cpu_frame_ms != null);
+    try std.testing.expectEqual(@as(u32, 0), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(usize, 1), smoke.drainSurfaceMailboxAndReleaseFrames());
+
+    // Phase 3: switch to the platform route and ensure it clears stale cpu transient state
+    // without mutating the cpu route diagnostics snapshot.
+    smoke.renderer.cpu_publish_pending = true;
+    smoke.renderer.cpu_frame_publish_warning = .{
+        .consecutive_over_threshold = cpu_frame_publish_warning_consecutive_limit,
+        .warned = true,
+    };
+    smoke.renderer.config.software_renderer_experimental = false;
+    smoke.renderer.cells_rebuilt = false;
+
+    try smoke.renderer.drawFrame(false);
+
+    snapshot = smoke.renderer.cpu_route_diagnostics.snapshot();
+    try std.testing.expect(!smoke.renderer.cpu_publish_pending);
+    try std.testing.expectEqual(@as(u8, 0), smoke.renderer.cpu_frame_publish_warning.consecutive_over_threshold);
+    try std.testing.expect(!smoke.renderer.cpu_frame_publish_warning.warned);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.publish_retry_count);
+    try std.testing.expectEqualStrings(
+        "mailbox_backpressure",
+        snapshot.last_cpu_publish_retry_reason,
+    );
+    try std.testing.expectEqual(@as(u32, 1), smoke.renderer.api.present_last_target_count);
+    try std.testing.expectEqual(@as(u32, 3), smoke.renderer.api.draw_frame_start_count);
+    try std.testing.expectEqual(@as(u32, 3), smoke.renderer.api.draw_frame_end_count);
+}
+
 test "drawFrame software cpu smoke zero surface returns before invalid surface retry" {
     if (build_config.renderer != .software) return error.SkipZigTest;
     if (!software_renderer_cpu_effective) return error.SkipZigTest;
