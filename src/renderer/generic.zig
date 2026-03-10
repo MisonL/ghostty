@@ -2037,8 +2037,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 metrics: font.Metrics,
             } = font_critical: {
                 const grid: *font.SharedGrid = options.font_grid;
-                grid.lock.lockShared();
-                defer grid.lock.unlockShared();
+                // SharedGrid.metrics is populated during init and is currently immutable.
+                // Avoid taking the grid lock during renderer init to keep Win32 core-draw
+                // and interaction smoke stable on hosted runners.
                 break :font_critical .{
                     .metrics = grid.metrics,
                 };
