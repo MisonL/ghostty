@@ -244,6 +244,18 @@ fn display(
         .rows = d.rows,
         .z = d.z,
     };
+
+    // Validate placement arithmetic early so untrusted inputs cannot trigger
+    // overflow panics or float->int traps later during rendering/deletion.
+    const placement_size = p.gridSize(img, terminal) catch |err| {
+        p.deinit(terminal.screens.active);
+        result.message = switch (err) {
+            error.InvalidValue => "EINVAL: invalid placement",
+            error.Overflow => "EINVAL: placement overflow",
+        };
+        return result;
+    };
+
     storage.addPlacement(
         alloc,
         img.id,
@@ -262,15 +274,14 @@ fn display(
             .none => {},
             .after => {
                 // We use terminal.index to properly handle scroll regions.
-                const size = p.gridSize(img, terminal);
-                for (0..size.rows) |_| terminal.index() catch |err| {
+                for (0..placement_size.rows) |_| terminal.index() catch |err| {
                     log.warn("failed to move cursor: {}", .{err});
                     break;
                 };
 
                 terminal.setCursorPos(
                     terminal.screens.active.cursor.y,
-                    pin.x + size.cols + 1,
+                    pin.x + placement_size.cols + 1,
                 );
             },
         },
@@ -567,4 +578,103 @@ test "kittygfx no response with no image ID or number load and display" {
         const resp = execute(alloc, &t, &cmd);
         try testing.expect(resp == null);
     }
+}
+
+test "kittygfx placement rejects x_offset overflow" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var t = try Terminal.init(alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+
+    // Load an image so we can attempt to display it.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,t=d,i=1,s=1,v=2,c=10,r=1;///////////",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+    }
+
+    // X is x_offset. Keep rows/cols unspecified so gridSize hits the
+    // checked add path (native size + offset).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=p,i=1,X=4294967295",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(!resp.ok());
+        try testing.expectEqual(resp.message, "EINVAL: placement overflow");
+    }
+
+    // Ensure we did not store a placement for the failed command.
+    try testing.expectEqual(@as(usize, 0), t.screens.active.kitty_images.placements.count());
+}
+
+test "kittygfx placement rejects columns/rows out of range" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var t = try Terminal.init(alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+
+    // Load an image so we can attempt to display it.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,t=d,i=1,s=1,v=2,c=10,r=1;///////////",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+    }
+
+    // c/r are columns/rows. Values above terminal.size.CellCountInt are rejected.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=p,i=1,c=70000,r=1",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(!resp.ok());
+        try testing.expectEqual(resp.message, "EINVAL: invalid placement");
+    }
+
+    try testing.expectEqual(@as(usize, 0), t.screens.active.kitty_images.placements.count());
+}
+
+test "kittygfx placement normal display ok" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var t = try Terminal.init(alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+
+    // Load an image so we can display it.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,t=d,i=1,s=1,v=2,c=10,r=1;///////////",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+    }
+
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=p,i=1,c=2,r=2",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+    }
+
+    try testing.expectEqual(@as(usize, 1), t.screens.active.kitty_images.placements.count());
 }

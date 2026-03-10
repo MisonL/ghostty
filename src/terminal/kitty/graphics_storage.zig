@@ -640,6 +640,16 @@ pub const ImageStorage = struct {
         /// The z-index for this placement.
         z: i32 = 0,
 
+        pub const Error = error{
+            /// A value is not representable in Ghostty's internal terminal
+            /// grid sizing types, or otherwise not meaningful (NaN, etc.).
+            InvalidValue,
+
+            /// An arithmetic operation overflowed (checked add/mul), or a
+            /// rounded float result cannot fit in the target integer type.
+            Overflow,
+        };
+
         pub const Location = union(enum) {
             /// Exactly placed on a screen pin.
             pin: *PageList.Pin,
@@ -664,7 +674,7 @@ pub const ImageStorage = struct {
             self: Placement,
             image: Image,
             t: *const terminal.Terminal,
-        ) struct {
+        ) Error!struct {
             width: u32,
             height: u32,
         } {
@@ -679,6 +689,8 @@ pub const ImageStorage = struct {
                 .width = width,
                 .height = height,
             };
+
+            if (t.cols == 0 or t.rows == 0) return error.InvalidValue;
 
             // We calculate the size of a cell so that we can multiply
             // it by the specified cols/rows to get the correct px size.
@@ -695,8 +707,14 @@ pub const ImageStorage = struct {
             // the width and height from them directly, we don't need
             // to adjust for aspect ratio.
             if (self.columns > 0 and self.rows > 0) {
-                const calc_width = cell_width * self.columns;
-                const calc_height = cell_height * self.rows;
+                // Keep cell counts within our terminal sizing limits.
+                const cols = std.math.cast(size.CellCountInt, self.columns) orelse
+                    return error.InvalidValue;
+                const rows = std.math.cast(size.CellCountInt, self.rows) orelse
+                    return error.InvalidValue;
+
+                const calc_width = try checkedMulU32(cell_width, @intCast(cols));
+                const calc_height = try checkedMulU32(cell_height, @intCast(rows));
 
                 return .{
                     .width = calc_width,
@@ -710,11 +728,17 @@ pub const ImageStorage = struct {
             // If only the columns were specified, we determine
             // the height of the image based on the aspect ratio.
             if (self.columns > 0) {
+                const cols = std.math.cast(size.CellCountInt, self.columns) orelse
+                    return error.InvalidValue;
+
+                if (width == 0) return error.InvalidValue;
+
                 const aspect = height_f64 / width_f64;
-                const calc_width: u32 = cell_width * self.columns;
-                const calc_height: u32 = @intFromFloat(@round(
+                const calc_width: u32 = try checkedMulU32(cell_width, @intCast(cols));
+                const calc_height: u32 = try checkedRoundIntFromFloat(
+                    u32,
                     @as(f64, @floatFromInt(calc_width)) * aspect,
-                ));
+                );
 
                 return .{
                     .width = calc_width,
@@ -725,11 +749,17 @@ pub const ImageStorage = struct {
             // Otherwise, only the rows were specified, so we
             // determine the width based on the aspect ratio.
             {
+                const rows = std.math.cast(size.CellCountInt, self.rows) orelse
+                    return error.InvalidValue;
+
+                if (height == 0) return error.InvalidValue;
+
                 const aspect = width_f64 / height_f64;
-                const calc_height: u32 = cell_height * self.rows;
-                const calc_width: u32 = @intFromFloat(@round(
+                const calc_height: u32 = try checkedMulU32(cell_height, @intCast(rows));
+                const calc_width: u32 = try checkedRoundIntFromFloat(
+                    u32,
                     @as(f64, @floatFromInt(calc_height)) * aspect,
-                ));
+                );
 
                 return .{
                     .width = calc_width,
@@ -743,30 +773,51 @@ pub const ImageStorage = struct {
             self: Placement,
             image: Image,
             t: *const terminal.Terminal,
-        ) struct {
+        ) Error!struct {
             cols: u32,
             rows: u32,
         } {
             // If we have a specified columns and rows then this is trivial.
-            if (self.columns > 0 and self.rows > 0) return .{
-                .cols = self.columns,
-                .rows = self.rows,
-            };
+            if (self.columns > 0 and self.rows > 0) {
+                // Keep cell counts within our terminal sizing limits.
+                const cols = std.math.cast(size.CellCountInt, self.columns) orelse
+                    return error.InvalidValue;
+                const rows = std.math.cast(size.CellCountInt, self.rows) orelse
+                    return error.InvalidValue;
+
+                return .{
+                    .cols = cols,
+                    .rows = rows,
+                };
+            }
+
+            if (t.cols == 0 or t.rows == 0) return error.InvalidValue;
 
             // Otherwise we calculate the pixel size, divide by
             // cell size, and round up to the nearest integer.
-            const calc_size = self.calculatedSize(image, t);
+            const calc_size = try self.calculatedSize(image, t);
+            const width_px = try checkedAddU32(calc_size.width, self.x_offset);
+            const height_px = try checkedAddU32(calc_size.height, self.y_offset);
+            const cell_width: u32 = t.width_px / t.cols;
+            const cell_height: u32 = t.height_px / t.rows;
+
+            const max_cell_count: u32 = std.math.maxInt(size.CellCountInt);
+            const cols: u32 = std.math.divCeil(
+                u32,
+                width_px,
+                cell_width,
+            ) catch 0;
+            const rows: u32 = std.math.divCeil(
+                u32,
+                height_px,
+                cell_height,
+            ) catch 0;
+
+            if (cols > max_cell_count or rows > max_cell_count) return error.Overflow;
+
             return .{
-                .cols = std.math.divCeil(
-                    u32,
-                    calc_size.width + self.x_offset,
-                    t.width_px / t.cols,
-                ) catch 0,
-                .rows = std.math.divCeil(
-                    u32,
-                    calc_size.height + self.y_offset,
-                    t.height_px / t.rows,
-                ) catch 0,
+                .cols = cols,
+                .rows = rows,
             };
             // NOTE: Above `divCeil`s can only fail if the cell size is 0,
             //       in such a case it seems safe to return 0 for this.
@@ -780,7 +831,8 @@ pub const ImageStorage = struct {
             image: Image,
             t: *const terminal.Terminal,
         ) ?Rect {
-            const grid_size = self.gridSize(image, t);
+            const grid_size = self.gridSize(image, t) catch return null;
+            if (grid_size.cols == 0 or grid_size.rows == 0) return null;
             const pin = switch (self.location) {
                 .pin => |p| p,
                 .virtual => return null,
@@ -802,6 +854,29 @@ pub const ImageStorage = struct {
                 .top_left = pin.*,
                 .bottom_right = br,
             };
+        }
+
+        fn checkedMulU32(a: u32, b: u32) Error!u32 {
+            const res = @mulWithOverflow(a, b);
+            if (res[1] != 0) return error.Overflow;
+            return res[0];
+        }
+
+        fn checkedAddU32(a: u32, b: u32) Error!u32 {
+            const res = @addWithOverflow(a, b);
+            if (res[1] != 0) return error.Overflow;
+            return res[0];
+        }
+
+        fn checkedRoundIntFromFloat(comptime T: type, f: f64) Error!T {
+            if (!std.math.isFinite(f)) return error.InvalidValue;
+            const r = @round(f);
+            if (r < 0) return error.InvalidValue;
+
+            const max_f: f64 = @floatFromInt(std.math.maxInt(T));
+            if (r > max_f) return error.Overflow;
+
+            return @intFromFloat(r);
         }
     };
 };
@@ -1334,7 +1409,7 @@ test "storage: aspect ratio calculation when only columns or rows specified" {
         // that's 100px width. 100px * (9 / 16) = 56.25, which should round
         // to a height of 56px.
 
-        const calc_size = placement.calculatedSize(image, &t);
+        const calc_size = try placement.calculatedSize(image, &t);
         try testing.expectEqual(@as(u32, 100), calc_size.width);
         try testing.expectEqual(@as(u32, 56), calc_size.height);
     }
@@ -1352,7 +1427,7 @@ test "storage: aspect ratio calculation when only columns or rows specified" {
         // 100px height. 100px * (16 / 9) = 177.77..., which should round to
         // a width of 178px.
 
-        const calc_size = placement.calculatedSize(image, &t);
+        const calc_size = try placement.calculatedSize(image, &t);
         try testing.expectEqual(@as(u32, 178), calc_size.width);
         try testing.expectEqual(@as(u32, 100), calc_size.height);
     }

@@ -38,13 +38,21 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
             };
         }
 
-        fn pendingDataSlice(pending: anytype) []const u8 {
+        fn pendingDataSlice(pending: anytype) Module.State.PrepImageError![]const u8 {
             if (@hasDecl(@TypeOf(pending), "dataSlice")) return pending.dataSlice();
 
-            const len =
-                @as(usize, @intCast(pending.width)) *
-                @as(usize, @intCast(pending.height)) *
-                pendingPixelFormatBpp(pending.pixel_format);
+            const width: usize = std.math.cast(usize, pending.width) orelse
+                return error.ImageDataTooLarge;
+            const height: usize = std.math.cast(usize, pending.height) orelse
+                return error.ImageDataTooLarge;
+            const pixels = std.math.mul(usize, width, height) catch
+                return error.ImageDataTooLarge;
+            const len = std.math.mul(
+                usize,
+                pixels,
+                pendingPixelFormatBpp(pending.pixel_format),
+            ) catch return error.ImageDataTooLarge;
+
             return pending.data[0..len];
         }
 
@@ -472,6 +480,8 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
             const PrepImageError = error{
                 OutOfMemory,
                 ImageConversionError,
+                /// Width*height*bpp overflowed `usize`.
+                ImageDataTooLarge,
             };
 
             /// Get the viewport-relative position for this
@@ -509,7 +519,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
 
                 // Calculate the dimensions of our image, taking in to
                 // account the rows / columns specified by the placement.
-                const dest_size = p.calculatedSize(image.*, t);
+                const dest_size = p.calculatedSize(image.*, t) catch return;
 
                 // Calculate the source rectangle
                 const source_x = @min(image.width, p.source_x);
@@ -626,11 +636,22 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                     if (gop.value_ptr.image.getPending() != null) return;
                 }
 
+                const src = pendingDataSlice(pending) catch |err| {
+                    if (!gop.found_existing) {
+                        // If this is a new entry we can just remove it since it
+                        // was never sent to the GPU.
+                        _ = self.images.remove(id);
+                    } else {
+                        // If this was an existing entry, it is invalid and
+                        // we must unload it.
+                        gop.value_ptr.image.markForUnload();
+                    }
+
+                    return err;
+                };
+
                 // Copy the data so we own it.
-                const data = if (alloc.dupe(
-                    u8,
-                    pendingDataSlice(pending),
-                )) |v| v else |_| {
+                const data = if (alloc.dupe(u8, src)) |v| v else |_| {
                     if (!gop.found_existing) {
                         // If this is a new entry we can just remove it since it
                         // was never sent to the GPU.
@@ -655,6 +676,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                         .width = pending.width,
                         .height = pending.height,
                         .pixel_format = pixel_format,
+                        .len_bytes = data.len,
                         .data = data.ptr,
                     },
                 };
@@ -829,6 +851,13 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 width: u32,
                 pixel_format: PixelFormat,
 
+                /// Cached byte length of `data`, used to avoid re-multiplying
+                /// width*height*bpp (and to keep `free` length stable).
+                ///
+                /// When this is 0, we fall back to computing the length from
+                /// width/height/pixel_format with checked multiplication.
+                len_bytes: usize = 0,
+
                 /// Data is always expected to be (width * height * bpp).
                 data: [*]u8,
 
@@ -837,7 +866,15 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 }
 
                 pub fn len(self: @This()) usize {
-                    return self.width * self.height * self.pixel_format.bpp();
+                    if (self.len_bytes != 0) return self.len_bytes;
+
+                    const pixels = std.math.mul(
+                        usize,
+                        @as(usize, @intCast(self.width)),
+                        @as(usize, @intCast(self.height)),
+                    ) catch return 0;
+
+                    return std.math.mul(usize, pixels, self.pixel_format.bpp()) catch 0;
                 }
 
                 pub const PixelFormat = enum {
@@ -978,6 +1015,7 @@ pub fn ImageModule(comptime GraphicsAPI: type) type {
                 };
                 alloc.free(data);
                 p.data = rgba.ptr;
+                p.len_bytes = rgba.len;
                 p.pixel_format = .rgba;
             }
 
@@ -1331,4 +1369,48 @@ test "renderer.image: upload unload path deallocates pending images" {
     var api: DefaultGraphicsAPI = undefined;
     _ = state.upload(alloc, &api);
     try testing.expectEqual(@as(usize, 0), state.images.count());
+}
+
+test "renderer.image: overflow in pendingDataSlice returns ImageDataTooLarge" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var state: State = .empty;
+    defer state.deinit(alloc);
+
+    const transmit_time = try std.time.Instant.now();
+    var pixels = [_]u8{ 1, 2, 3, 4 };
+
+    try testing.expectError(
+        error.ImageDataTooLarge,
+        state.prepImage(
+            alloc,
+            .overlay,
+            transmit_time,
+            .{
+                .width = std.math.maxInt(u32),
+                .height = std.math.maxInt(u32),
+                .pixel_format = .rgba,
+                .data = &pixels,
+            },
+            false,
+        ),
+    );
+
+    try testing.expectEqual(@as(usize, 0), state.images.count());
+}
+
+test "renderer.image: overflow in Pending.len is fail-safe" {
+    const testing = std.testing;
+
+    var dummy = [_]u8{0};
+    const pending: Image.Pending = .{
+        .width = std.math.maxInt(u32),
+        .height = std.math.maxInt(u32),
+        .pixel_format = .rgba,
+        .data = &dummy,
+    };
+
+    try testing.expectEqual(@as(usize, 0), pending.len());
+    try testing.expectEqual(@as(usize, 0), pending.dataSlice().len);
 }
