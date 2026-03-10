@@ -633,35 +633,80 @@ pub const Face = struct {
                 }
 
                 const glyph_bitmap = glyph.*.bitmap;
+                const empty_glyph: Glyph = .{
+                    .width = 0,
+                    .height = 0,
+                    .offset_x = 0,
+                    .offset_y = 0,
+                    .atlas_x = 0,
+                    .atlas_y = 0,
+                };
 
                 // Round our target width and height
                 // as the size for our scaled bitmap.
-                const w: u32 = @intFromFloat(@round(width));
-                const h: u32 = @intFromFloat(@round(height));
-                const pitch = w * atlas.format.depth();
+                const width_rounded = @round(width);
+                const height_rounded = @round(height);
+                if (width_rounded < 1 or height_rounded < 1) {
+                    return empty_glyph;
+                }
+
+                const w: u32 = @intFromFloat(width_rounded);
+                const h: u32 = @intFromFloat(height_rounded);
+                const depth: u32 = atlas.format.depth();
+                const pitch = std.math.mul(u32, w, depth) catch return empty_glyph;
 
                 // Allocate a buffer for our scaled bitmap.
                 //
                 // We'll copy this to the original bitmap once we're
                 // done so we can free it at the end of this scope.
-                const buf = try alloc.alloc(u8, pitch * h);
+                const buf_len = std.math.mul(usize, @as(usize, pitch), @as(usize, h)) catch
+                    return empty_glyph;
+                const buf = try alloc.alloc(u8, buf_len);
                 defer alloc.free(buf);
+
+                const input_w: u32 = @intCast(glyph_bitmap.width);
+                const input_h: u32 = @intCast(glyph_bitmap.rows);
+                if (input_w == 0 or input_h == 0 or @intFromPtr(glyph_bitmap.buffer) == 0) {
+                    return empty_glyph;
+                }
+
+                const min_pitch = std.math.mul(u32, input_w, depth) catch return empty_glyph;
+                var input_pixels = glyph_bitmap.buffer;
+                var input_pitch: i32 = glyph_bitmap.pitch;
+                if (input_pitch < 0) {
+                    const abs_pitch_i32 = std.math.absInt(input_pitch) catch
+                        return empty_glyph;
+                    const abs_pitch_u32: u32 = @intCast(abs_pitch_i32);
+                    if (abs_pitch_u32 > 0 and abs_pitch_u32 < min_pitch) {
+                        return empty_glyph;
+                    }
+
+                    const row_offset = std.math.mul(usize, @as(usize, abs_pitch_u32), @as(usize, input_h - 1)) catch
+                        return empty_glyph;
+                    const start_addr = std.math.sub(usize, @intFromPtr(input_pixels), row_offset) catch
+                        return empty_glyph;
+                    input_pixels = @ptrFromInt(start_addr);
+                    input_pitch = std.math.cast(i32, abs_pitch_u32) orelse return empty_glyph;
+                } else if (input_pitch > 0) {
+                    const abs_pitch_u32: u32 = @intCast(input_pitch);
+                    if (abs_pitch_u32 < min_pitch) {
+                        return empty_glyph;
+                    }
+                }
 
                 // Resize
                 if (stb.stbir_resize_uint8(
-                    glyph_bitmap.buffer,
-                    @intCast(glyph_bitmap.width),
-                    @intCast(glyph_bitmap.rows),
-                    glyph_bitmap.pitch,
+                    input_pixels,
+                    @intCast(input_w),
+                    @intCast(input_h),
+                    input_pitch,
                     buf.ptr,
                     @intCast(w),
                     @intCast(h),
                     @intCast(pitch),
-                    atlas.format.depth(),
+                    @intCast(depth),
                 ) == 0) {
-                    // This should never fail because this is a
-                    // fairly straightforward in-memory operation...
-                    return error.GlyphResizeFailed;
+                    return empty_glyph;
                 }
 
                 const scaled_bitmap: freetype.c.FT_Bitmap = .{
