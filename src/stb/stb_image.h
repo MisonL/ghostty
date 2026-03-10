@@ -1595,7 +1595,16 @@ enum
 static void stbi__refill_buffer(stbi__context *s)
 {
    int n = (s->io.read)(s->io_user_data,(char*)s->buffer_start,s->buflen);
-   s->callback_already_read += (int) (s->img_buffer - s->img_buffer_original);
+   // NOTE: This accumulates total bytes consumed from callback-backed reads.
+   // In debug/safe builds Zig traps on signed integer overflow, so clamp to
+   // avoid panicking on large or corrupt inputs.
+   {
+      long long consumed = (long long) (s->img_buffer - s->img_buffer_original);
+      long long total = (long long) s->callback_already_read + consumed;
+      if (total > INT_MAX) total = INT_MAX;
+      if (total < 0) total = 0;
+      s->callback_already_read = (int) total;
+   }
    if (n == 0) {
       // at end of file, treat same as if from memory, but need to handle case
       // where s->img_buffer isn't pointing to safe memory, e.g. 0-byte file
@@ -5563,7 +5572,12 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
    if (psize == 0) {
       // accept some number of extra bytes after the header, but if the offset points either to before
       // the header ends or implies a large amount of extra data, reject the file as malformed
-      int bytes_read_so_far = s->callback_already_read + (int)(s->img_buffer - s->img_buffer_original);
+      long long bytes_read_so_far_ll = (long long) s->callback_already_read +
+         (long long) (s->img_buffer - s->img_buffer_original);
+      int bytes_read_so_far = 0;
+      if (bytes_read_so_far_ll > INT_MAX) bytes_read_so_far = INT_MAX;
+      else if (bytes_read_so_far_ll < INT_MIN) bytes_read_so_far = INT_MIN;
+      else bytes_read_so_far = (int) bytes_read_so_far_ll;
       int header_limit = 1024; // max we actually read is below 256 bytes currently.
       int extra_data_limit = 256*4; // what ordinarily goes here is a palette; 256 entries*4 bytes is its max size.
       if (bytes_read_so_far <= 0 || bytes_read_so_far > header_limit) {
