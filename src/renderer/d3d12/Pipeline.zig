@@ -7,6 +7,17 @@ const windows = std.os.windows;
 const internal_os = @import("../../os/main.zig");
 const winos = internal_os.windows;
 
+// `D3DCompile` returns `ID3DBlob` COM objects whose vtables may live in
+// `d3dcompiler_47.dll`. If we `FreeLibrary` the module after compilation, later
+// calls like `GetBufferPointer` / `Release` can jump into unloaded code and
+// crash (observed as a segfault on hosted Windows CI).
+//
+// Keep the compiler module loaded for the process lifetime and cache the proc
+// address. This is a minimal fix and avoids refcount leaks from repeated loads.
+var d3dcompiler_47_mutex: std.Thread.Mutex = .{};
+var d3dcompiler_47_module: ?windows.HMODULE = null;
+var d3d_compile_addr: usize = 0;
+
 fn shouldTraceWin32D3D12Pipeline() bool {
     if (comptime builtin.target.os.tag != .windows) return false;
     const alloc = std.heap.page_allocator;
@@ -156,13 +167,7 @@ fn compileShader(
         error_msgs: *?*winos.c.ID3DBlob,
     ) callconv(.winapi) windows.HRESULT;
 
-    const lib_name = std.unicode.utf8ToUtf16LeStringLiteral("d3dcompiler_47.dll");
-    const module = windows.LoadLibraryW(lib_name) catch return error.D3D12ShaderCompilerUnavailable;
-    defer windows.FreeLibrary(module);
-
-    const proc = winos.kernel32.GetProcAddress(module, "D3DCompile") orelse
-        return error.D3D12ShaderCompilerUnavailable;
-    const d3d_compile: D3DCompileFn = @ptrFromInt(@intFromPtr(proc));
+    const d3d_compile: D3DCompileFn = @ptrFromInt(try getD3DCompileAddress());
 
     var raw_code: ?*winos.c.ID3DBlob = null;
     var raw_errors: ?*winos.c.ID3DBlob = null;
@@ -218,6 +223,29 @@ fn compileShader(
     }
 
     return .{ .ptr = raw_code };
+}
+
+fn getD3DCompileAddress() !usize {
+    if (comptime builtin.target.os.tag != .windows) return error.D3D12ShaderCompilerUnavailable;
+
+    d3dcompiler_47_mutex.lock();
+    defer d3dcompiler_47_mutex.unlock();
+
+    if (d3d_compile_addr != 0) return d3d_compile_addr;
+
+    const lib_name = std.unicode.utf8ToUtf16LeStringLiteral("d3dcompiler_47.dll");
+    const module = windows.LoadLibraryW(lib_name) catch return error.D3D12ShaderCompilerUnavailable;
+
+    const proc = winos.kernel32.GetProcAddress(module, "D3DCompile") orelse {
+        windows.FreeLibrary(module);
+        return error.D3D12ShaderCompilerUnavailable;
+    };
+
+    // Intentionally never `FreeLibrary(module)`: shader blobs may outlive
+    // compilation and use vtables inside this module.
+    d3dcompiler_47_module = module;
+    d3d_compile_addr = @intFromPtr(proc);
+    return d3d_compile_addr;
 }
 
 fn initGraphicsObjects(self: *Self, raw_device: *winos.graphics.ID3D12Device) !void {
