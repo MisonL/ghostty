@@ -958,7 +958,19 @@ fn ensureSrvHeap(self: *D3D12) !void {
     traceWin32D3D12Init("renderer.ensure_srv_heap.enter");
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     if (self.srvHeap()) |heap| {
-        if (self.srv_descriptor_size != 0) return;
+        if (self.srv_descriptor_size != 0) {
+            if (shouldTraceWin32D3D12Init()) {
+                log.info(
+                    "ci.win32.d3d12.srv_heap.ready cpu=0x{x} gpu=0x{x} desc={d}",
+                    .{
+                        self.srv_heap_cpu_start_ptr,
+                        self.srv_heap_gpu_start_ptr,
+                        self.srv_descriptor_size,
+                    },
+                );
+            }
+            return;
+        }
 
         traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.begin");
         const native_heap = nativePtr(*winos.c.ID3D12DescriptorHeap, heap);
@@ -966,11 +978,13 @@ fn ensureSrvHeap(self: *D3D12) !void {
         var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
         _ = native_heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(native_heap, &cpu_handle);
         _ = native_heap.lpVtbl[0].GetGPUDescriptorHandleForHeapStart.?(native_heap, &gpu_handle);
+        traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.handles.ready");
 
         self.srv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(
             device,
             winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
         );
+        traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.descriptor_size.ready");
         self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
         self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
         traceWin32D3D12Init("renderer.ensure_srv_heap.reuse.ready");
@@ -1005,22 +1019,37 @@ fn ensureSrvHeap(self: *D3D12) !void {
     var gpu_handle: winos.c.D3D12_GPU_DESCRIPTOR_HANDLE = std.mem.zeroes(winos.c.D3D12_GPU_DESCRIPTOR_HANDLE);
     _ = heap.lpVtbl[0].GetCPUDescriptorHandleForHeapStart.?(heap, &cpu_handle);
     _ = heap.lpVtbl[0].GetGPUDescriptorHandleForHeapStart.?(heap, &gpu_handle);
+    traceWin32D3D12Init("renderer.ensure_srv_heap.create.handles.ready");
 
     self.srv_descriptor_size = device.lpVtbl[0].GetDescriptorHandleIncrementSize.?(
         device,
         winos.c.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
     );
+    traceWin32D3D12Init("renderer.ensure_srv_heap.create.descriptor_size.ready");
     self.srv_heap_cpu_start_ptr = cpu_handle.ptr;
     self.srv_heap_gpu_start_ptr = gpu_handle.ptr;
     traceWin32D3D12Init("renderer.ensure_srv_heap.create.ready");
 }
 
 fn allocateSrvIndex(self: *D3D12) !u32 {
+    traceWin32D3D12Init("renderer.allocate_srv_index.enter");
     try self.ensureSrvHeap();
-    if (self.free_srv_indices.pop()) |index| return index;
+    if (self.free_srv_indices.pop()) |index| {
+        if (shouldTraceWin32D3D12Init()) {
+            log.info("ci.win32.d3d12.srv_index.reuse index={d}", .{index});
+        }
+        return index;
+    }
     if (self.next_srv_index >= srv_heap_capacity) return error.D3D12SrvHeapExhausted;
+    const index = self.next_srv_index;
     defer self.next_srv_index += 1;
-    return self.next_srv_index;
+    if (shouldTraceWin32D3D12Init()) {
+        log.info(
+            "ci.win32.d3d12.srv_index.alloc index={d} next={d} cap={d}",
+            .{ index, self.next_srv_index, srv_heap_capacity },
+        );
+    }
+    return index;
 }
 
 fn releaseSrvIndex(self: *D3D12, index: u32) void {
@@ -1028,6 +1057,16 @@ fn releaseSrvIndex(self: *D3D12, index: u32) void {
 }
 
 fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
+    if (shouldTraceWin32D3D12Init()) {
+        log.info(
+            "ci.win32.d3d12.write_texture_srv index={d} cpu=0x{x} desc={d}",
+            .{
+                texture.srv_index orelse std.math.maxInt(u32),
+                self.srv_heap_cpu_start_ptr,
+                self.srv_descriptor_size,
+            },
+        );
+    }
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     const resource = nativePtr(*winos.c.ID3D12Resource, texture.resource);
     const format = texture.srv_format orelse return error.Unexpected;
