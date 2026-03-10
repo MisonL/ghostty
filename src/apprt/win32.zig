@@ -1270,7 +1270,20 @@ pub const App = struct {
         return switch (target) {
             // 在 core surface 初始化期间，win32 Surface 还没加入 self.surfaces 列表，
             // 但 core_surface.rt_surface 已经是稳定指针；用它避免丢失 init 阶段的 action。
-            .surface => |core_surface| @ptrCast(core_surface.rt_surface),
+            .surface => |core_surface| blk: {
+                const rt_surface: *Surface = @ptrCast(core_surface.rt_surface);
+                if (shouldTraceWin32Init() and self.findSurfaceByHwnd(rt_surface.hwnd) == null) {
+                    std.debug.print(
+                        "info(win32_apprt): ci.win32.action.surface_map.phase=init core=0x{x} rt_surface=0x{x}\n",
+                        .{ @intFromPtr(core_surface), @intFromPtr(rt_surface) },
+                    );
+                    log.info(
+                        "ci.win32.action.surface_map.phase=init core=0x{x} rt_surface=0x{x}",
+                        .{ @intFromPtr(core_surface), @intFromPtr(rt_surface) },
+                    );
+                }
+                break :blk rt_surface;
+            },
             .app => if (self.surfaces.items.len > 0) self.surfaces.items[0] else null,
         };
     }

@@ -19,6 +19,14 @@ test/cases/**/*.actual.png
 flatpak/builddir/
 flatpak/repo/
 
+# Local CI downloads/artifacts (not source)
+ci-artifacts/
+ci-logs/
+local-logs/
+windows-smoke-artifact/
+windows-strict-artifact/
+zig/
+
 glad.zip
 /Box_test.ppm
 /Box_test_diff.ppm

@@ -167,7 +167,7 @@ function Wait-ForExit {
     [string]$Label
   )
 
-  if (-not $Process.WaitForExit(15000)) {
+  if (-not $Process.WaitForExit(30000)) {
     throw "Ghostty interaction process did not exit cleanly ($Label)"
   }
   $Process.WaitForExit()

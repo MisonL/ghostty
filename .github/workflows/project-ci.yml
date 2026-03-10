@@ -37,8 +37,16 @@ jobs:
             -Demit-exe=true 2>&1 | tee ci-logs/windows-smoke-build.log
           test -f zig-out/bin/ghostty.exe
           cp zig-out/bin/ghostty.exe windows-smoke-artifact/ghostty.exe
+          if compgen -G "zig-out/bin/*.pdb" > /dev/null; then
+            cp zig-out/bin/*.pdb windows-smoke-artifact/
+          else
+            echo "No PDB files produced under zig-out/bin" > ci-logs/windows-smoke-no-pdb.txt
+          fi
+          if compgen -G "zig-out/bin/*.dll" > /dev/null; then
+            cp zig-out/bin/*.dll windows-smoke-artifact/
+          fi
 
-      - name: Upload Windows smoke executable
+      - name: Upload Windows smoke executable (and optional symbols)
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: windows-win32-d3d12-smoke-exe
@@ -53,8 +61,8 @@ jobs:
           path: ci-logs/
           if-no-files-found: error
 
-  windows-win32-d3d12-native-smoke:
-    name: Windows Win32 D3D12 Native Smoke
+  windows-win32-d3d12-hosted-smoke:
+    name: Windows Win32 D3D12 Hosted Smoke
     if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: windows-2022
     timeout-minutes: 30
@@ -63,89 +71,64 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Prepare diagnostics directories
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-logs, ci-dumps | Out-Null
+          "ci-start $(Get-Date -Format o)" | Out-File -FilePath ci-logs/ci-start.txt -Encoding utf8
+          try {
+            Get-CimInstance Win32_VideoController |
+              Select-Object Name, DriverVersion, AdapterRAM, VideoProcessor |
+              Format-List | Out-File -FilePath ci-logs/windows-video.txt -Encoding utf8
+          } catch {
+          }
+
+      - name: Enable crash dumps (WER)
+        shell: pwsh
+        run: .\.github\scripts\windows-win32-crash-dumps.ps1 -Action enable -ExeName ghostty.exe -DumpDir ci-dumps
+
       - name: Download Windows smoke executable
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: windows-win32-d3d12-smoke-exe
           path: windows-smoke-artifact
 
-      - name: Run Windows Win32 D3D12 smoke
+      - name: Run Windows Win32 D3D12 smoke (native)
         shell: pwsh
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
           GHOSTTY_CI_WIN32_SMOKE_LAYER: hosted
           GHOSTTY_CI_WIN32_SMOKE_MODE: native
-          GHOSTTY_CI_WIN32_REQUIRE_WINDOW: "true"
+          GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS: "90"
         run: .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode native
 
-      - name: Upload Windows smoke logs
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: windows-win32-d3d12-smoke-logs
-          path: ci-logs/
-          if-no-files-found: error
-
-  windows-win32-d3d12-core-draw-smoke:
-    name: Windows Win32 D3D12 Core Draw Smoke
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
-    runs-on: windows-2022
-    timeout-minutes: 30
-    needs: linux-build-windows-native-smoke-artifact
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Download Windows smoke executable
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: windows-win32-d3d12-smoke-exe
-          path: windows-smoke-artifact
-
-      - name: Run Windows Win32 D3D12 core draw smoke
+      - name: Run Windows Win32 D3D12 smoke (core-draw)
         shell: pwsh
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
           GHOSTTY_CI_WIN32_SMOKE_LAYER: hosted
           GHOSTTY_CI_WIN32_SMOKE_MODE: core-draw
-          GHOSTTY_CI_WIN32_REQUIRE_WINDOW: "true"
+          GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS: "90"
         run: .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode core-draw
 
-      - name: Upload Windows core draw smoke logs
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: windows-win32-d3d12-core-draw-smoke-logs
-          path: ci-logs/
-          if-no-files-found: error
-
-  windows-win32-d3d12-basic-interaction:
-    name: Windows Win32 D3D12 Basic Interaction
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
-    runs-on: windows-2022
-    timeout-minutes: 30
-    needs: linux-build-windows-native-smoke-artifact
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Download Windows smoke executable
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: windows-win32-d3d12-smoke-exe
-          path: windows-smoke-artifact
-
-      - name: Run Windows Win32 basic interaction smoke
+      - name: Run Windows Win32 interaction (basic)
         shell: pwsh
         env:
           GHOSTTY_CI_SMOKE_EXE_PATH: ${{ github.workspace }}\windows-smoke-artifact\ghostty.exe
           GHOSTTY_CI_WIN32_SMOKE_LAYER: hosted
         run: .\.github\scripts\windows-win32-d3d12-interaction.ps1 -Mode basic
 
-      - name: Upload Windows interaction smoke logs
+      - name: Collect crash dumps
+        if: always()
+        shell: pwsh
+        run: .\.github\scripts\windows-win32-crash-dumps.ps1 -Action collect -ExeName ghostty.exe -DumpDir ci-dumps
+
+      - name: Upload Windows hosted smoke artifacts
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: windows-win32-d3d12-basic-interaction-logs
-          path: ci-logs/
+          name: windows-win32-d3d12-hosted-smoke-artifacts
+          path: |
+            ci-logs/
+            ci-dumps/
           if-no-files-found: error

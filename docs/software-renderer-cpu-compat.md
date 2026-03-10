@@ -388,6 +388,33 @@ scripts/local-project-smoke.sh --win32-basic-interaction
 scripts/local-project-smoke.sh --win32-strict
 ```
 
+**Windows smoke 日志与诊断：**
+
+- 本地执行 `scripts/local-project-smoke.sh` 会把每个 phase 的完整输出记录到 `local-logs/<phase>.log`。
+- Win32 smoke/interaction 脚本自身会把关键日志写入仓库根目录的 `ci-logs/`：
+  - runtime smoke：`ci-logs/windows-win32-d3d12-smoke-<layer>-native.log`、`ci-logs/windows-win32-d3d12-smoke-<layer>-core-draw.log`
+  - 交互 smoke：`ci-logs/windows-win32-d3d12-interaction-basic.log`、`ci-logs/windows-win32-d3d12-interaction-strict.log`
+- CI 失败时，优先看 `ci-logs/` 里的原始日志；`local-logs/` 里的包装日志更适合回看“本地脚本到底跑了哪些阶段/参数”。
+
+复现 CI 使用的同一份 `ghostty.exe` 时，可从 GitHub Actions 下载对应 artifact（例如 `windows-win32-d3d12-smoke-exe` 或 `windows-win32-d3d12-strict-exe`），建议解压后放到仓库根目录 `ci-artifacts/` 下（该目录默认不入库），然后用 `GHOSTTY_CI_SMOKE_EXE_PATH` 指向它：
+
+```powershell
+$env:GHOSTTY_CI_SMOKE_EXE_PATH = (Resolve-Path .\ci-artifacts\...\ghostty.exe)
+$env:GHOSTTY_CI_WIN32_SMOKE_LAYER = "local"
+$env:GHOSTTY_CI_WIN32_REQUIRE_WINDOW = "true"
+pwsh -NoLogo -NoProfile -File .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode native
+pwsh -NoLogo -NoProfile -File .\.github\scripts\windows-win32-d3d12-smoke.ps1 -Mode core-draw
+pwsh -NoLogo -NoProfile -File .\.github\scripts\windows-win32-d3d12-interaction.ps1 -Mode basic
+```
+
+**本地临时产物目录（可安全删除）：**
+
+- `ci-artifacts/`（本地下载的 CI 产物，如 `ghostty.exe`）
+- `ci-logs/`（Win32 smoke/interaction 脚本日志；CI 也会上传该目录为 artifact）
+- `local-logs/`（`scripts/local-project-smoke.sh` 的分阶段日志）
+- `windows-smoke-artifact/`、`windows-strict-artifact/`（CI 工作流的临时 staging 目录）
+- `zig/`（可选的本地 Zig 便携安装目录；Windows 脚本会优先尝试 `zig\zig.exe`）
+
 若只想单独跑 software-renderer contracts，可执行：
 
 ```bash

@@ -97,6 +97,26 @@ if (-not (Test-Path $cmdExe)) {
 
 Write-Log "Using Windows shell executable: $cmdExe"
 
+$smokeTimeoutSeconds = 45
+if (-not [string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS)) {
+  try {
+    $smokeTimeoutSeconds = [int]$env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS
+  } catch {
+  }
+}
+
+$keepaliveSeconds = $smokeTimeoutSeconds + 5
+if (-not [string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_KEEPALIVE_SECONDS)) {
+  try {
+    $keepaliveSeconds = [int]$env:GHOSTTY_CI_WIN32_SMOKE_KEEPALIVE_SECONDS
+  } catch {
+  }
+}
+if ($keepaliveSeconds -lt 20) { $keepaliveSeconds = 20 }
+$pingCount = $keepaliveSeconds + 1
+if ($pingCount -lt 3) { $pingCount = 3 }
+Write-Log "Smoke timeoutSeconds=$smokeTimeoutSeconds keepaliveSeconds=$keepaliveSeconds pingCount=$pingCount"
+
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $exePath
 $psi.UseShellExecute = $false
@@ -107,7 +127,7 @@ $psi.WorkingDirectory = $repoRoot
 $psi.ArgumentList.Add("-e")
 $psi.ArgumentList.Add($cmdExe)
 $psi.ArgumentList.Add("/c")
-$psi.ArgumentList.Add("echo ghostty-ci-smoke & ping -n 3 127.0.0.1 >nul")
+$psi.ArgumentList.Add("echo ghostty-ci-smoke & ping -n $pingCount 127.0.0.1 >nul")
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE"] = "1"
 $psi.Environment["GHOSTTY_CI_WIN32_SMOKE_MODE"] = $Mode
 if (-not [string]::IsNullOrWhiteSpace($layer)) {
@@ -120,20 +140,12 @@ $process.EnableRaisingEvents = $true
 $forcedTermination = $false
 $windowHandle = [IntPtr]::Zero
 $logCapture = $null
-$smokeTimeoutSeconds = 45
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
 }
 
 $logCapture = Start-GhosttyProcessLogCapture -Process $process -LogPath $logPath
-
-if (-not [string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS)) {
-  try {
-    $smokeTimeoutSeconds = [int]$env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS
-  } catch {
-  }
-}
 
 $requiredMarkers = switch ($Mode) {
   "core-draw" {
@@ -237,6 +249,15 @@ if ($missingMarkers.Count -gt 0) {
 }
 
 if ($failed) {
+  try {
+    "Smoke diagnostics: exitCode=$($process.ExitCode) forcedTermination=$forcedTermination windowHandle=$windowHandle" | Out-File -FilePath $logPath -Append -Encoding utf8
+    "===== ghostty process list =====" | Out-File -FilePath $logPath -Append -Encoding utf8
+    (Get-Process ghostty -ErrorAction SilentlyContinue |
+      Select-Object Id, ProcessName, MainWindowTitle, MainWindowHandle |
+      Format-List | Out-String) | Out-File -FilePath $logPath -Append -Encoding utf8
+  } catch {
+  }
+
   Write-Host "===== windows-win32-d3d12-smoke.log ====="
   Get-Content -Path $logPath
   Write-Host "===== ghostty process list ====="
