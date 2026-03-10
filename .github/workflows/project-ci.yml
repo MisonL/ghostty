@@ -14,7 +14,7 @@ concurrency:
 jobs:
   linux-build-windows-native-smoke-artifact:
     name: Linux Build Windows Native Smoke Artifact
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch || github.ref_name == 'feature/software-renderer-batch2-m1m2m3'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -63,7 +63,7 @@ jobs:
 
   windows-win32-d3d12-hosted-smoke:
     name: Windows Win32 D3D12 Hosted Smoke
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch || github.ref_name == 'feature/software-renderer-batch2-m1m2m3'
     runs-on: windows-2022
     timeout-minutes: 30
     needs: linux-build-windows-native-smoke-artifact
