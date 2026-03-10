@@ -123,6 +123,7 @@ pub const Texture = struct {
         render_target: bool,
         sampled: bool,
         swizzle_bgra_to_rgba: bool,
+        debug_name: ?[]const u8,
         state: u32,
         srv_index: ?u32 = null,
         rtv_heap: ?*winos.graphics.ID3D12DescriptorHeap = null,
@@ -153,10 +154,11 @@ pub const Texture = struct {
             .render_target = opts.render_target,
             .sampled = opts.sampled,
             .swizzle_bgra_to_rgba = opts.swizzle_bgra_to_rgba,
-            .state = if (bytes != null) @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST) else if (opts.render_target)
+            .debug_name = opts.debug_name,
+            .state = if (opts.render_target)
                 @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET)
             else
-                @intCast(winos.c.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                @intCast(winos.c.D3D12_RESOURCE_STATE_COPY_DEST),
         };
         errdefer {
             winos.graphics.release(@ptrCast(data.resource));
@@ -180,7 +182,13 @@ pub const Texture = struct {
         };
 
         if (bytes) |initial| {
-            try texture.replaceRegion(0, 0, width, height, initial);
+            texture.replaceRegion(0, 0, width, height, initial) catch |err| {
+                log.err(
+                    "failed to upload initial d3d12 texture data name={s} err={}",
+                    .{ data.debug_name orelse "unnamed", err },
+                );
+                return err;
+            };
             if (opts.render_target) {
                 data.state = @intCast(winos.c.D3D12_RESOURCE_STATE_RENDER_TARGET);
             }
@@ -1094,18 +1102,41 @@ fn uploadTextureRegion(
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     const resource = nativePtr(*winos.c.ID3D12Resource, texture.resource);
     const command_list = try self.beginCommandRecording();
-    defer {
-        self.executeRecordedCommands() catch {};
-        self.waitForGpuIdle() catch {};
+    errdefer {
+        self.command_recording_active = false;
         self.flushDeferredBufferReleases();
     }
 
-    const row_pitch: u32 = std.mem.alignForward(
-        u32,
-        @intCast(width * texture.bytes_per_pixel),
-        winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+    var footprint_desc: winos.c.D3D12_RESOURCE_DESC =
+        std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
+    footprint_desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    footprint_desc.Alignment = 0;
+    footprint_desc.Width = width;
+    footprint_desc.Height = @intCast(height);
+    footprint_desc.DepthOrArraySize = 1;
+    footprint_desc.MipLevels = 1;
+    footprint_desc.Format = texture.copy_format;
+    footprint_desc.SampleDesc = .{ .Count = 1, .Quality = 0 };
+    footprint_desc.Layout = winos.c.D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    footprint_desc.Flags = winos.c.D3D12_RESOURCE_FLAG_NONE;
+
+    var placed_footprint: winos.c.D3D12_PLACED_SUBRESOURCE_FOOTPRINT =
+        std.mem.zeroes(winos.c.D3D12_PLACED_SUBRESOURCE_FOOTPRINT);
+    var num_rows: u32 = 0;
+    var row_size_in_bytes: u64 = 0;
+    var upload_size: u64 = 0;
+    device.lpVtbl[0].GetCopyableFootprints.?(
+        device,
+        &footprint_desc,
+        0,
+        1,
+        0,
+        &placed_footprint,
+        &num_rows,
+        &row_size_in_bytes,
+        &upload_size,
     );
-    const upload_size: usize = @as(usize, row_pitch) * height;
+    const row_pitch = placed_footprint.Footprint.RowPitch;
 
     var heap_props: winos.c.D3D12_HEAP_PROPERTIES =
         std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
@@ -1135,6 +1166,11 @@ fn uploadTextureRegion(
         &winos.c.IID_ID3D12Resource,
         &raw_upload,
     ) != winos.S_OK or raw_upload == null) {
+        logDeviceRemovedReason(device, "create upload buffer");
+        log.err(
+            "failed to create d3d12 upload buffer name={s} width={} height={} upload_size={} row_pitch={} rows={}",
+            .{ texture.debug_name orelse "unnamed", width, height, upload_size, row_pitch, num_rows },
+        );
         return error.D3D12UploadBufferCreateFailed;
     }
     defer winos.graphics.release(raw_upload);
@@ -1147,6 +1183,11 @@ fn uploadTextureRegion(
         null,
         &mapped,
     ) != winos.S_OK or mapped == null) {
+        logDeviceRemovedReason(device, "map upload buffer");
+        log.err(
+            "failed to map d3d12 upload buffer name={s} width={} height={} upload_size={}",
+            .{ texture.debug_name orelse "unnamed", width, height, upload_size },
+        );
         return error.D3D12TextureMapFailed;
     }
     defer upload.lpVtbl[0].Unmap.?(
@@ -1157,6 +1198,12 @@ fn uploadTextureRegion(
 
     const dst: [*]u8 = @ptrCast(mapped.?);
     const src_stride = width * texture.bytes_per_pixel;
+    if (row_size_in_bytes != src_stride) {
+        log.warn(
+            "d3d12 copy footprint row size differs from expected name={s} row_size={} expected_stride={} row_pitch={} rows={}",
+            .{ texture.debug_name orelse "unnamed", row_size_in_bytes, src_stride, row_pitch, num_rows },
+        );
+    }
     var row: usize = 0;
     while (row < height) : (row += 1) {
         const src_off = row * src_stride;
@@ -1193,18 +1240,7 @@ fn uploadTextureRegion(
     const src_location: winos.c.D3D12_TEXTURE_COPY_LOCATION = .{
         .pResource = upload,
         .Type = winos.c.D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        .unnamed_0 = .{
-            .PlacedFootprint = .{
-                .Offset = 0,
-                .Footprint = .{
-                    .Format = texture.copy_format,
-                    .Width = @intCast(width),
-                    .Height = @intCast(height),
-                    .Depth = 1,
-                    .RowPitch = row_pitch,
-                },
-            },
-        },
+        .unnamed_0 = .{ .PlacedFootprint = placed_footprint },
     };
     command_list.lpVtbl[0].CopyTextureRegion.?(
         command_list,
@@ -1225,6 +1261,10 @@ fn uploadTextureRegion(
         texture,
         after_state,
     );
+
+    try self.executeRecordedCommands();
+    try self.waitForGpuIdle();
+    self.flushDeferredBufferReleases();
 }
 
 fn createReadbackBuffer(
@@ -1393,6 +1433,7 @@ fn waitForGpuIdle(self: *D3D12) !void {
 
     const queue = surface.graphics.command_queue.?;
     const fence = surface.graphics.fence.?;
+    const device = self.currentDevice();
 
     surface.graphics.fence_value += 1;
     const wait_value = surface.graphics.fence_value;
@@ -1400,18 +1441,38 @@ fn waitForGpuIdle(self: *D3D12) !void {
         queue,
         fence,
         wait_value,
-    ) != winos.S_OK) return error.Unexpected;
+    ) != winos.S_OK) {
+        if (device) |d| logDeviceRemovedReason(d, "signal fence");
+        return error.Unexpected;
+    }
 
     if (fence.lpVtbl[0].GetCompletedValue.?(fence) < wait_value) {
         if (fence.lpVtbl[0].SetEventOnCompletion.?(
             fence,
             wait_value,
             surface.graphics.fence_event.?,
-        ) != winos.S_OK) return error.Unexpected;
+        ) != winos.S_OK) {
+            if (device) |d| logDeviceRemovedReason(d, "set fence completion");
+            return error.Unexpected;
+        }
         if (winos.c.WaitForSingleObject(surface.graphics.fence_event.?, winos.INFINITE) == winos.WAIT_FAILED) {
+            if (device) |d| logDeviceRemovedReason(d, "wait for gpu idle");
             return error.Unexpected;
         }
     }
+}
+
+fn hresultCode(hr: winos.graphics.HRESULT) u32 {
+    return @bitCast(hr);
+}
+
+fn logDeviceRemovedReason(device: *winos.c.ID3D12Device, context: []const u8) void {
+    const removed_hr = device.lpVtbl[0].GetDeviceRemovedReason.?(device);
+    if (removed_hr == winos.S_OK) return;
+    log.err(
+        "d3d12 device removed reason context={s} hr=0x{x}",
+        .{ context, hresultCode(removed_hr) },
+    );
 }
 
 fn currentDevice(self: *const D3D12) ?*winos.c.ID3D12Device {
