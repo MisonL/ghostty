@@ -1692,7 +1692,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             pub fn init(api: GraphicsAPI, custom_shaders: bool) !FrameState {
                 var grayscale_placeholder = [_]u8{0};
-                var color_placeholder = [_]u8{ 0, 0, 0, 0 };
 
                 // Uniform buffer contains exactly 1 uniform struct. The
                 // uniform data will be undefined so this must be set before
@@ -1724,9 +1723,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Delay real color atlas allocation until a color glyph is
                 // actually uploaded. Most terminal sessions never need it.
                 const color = try api.initAtlasTexture(&.{
-                    .data = color_placeholder[0..],
+                    .data = grayscale_placeholder[0..],
                     .size = 1,
-                    .format = .bgra,
+                    .format = .grayscale,
                 });
                 errdefer color.deinit();
 

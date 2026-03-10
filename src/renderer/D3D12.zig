@@ -1678,9 +1678,10 @@ fn createTextureResource(
         &raw_resource,
     );
     if (hr != winos.S_OK or raw_resource == null) {
+        logDeviceRemovedReason(device, "create texture resource");
         log.err(
-            "failed to create d3d12 texture resource name={s} hr=0x{x} resource_format=0x{x} copy_format=0x{x} srv_format=0x{x} rtv_format=0x{x} render_target={} sampled={} width={} height={}",
-            .{ opts.debug_name orelse "unnamed", hr, opts.resource_format, opts.copy_format, opts.srv_format orelse 0, opts.rtv_format orelse 0, opts.render_target, opts.sampled, width, height },
+            "failed to create d3d12 texture resource name={s} hr=0x{x} resource_format=0x{x} copy_format=0x{x} srv_format=0x{x} rtv_format=0x{x} render_target={} sampled={} initial_state=0x{x} width={} height={}",
+            .{ opts.debug_name orelse "unnamed", hresultCode(hr), opts.resource_format, opts.copy_format, opts.srv_format orelse 0, opts.rtv_format orelse 0, opts.render_target, opts.sampled, initial_state, width, height },
         );
         return error.D3D12TextureCreateFailed;
     }
