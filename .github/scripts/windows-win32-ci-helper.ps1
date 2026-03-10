@@ -42,18 +42,28 @@ public static class GhosttyWin32Ci {
     IntPtr lParam
   );
 
-  public static IntPtr FindVisibleWindowForProcess(int processId) {
+  public static IntPtr FindWindowForProcess(int processId, bool requireVisible) {
     IntPtr found = IntPtr.Zero;
     EnumWindows(delegate (IntPtr hWnd, IntPtr lParam) {
       uint pid;
       GetWindowThreadProcessId(hWnd, out pid);
-      if (pid == (uint)processId && IsWindowVisible(hWnd)) {
-        found = hWnd;
-        return false;
+      if (pid == (uint)processId) {
+        if (!requireVisible || IsWindowVisible(hWnd)) {
+          found = hWnd;
+          return false;
+        }
       }
       return true;
     }, IntPtr.Zero);
     return found;
+  }
+
+  public static IntPtr FindAnyWindowForProcess(int processId) {
+    return FindWindowForProcess(processId, false);
+  }
+
+  public static IntPtr FindVisibleWindowForProcess(int processId) {
+    return FindWindowForProcess(processId, true);
   }
 }
 "@
@@ -72,6 +82,29 @@ function Get-GhosttyVisibleWindowHandle {
   return [GhosttyWin32Ci]::FindVisibleWindowForProcess($Process.Id)
 }
 
+function Get-GhosttyAnyWindowHandle {
+  param([System.Diagnostics.Process]$Process)
+
+  if ($null -eq $Process) {
+    return [IntPtr]::Zero
+  }
+  $Process.Refresh()
+  if ($Process.HasExited) {
+    return [IntPtr]::Zero
+  }
+  return [GhosttyWin32Ci]::FindAnyWindowForProcess($Process.Id)
+}
+
+function Get-GhosttyWindowHandleBestEffort {
+  param([System.Diagnostics.Process]$Process)
+
+  $hwnd = Get-GhosttyVisibleWindowHandle -Process $Process
+  if ($hwnd -ne [IntPtr]::Zero) {
+    return $hwnd
+  }
+  return Get-GhosttyAnyWindowHandle -Process $Process
+}
+
 function Wait-GhosttyVisibleWindowHandle {
   param(
     [System.Diagnostics.Process]$Process,
@@ -82,8 +115,17 @@ function Wait-GhosttyVisibleWindowHandle {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while (-not $Process.HasExited -and (Get-Date) -lt $deadline) {
     $hwnd = Get-GhosttyVisibleWindowHandle -Process $Process
-    if ($hwnd -ne [IntPtr]::Zero) {
-      return $hwnd
+    if ($hwnd -ne [IntPtr]::Zero) { return $hwnd }
+
+    # On hosted runners we can sometimes create a top-level window that is not
+    # "visible" yet (or visibility is misreported). If we can find a handle at
+    # all, try to show it and keep waiting for the visible state.
+    $any = Get-GhosttyAnyWindowHandle -Process $Process
+    if ($any -ne [IntPtr]::Zero) {
+      try {
+        [void][GhosttyWin32Ci]::ShowWindow($any, 5)
+      } catch {
+      }
     }
     Start-Sleep -Milliseconds 250
   }

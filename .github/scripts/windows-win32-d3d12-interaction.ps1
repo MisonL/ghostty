@@ -6,10 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-Add-Type -AssemblyName System.Windows.Forms
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-. (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
 Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
@@ -26,10 +23,35 @@ function Write-Log {
   $Message | Out-File -FilePath $logPath -Append -Encoding utf8
 }
 
+Write-Log "Starting Windows interaction mode=$Mode"
+
+try {
+  . (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
+} catch {
+  Write-Log "Failed to load windows-win32-ci-helper.ps1: $($_.Exception.Message)"
+  throw
+}
+
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+} catch {
+  Write-Log "Failed to load System.Windows.Forms: $($_.Exception.Message)"
+  throw
+}
+
 function Resolve-GhosttyExePath {
   $exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
   if (-not [string]::IsNullOrWhiteSpace($exePath)) {
     if (-not (Test-Path $exePath)) {
+      Write-Log "Expected executable not found: $exePath"
+      $parentDir = Split-Path -Parent $exePath
+      if (-not [string]::IsNullOrWhiteSpace($parentDir) -and (Test-Path $parentDir)) {
+        Write-Log "Listing contents of $parentDir"
+        Get-ChildItem -Path $parentDir -Force |
+          Select-Object FullName, Length, LastWriteTime |
+          Format-Table -AutoSize | Out-String |
+          Out-File -FilePath $logPath -Append -Encoding utf8
+      }
       throw "Expected executable not found: $exePath"
     }
     return $exePath

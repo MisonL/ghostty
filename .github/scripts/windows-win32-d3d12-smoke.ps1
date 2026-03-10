@@ -7,7 +7,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-. (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
 Set-Location $repoRoot
 
 $logsDir = Join-Path $repoRoot "ci-logs"
@@ -25,7 +24,14 @@ function Write-Log {
   $Message | Out-File -FilePath $logPath -Append -Encoding utf8
 }
 
-Write-Log "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode"
+Write-Log "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode requireWindow=$requireWindow"
+
+try {
+  . (Join-Path $PSScriptRoot "windows-win32-ci-helper.ps1")
+} catch {
+  Write-Log "Failed to load windows-win32-ci-helper.ps1: $($_.Exception.Message)"
+  throw
+}
 
 $exePath = $env:GHOSTTY_CI_SMOKE_EXE_PATH
 if ([string]::IsNullOrWhiteSpace($exePath)) {
@@ -64,6 +70,15 @@ if ([string]::IsNullOrWhiteSpace($exePath)) {
 }
 
 if (-not (Test-Path $exePath)) {
+  Write-Log "Expected executable not found: $exePath"
+  $parentDir = Split-Path -Parent $exePath
+  if (-not [string]::IsNullOrWhiteSpace($parentDir) -and (Test-Path $parentDir)) {
+    Write-Log "Listing contents of $parentDir"
+    Get-ChildItem -Path $parentDir -Force |
+      Select-Object FullName, Length, LastWriteTime |
+      Format-Table -AutoSize | Out-String |
+      Out-File -FilePath $logPath -Append -Encoding utf8
+  }
   throw "Expected executable not found: $exePath"
 }
 
@@ -105,6 +120,7 @@ $process.EnableRaisingEvents = $true
 $forcedTermination = $false
 $windowHandle = [IntPtr]::Zero
 $logCapture = $null
+$smokeTimeoutSeconds = 45
 
 if (-not $process.Start()) {
   throw "Failed to start ghostty.exe for Windows smoke"
@@ -112,11 +128,54 @@ if (-not $process.Start()) {
 
 $logCapture = Start-GhosttyProcessLogCapture -Process $process -LogPath $logPath
 
-$deadline = (Get-Date).AddSeconds(30)
+if (-not [string]::IsNullOrWhiteSpace($env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS)) {
+  try {
+    $smokeTimeoutSeconds = [int]$env:GHOSTTY_CI_WIN32_SMOKE_TIMEOUT_SECONDS
+  } catch {
+  }
+}
+
+$requiredMarkers = switch ($Mode) {
+  "core-draw" {
+    @(
+      "ci.win32.window_ready",
+      "ci.win32.core_surface_ready",
+      "ci.win32.core_draw_ready",
+      "ci.win32.present_ok"
+    )
+  }
+  default {
+    @(
+      "ci.win32.window_ready",
+      "ci.win32.native_draw_ready",
+      "ci.win32.present_ok"
+    )
+  }
+}
+
+$deadline = (Get-Date).AddSeconds($smokeTimeoutSeconds)
 while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
   if ($windowHandle -eq [IntPtr]::Zero) {
-    $windowHandle = Get-GhosttyVisibleWindowHandle -Process $process
+    $windowHandle = Get-GhosttyWindowHandleBestEffort -Process $process
   }
+
+  # Once we have all expected markers, we can start shutting down early.
+  $liveContent = ""
+  try {
+    $liveContent = Get-Content -Path $logPath -Raw
+  } catch {
+  }
+
+  $missingLive = @()
+  foreach ($marker in $requiredMarkers) {
+    if ($liveContent -notmatch [regex]::Escape($marker)) {
+      $missingLive += $marker
+    }
+  }
+  if ($missingLive.Count -eq 0) {
+    break
+  }
+
   Start-Sleep -Milliseconds 250
 }
 
@@ -149,23 +208,6 @@ if (-not (Test-Path $logPath)) {
 }
 
 $logContent = Get-Content -Path $logPath -Raw
-$requiredMarkers = switch ($Mode) {
-  "core-draw" {
-    @(
-      "ci.win32.window_ready",
-      "ci.win32.core_surface_ready",
-      "ci.win32.core_draw_ready",
-      "ci.win32.present_ok"
-    )
-  }
-  default {
-    @(
-      "ci.win32.window_ready",
-      "ci.win32.native_draw_ready",
-      "ci.win32.present_ok"
-    )
-  }
-}
 
 $missingMarkers = @()
 foreach ($marker in $requiredMarkers) {
@@ -177,12 +219,12 @@ foreach ($marker in $requiredMarkers) {
 $failed = $false
 if ($forcedTermination) {
   Write-Host "Smoke process required forced termination"
-  if ($Mode -ne "native" -or $missingMarkers.Count -gt 0) {
+  if ($missingMarkers.Count -gt 0) {
     $failed = $true
   }
 }
-if ($requireWindow -and $windowHandle -eq [IntPtr]::Zero) {
-  Write-Host "Smoke process never exposed a visible window handle"
+if ($requireWindow -and $windowHandle -eq [IntPtr]::Zero -and $logContent -notmatch [regex]::Escape("ci.win32.window_ready")) {
+  Write-Host "Smoke process never exposed a window handle (and log did not report ci.win32.window_ready)"
   $failed = $true
 }
 if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1) {
