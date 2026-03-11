@@ -26,6 +26,17 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     });
     const install_step = b.addInstallArtifact(exe, .{});
 
+    // Windows 上 EXE/DLL 会各自产生 PDB，但默认文件名相同，会在 CI 打包时互相覆盖。
+    // 显式安装 EXE 的 PDB 并使用独立文件名，便于后续离线符号化与定位崩溃。
+    if (cfg.target.result.os.tag == .windows) {
+        const pdb_install = b.addInstallFileWithDir(
+            exe.getEmittedPdb(),
+            .prefix,
+            "bin/ghostty-exe.pdb",
+        );
+        install_step.step.dependOn(&pdb_install.step);
+    }
+
     // Set PIE if requested
     if (cfg.pie) exe.pie = true;
 

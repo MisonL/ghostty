@@ -58,10 +58,21 @@ jobs:
           done
           test -f zig-out/bin/ghostty.exe
           cp zig-out/bin/ghostty.exe windows-smoke-artifact/ghostty.exe
-          if compgen -G "zig-out/bin/*.pdb" > /dev/null; then
-            cp zig-out/bin/*.pdb windows-smoke-artifact/
-          else
-            echo "No PDB files produced under zig-out/bin" > ci-logs/windows-smoke-no-pdb.txt
+          copied_pdb=0
+          if [ -f zig-out/bin/ghostty-exe.pdb ]; then
+            cp zig-out/bin/ghostty-exe.pdb windows-smoke-artifact/ghostty-exe.pdb
+            copied_pdb=1
+          fi
+          if [ -f zig-out/bin/ghostty-dll.pdb ]; then
+            cp zig-out/bin/ghostty-dll.pdb windows-smoke-artifact/ghostty-dll.pdb
+            copied_pdb=1
+          fi
+          if [ "$copied_pdb" -eq 0 ]; then
+            if compgen -G "zig-out/bin/*.pdb" > /dev/null; then
+              cp zig-out/bin/*.pdb windows-smoke-artifact/
+            else
+              echo "No PDB files produced under zig-out/bin" > ci-logs/windows-smoke-no-pdb.txt
+            fi
           fi
           if compgen -G "zig-out/bin/*.dll" > /dev/null; then
             cp zig-out/bin/*.dll windows-smoke-artifact/

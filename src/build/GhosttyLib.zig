@@ -115,9 +115,19 @@ pub fn initShared(
         break :dsymutil output;
     };
 
+    const lib_install = b.addInstallArtifact(lib, .{});
+    if (deps.config.target.result.os.tag == .windows) {
+        const pdb_install = b.addInstallFileWithDir(
+            lib.getEmittedPdb(),
+            .prefix,
+            "bin/ghostty-dll.pdb",
+        );
+        lib_install.step.dependOn(&pdb_install.step);
+    }
+
     return .{
         .step = &lib.step,
-        .artifact = b.addInstallArtifact(lib, .{}),
+        .artifact = lib_install,
         .output = lib.getEmittedBin(),
         .dsym = dsymutil,
     };
