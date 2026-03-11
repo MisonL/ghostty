@@ -3292,7 +3292,15 @@ pub const Surface = struct {
 
     fn alignedSoftwareRowPitch(width_px: u32) !u32 {
         const raw_pitch = std.math.mul(u32, width_px, 4) catch return error.OutOfMemory;
-        const aligned = std.mem.alignForward(u32, raw_pitch, software_upload_row_pitch_alignment);
+        // `alignForward(u32, ...)` 在 Debug/ReleaseSafe 下会做 `raw_pitch + (alignment - 1)`，
+        // 如果 raw_pitch 接近 u32 上界会直接 panic: integer overflow。这里提升到 u64 做对齐，
+        // 再安全地 cast 回 u32。
+        const aligned_u64 = std.mem.alignForward(
+            u64,
+            @as(u64, raw_pitch),
+            @as(u64, software_upload_row_pitch_alignment),
+        );
+        const aligned = std.math.cast(u32, aligned_u64) orelse return error.OutOfMemory;
         return aligned;
     }
 

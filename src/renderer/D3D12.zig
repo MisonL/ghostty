@@ -792,11 +792,20 @@ pub fn publishSoftwareFrame(
     const width_px = target.width;
     const height_px = target.height;
     const row_bytes = std.math.mul(u32, width_px, 4) catch return error.OutOfMemory;
-    const row_pitch = std.mem.alignForward(
-        u32,
-        row_bytes,
-        winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+    // `alignForward(u32, ...)` 在 Debug/ReleaseSafe 下可能触发 u32 加法溢出导致 panic。
+    // 这里提升到 u64 做对齐，再安全地 cast 回 u32。
+    const row_pitch_u64 = std.mem.alignForward(
+        u64,
+        @as(u64, row_bytes),
+        @as(u64, winos.c.D3D12_TEXTURE_DATA_PITCH_ALIGNMENT),
     );
+    const row_pitch = std.math.cast(u32, row_pitch_u64) orelse {
+        log.err(
+            "d3d12 software publish row pitch overflow width_px={} row_bytes={} aligned={}",
+            .{ width_px, row_bytes, row_pitch_u64 },
+        );
+        return error.OutOfMemory;
+    };
     const data_len = std.math.mul(
         usize,
         @as(usize, row_pitch),
