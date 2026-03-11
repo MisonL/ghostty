@@ -142,7 +142,10 @@ const win = struct {
     const HGLOBAL = ?*anyopaque;
     const HKL = ?*anyopaque;
     const HIMC = ?*anyopaque;
-    const LPCWSTR = ?[*:0]const u16;
+    // NOTE: `MAKEINTRESOURCEW` encodes a resource ID in the low bits of a
+    // pseudo-pointer, which is not necessarily aligned for `u16`. Keep this
+    // pointer type at align(1) so `@ptrFromInt` does not panic in safe builds.
+    const LPCWSTR = ?[*:0]align(1) const u16;
     const LPVOID = ?*anyopaque;
     const BOOL_TRUE: BOOL = 1;
 
