@@ -45,8 +45,8 @@ pub const force_software_cpu_route = false;
 
 pub const custom_shader_target: shadertoy.Target = .hlsl;
 pub const custom_shader_y_is_down = false;
-const frames_in_flight: usize = 2;
-pub const swap_chain_count = frames_in_flight;
+pub const swap_chain_count = 2;
+const frames_in_flight = swap_chain_count;
 pub const softwareFramePublicationOnCompletion = false;
 
 pub const MIN_VERSION_MAJOR = 12;
@@ -697,7 +697,7 @@ pending_completions: std.ArrayListUnmanaged(PendingCompletion) = .empty,
 fence: ?*winos.c.ID3D12Fence = null,
 fence_event: ?winos.HANDLE = null,
 fence_value: u64 = 0,
-command_contexts: [frames_in_flight]CommandContext = .{.{}} ** frames_in_flight,
+command_contexts: [frames_in_flight]CommandContext = std.mem.zeroes([frames_in_flight]CommandContext),
 next_context_index: u32 = 0,
 recording_context_index: u32 = 0,
 command_recording_active: bool = false,
@@ -754,9 +754,9 @@ pub fn deinit(self: *D3D12) void {
 pub fn surfaceInit(_: *apprt.Surface) !void {}
 pub fn finalizeSurfaceInit(_: *const D3D12, _: *apprt.Surface) !void {}
 pub fn threadEnter(_: *const D3D12, _: *apprt.Surface) !void {}
-pub fn threadExit(self: *D3D12) void {
+pub fn threadExit(self: *const D3D12) void {
     // Renderer shutdown must not leave swapchain frame semaphores held.
-    self.flushPendingCompletions(true);
+    @constCast(self).flushPendingCompletions(true);
 }
 pub fn loopEnter(_: *D3D12) void {}
 pub fn loopExit(_: *D3D12) void {}
