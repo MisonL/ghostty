@@ -1368,21 +1368,51 @@ pub const ReadThread = struct {
                         // Check for a quit signal
                         .OPERATION_ABORTED => break,
 
+                        // The pty/pipe was closed (child exit, shutdown, etc). This is a normal
+                        // termination path for the read thread.
+                        .BROKEN_PIPE,
+                        .NO_DATA,
+                        .HANDLE_EOF,
+                        .PIPE_NOT_CONNECTED,
+                        .INVALID_HANDLE,
+                        => {
+                            log.info("io reader exiting err={}", .{err});
+                            return;
+                        },
+
                         else => {
                             log.err("io reader error err={}", .{err});
-                            unreachable;
+                            return;
                         },
                     }
                 }
 
+                // Should not generally happen for blocking reads, but treat it like EOF and
+                // fall back to checking quit conditions.
+                if (n == 0) break;
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
             }
 
             var quit_bytes: windows.DWORD = 0;
             if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == 0) {
                 const err = windows.kernel32.GetLastError();
-                log.err("quit pipe reader error err={}", .{err});
-                unreachable;
+                switch (err) {
+                    // If the quit pipe is broken/closing, just treat it as a quit signal.
+                    .BROKEN_PIPE,
+                    .NO_DATA,
+                    .HANDLE_EOF,
+                    .PIPE_NOT_CONNECTED,
+                    .INVALID_HANDLE,
+                    => {
+                        log.info("quit pipe closed, read thread exiting err={}", .{err});
+                        return;
+                    },
+
+                    else => {
+                        log.err("quit pipe reader error err={}", .{err});
+                        return;
+                    },
+                }
             }
 
             if (quit_bytes > 0) {
