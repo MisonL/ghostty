@@ -77,32 +77,68 @@ fn homeUnix(buf: []u8) !?[]const u8 {
 }
 
 fn homeWindows(buf: []u8) !?[]const u8 {
-    const drive_len = blk: {
-        var fba_instance = std.heap.FixedBufferAllocator.init(buf);
-        const fba = fba_instance.allocator();
-        const drive = std.process.getEnvVarOwned(fba, "HOMEDRIVE") catch |err| switch (err) {
-            error.OutOfMemory => return Error.BufferTooSmall,
-            error.InvalidWtf8, error.EnvironmentVariableNotFound => return null,
-        };
-        // could shift the contents if this ever happens
-        if (drive.ptr != buf.ptr) @panic("codebug");
-        break :blk drive.len;
-    };
+    // Preserve existing behavior: prefer HOMEDRIVE + HOMEPATH.
+    // If either variable is missing, fall back to USERPROFILE.
+    var fba_instance = std.heap.FixedBufferAllocator.init(buf);
+    const fba = fba_instance.allocator();
 
-    const path_len = blk: {
-        const path_buf = buf[drive_len..];
-        var fba_instance = std.heap.FixedBufferAllocator.init(buf[drive_len..]);
-        const fba = fba_instance.allocator();
-        const homepath = std.process.getEnvVarOwned(fba, "HOMEPATH") catch |err| switch (err) {
-            error.OutOfMemory => return Error.BufferTooSmall,
-            error.InvalidWtf8, error.EnvironmentVariableNotFound => return null,
-        };
-        // could shift the contents if this ever happens
-        if (homepath.ptr != path_buf.ptr) @panic("codebug");
-        break :blk homepath.len;
+    const drive = std.process.getEnvVarOwned(fba, "HOMEDRIVE") catch |err| switch (err) {
+        error.OutOfMemory => return Error.BufferTooSmall,
+        error.InvalidWtf8 => return null,
+        error.EnvironmentVariableNotFound => return homeWindowsUserProfile(buf),
     };
+    // could shift the contents if this ever happens
+    if (drive.ptr != buf.ptr) @panic("codebug");
+    const drive_len = drive.len;
 
-    return buf[0 .. drive_len + path_len];
+    const homepath = std.process.getEnvVarOwned(fba, "HOMEPATH") catch |err| switch (err) {
+        error.OutOfMemory => return Error.BufferTooSmall,
+        error.InvalidWtf8 => return null,
+        error.EnvironmentVariableNotFound => return homeWindowsUserProfile(buf),
+    };
+    // could shift the contents if this ever happens
+    if (homepath.ptr != buf[drive_len..].ptr) @panic("codebug");
+
+    return buf[0 .. drive_len + homepath.len];
+}
+
+fn homeWindowsUserProfile(buf: []u8) !?[]const u8 {
+    var fba_instance = std.heap.FixedBufferAllocator.init(buf);
+    const fba = fba_instance.allocator();
+    const userprofile = std.process.getEnvVarOwned(fba, "USERPROFILE") catch |err| switch (err) {
+        error.OutOfMemory => return Error.BufferTooSmall,
+        error.InvalidWtf8, error.EnvironmentVariableNotFound => return null,
+    };
+    // could shift the contents if this ever happens
+    if (userprofile.ptr != buf.ptr) @panic("codebug");
+    return userprofile;
+}
+
+fn homeWindowsFromEnvUtf8(
+    buf: []u8,
+    homedrive: ?[]const u8,
+    homepath: ?[]const u8,
+    userprofile: ?[]const u8,
+) Error!?[]const u8 {
+    // Preserve the same preference order as homeWindows: HOMEDRIVE+HOMEPATH,
+    // then USERPROFILE.
+    if (homedrive != null and homepath != null) {
+        const drive = homedrive.?;
+        const path = homepath.?;
+        const total_len = drive.len + path.len;
+        if (buf.len < total_len) return Error.BufferTooSmall;
+        @memcpy(buf[0..drive.len], drive);
+        @memcpy(buf[drive.len..total_len], path);
+        return buf[0..total_len];
+    }
+
+    if (userprofile) |up| {
+        if (buf.len < up.len) return Error.BufferTooSmall;
+        @memcpy(buf[0..up.len], up);
+        return buf[0..up.len];
+    }
+
+    return null;
 }
 
 fn trimSpace(input: []const u8) []const u8 {
@@ -192,4 +228,28 @@ test {
     const result = try home(&buf);
     try testing.expect(result != null);
     try testing.expect(result.?.len > 0);
+}
+
+test "homeWindows USERPROFILE fallback (env selection logic)" {
+    const testing = std.testing;
+
+    var buf: [128]u8 = undefined;
+
+    const prefer = try homeWindowsFromEnvUtf8(
+        &buf,
+        "C:",
+        "\\Users\\Alice",
+        "C:\\Users\\Bob",
+    );
+    try testing.expectEqualStrings("C:\\Users\\Alice", prefer.?);
+
+    const fallback = try homeWindowsFromEnvUtf8(
+        &buf,
+        null,
+        null,
+        "C:\\Users\\Bob",
+    );
+    try testing.expectEqualStrings("C:\\Users\\Bob", fallback.?);
+
+    try testing.expect(try homeWindowsFromEnvUtf8(&buf, null, null, null) == null);
 }
