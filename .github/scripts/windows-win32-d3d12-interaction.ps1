@@ -20,7 +20,29 @@ if (Test-Path $logPath) {
 function Write-Log {
   param([string]$Message)
   Write-Host $Message
-  $Message | Out-File -FilePath $logPath -Append -Encoding utf8
+  # Start-GhosttyProcessLogCapture holds the log open while capturing output. Avoid
+  # Out-File here because it uses an incompatible sharing mode on hosted runners.
+  try {
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    $fs = [System.IO.FileStream]::new(
+      $logPath,
+      [System.IO.FileMode]::Append,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::ReadWrite
+    )
+    try {
+      $sw = [System.IO.StreamWriter]::new($fs, $utf8)
+      try {
+        $sw.WriteLine($Message)
+        $sw.Flush()
+      } finally {
+        $sw.Dispose()
+      }
+    } finally {
+      $fs.Dispose()
+    }
+  } catch {
+  }
 }
 
 Write-Log "Starting Windows interaction mode=$Mode"
