@@ -20,8 +20,8 @@ if (Test-Path $logPath) {
 function Write-Log {
   param([string]$Message)
   Write-Host $Message
-  # Start-GhosttyProcessLogCapture holds the log open while capturing output. Avoid
-  # Out-File here because it uses an incompatible sharing mode on hosted runners.
+  # Start-GhosttyProcessLogCapture 在抓取输出时会保持日志文件打开。
+  # 这里不要用 Out-File，因为它在 hosted runner 上的共享模式会冲突导致写入失败。
   try {
     $utf8 = [System.Text.UTF8Encoding]::new($false)
     $fs = [System.IO.FileStream]::new(
@@ -179,12 +179,12 @@ function Resize-Window {
 
 function Send-Keys {
   param([string]$Text)
-  # SendWait can hang indefinitely on hosted runners if focus/input plumbing is
-  # flaky. Use Send + a small delay instead.
+  # SendWait 在 hosted runner 上如果焦点/输入链路不稳定可能会无限卡住。
+  # 改用 Send + 小延时，避免阻塞整个步骤。
   try {
     [System.Windows.Forms.SendKeys]::Send($Text)
   } catch {
-    Write-Log "SendKeys failed: $($_.Exception.Message)"
+    Write-Log "SendKeys 发送失败: $($_.Exception.Message)"
   }
   Start-Sleep -Milliseconds 300
 }

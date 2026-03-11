@@ -142,9 +142,9 @@ const win = struct {
     const HGLOBAL = ?*anyopaque;
     const HKL = ?*anyopaque;
     const HIMC = ?*anyopaque;
-    // NOTE: `MAKEINTRESOURCEW` encodes a resource ID in the low bits of a
-    // pseudo-pointer, which is not necessarily aligned for `u16`. Keep this
-    // pointer type at align(1) so `@ptrFromInt` does not panic in safe builds.
+    // 注意：`MAKEINTRESOURCEW` 会把资源 ID 编码进“伪指针”的低位，可能不满足 `u16`
+    // 的对齐要求。这里把指针类型固定为 `align(1)`，避免在安全构建中 `@ptrFromInt`
+    // 因对齐检查触发 panic。
     const LPCWSTR = ?[*:0]align(1) const u16;
     const LPVOID = ?*anyopaque;
     const BOOL_TRUE: BOOL = 1;

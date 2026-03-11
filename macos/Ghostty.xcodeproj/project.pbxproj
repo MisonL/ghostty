@@ -434,7 +434,7 @@
 					A5B3052E299BEAAA0047F10C /* Frameworks */,
 					A5B3052F299BEAAA0047F10C /* Resources */,
 					819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
-					FCFA0C1E2EFA123400ABCD01 /* Strip FinderInfo Xattr */,
+					FCFA0C1E2EFA123400ABCD01 /* 移除 FinderInfo Xattr */,
 				);
 				buildRules = (
 				);
@@ -601,7 +601,7 @@
 				shellScript = "[[ -z \"$GITHUB_ACTIONS\" ]] || exit 0;\n\nSWIFTLINT=\"\"\nif command -v swiftlint >/dev/null 2>&1; then\n    SWIFTLINT=\"$(command -v swiftlint)\"\nelif [[ -f \"/opt/homebrew/bin/swiftlint\" ]]; then\n    SWIFTLINT=\"/opt/homebrew/bin/swiftlint\"\nfi\n\nif [[ -n \"$SWIFTLINT\" ]]; then\n    \"$SWIFTLINT\" lint --quiet\nfi\n";
 				showEnvVarsInLog = 0;
 			};
-			FCFA0C1E2EFA123400ABCD01 /* Strip FinderInfo Xattr */ = {
+			FCFA0C1E2EFA123400ABCD01 /* 移除 FinderInfo Xattr */ = {
 				isa = PBXShellScriptBuildPhase;
 				buildActionMask = 2147483647;
 				files = (
@@ -610,7 +610,7 @@
 				);
 				inputPaths = (
 				);
-				name = "Strip FinderInfo Xattr";
+				name = "移除 FinderInfo Xattr";
 				outputFileListPaths = (
 				);
 				outputPaths = (
