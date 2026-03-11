@@ -67,6 +67,7 @@ struct ManagedSettingsDraftTests {
             """
         )
 
+        // Swift 多行字符串默认不包含末尾换行；这里用空行来断言文件内容最终以 '\n' 结尾。
         #expect(updated == """
         theme = dark
 
@@ -75,6 +76,7 @@ struct ManagedSettingsDraftTests {
         # END Ghostty macOS Settings (managed)
 
         font-size = 14
+
         """)
     }
 

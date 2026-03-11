@@ -428,17 +428,18 @@
 		A5B30530299BEAAA0047F10C /* Ghostty */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A5B30540299BEAAB0047F10C /* Build configuration list for PBXNativeTarget "Ghostty" */;
-			buildPhases = (
-				FC501E0B2F46B410007AE49D /* Run SwiftLint */,
-				A5B3052D299BEAAA0047F10C /* Sources */,
-				A5B3052E299BEAAA0047F10C /* Frameworks */,
-				A5B3052F299BEAAA0047F10C /* Resources */,
-				819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				819324682F2502FB00A9ED8F /* PBXTargetDependency */,
+				buildPhases = (
+					FC501E0B2F46B410007AE49D /* Run SwiftLint */,
+					A5B3052D299BEAAA0047F10C /* Sources */,
+					A5B3052E299BEAAA0047F10C /* Frameworks */,
+					A5B3052F299BEAAA0047F10C /* Resources */,
+					819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
+					FCFA0C1E2EFA123400ABCD01 /* Strip FinderInfo Xattr */,
+				);
+				buildRules = (
+				);
+				dependencies = (
+					819324682F2502FB00A9ED8F /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				81F82BC72E82815D001EDFA7 /* Sources */,
@@ -580,10 +581,10 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
+			FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {
+				isa = PBXShellScriptBuildPhase;
+				alwaysOutOfDate = 1;
+				buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
@@ -597,9 +598,28 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "[[ -z \"$GITHUB_ACTIONS\" ]] || exit 0;\n\nSWIFTLINT=\"\"\nif command -v swiftlint >/dev/null 2>&1; then\n    SWIFTLINT=\"$(command -v swiftlint)\"\nelif [[ -f \"/opt/homebrew/bin/swiftlint\" ]]; then\n    SWIFTLINT=\"/opt/homebrew/bin/swiftlint\"\nfi\n\nif [[ -n \"$SWIFTLINT\" ]]; then\n    \"$SWIFTLINT\" lint --quiet\nfi\n";
-			showEnvVarsInLog = 0;
-		};
+				shellScript = "[[ -z \"$GITHUB_ACTIONS\" ]] || exit 0;\n\nSWIFTLINT=\"\"\nif command -v swiftlint >/dev/null 2>&1; then\n    SWIFTLINT=\"$(command -v swiftlint)\"\nelif [[ -f \"/opt/homebrew/bin/swiftlint\" ]]; then\n    SWIFTLINT=\"/opt/homebrew/bin/swiftlint\"\nfi\n\nif [[ -n \"$SWIFTLINT\" ]]; then\n    \"$SWIFTLINT\" lint --quiet\nfi\n";
+				showEnvVarsInLog = 0;
+			};
+			FCFA0C1E2EFA123400ABCD01 /* Strip FinderInfo Xattr */ = {
+				isa = PBXShellScriptBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+				);
+				inputFileListPaths = (
+				);
+				inputPaths = (
+				);
+				name = "Strip FinderInfo Xattr";
+				outputFileListPaths = (
+				);
+				outputPaths = (
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+				shellPath = /bin/sh;
+				shellScript = "if [ -d \"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\" ]; then\n  /usr/bin/xattr -d com.apple.FinderInfo \"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\" 2>/dev/null || true\nfi\n";
+				showEnvVarsInLog = 0;
+			};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
