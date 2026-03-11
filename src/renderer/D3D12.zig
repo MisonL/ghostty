@@ -45,7 +45,8 @@ pub const force_software_cpu_route = false;
 
 pub const custom_shader_target: shadertoy.Target = .hlsl;
 pub const custom_shader_y_is_down = false;
-pub const swap_chain_count = 1;
+const frames_in_flight: usize = 2;
+pub const swap_chain_count = frames_in_flight;
 pub const softwareFramePublicationOnCompletion = false;
 
 pub const MIN_VERSION_MAJOR = 12;
@@ -66,6 +67,25 @@ pub const shaders = @import("d3d12/shaders.zig");
 const DeferredBufferRelease = struct {
     buffer: *winos.graphics.ID3D12Resource,
     was_mapped: bool,
+};
+
+const CommandContext = struct {
+    command_allocator: ?*winos.c.ID3D12CommandAllocator = null,
+    command_list: ?*winos.c.ID3D12GraphicsCommandList = null,
+    /// The last fence value that signaled completion for work recorded using
+    /// this context.
+    fence_value: u64 = 0,
+};
+
+const PendingCompletion = struct {
+    fence_value: u64,
+    renderer: ?*rendererpkg.GenericRenderer(D3D12) = null,
+    target: ?*Target = null,
+    publish_software_frame: bool = false,
+    publish_width_px: u32 = 0,
+    publish_height_px: u32 = 0,
+    health: Health = .healthy,
+    deferred_buffer_releases: std.ArrayListUnmanaged(DeferredBufferRelease) = .empty,
 };
 
 fn softwareFrameReleaseReadback(
@@ -621,11 +641,11 @@ pub const Frame = struct {
     }
 
     pub fn complete(self: *const Frame, sync: bool) void {
-        _ = sync;
-
         const health: Health = .healthy;
-        self.api.present(self.target.*) catch |err| {
+        const fence_value = self.api.present(self.target.*) catch |err| {
             log.err("failed to present d3d12 render target err={}", .{err});
+            // If we can't present, avoid blocking the swapchain semaphore.
+            self.api.flushDeferredBufferReleases();
             self.renderer.frameCompleted(
                 .unhealthy,
                 self.target,
@@ -636,13 +656,21 @@ pub const Frame = struct {
             return;
         };
 
-        self.renderer.frameCompleted(
-            health,
-            self.target,
-            self.publish_software_frame,
-            self.publish_width_px,
-            self.publish_height_px,
-        );
+        self.api.enqueueCompletion(.{
+            .fence_value = fence_value,
+            .renderer = self.renderer,
+            .target = self.target,
+            .publish_software_frame = self.publish_software_frame,
+            .publish_width_px = self.publish_width_px,
+            .publish_height_px = self.publish_height_px,
+            .health = health,
+        });
+
+        if (sync) {
+            // `drawFrame(true)` requires synchronous completion.
+            self.api.waitForFenceValue(fence_value, "drawFrame(sync)") catch {};
+            self.api.flushPendingCompletions(true);
+        }
     }
 };
 
@@ -665,6 +693,13 @@ srv_heap_gpu_start_ptr: u64 = 0,
 next_srv_index: u32 = 0,
 free_srv_indices: std.ArrayListUnmanaged(u32) = .empty,
 deferred_buffer_releases: std.ArrayListUnmanaged(DeferredBufferRelease) = .empty,
+pending_completions: std.ArrayListUnmanaged(PendingCompletion) = .empty,
+fence: ?*winos.c.ID3D12Fence = null,
+fence_event: ?winos.HANDLE = null,
+fence_value: u64 = 0,
+command_contexts: [frames_in_flight]CommandContext = .{.{}} ** frames_in_flight,
+next_context_index: u32 = 0,
+recording_context_index: u32 = 0,
 command_recording_active: bool = false,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
@@ -696,6 +731,10 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
         traceWin32D3D12Init("renderer.init.ensure_srv_heap.begin");
         try result.ensureSrvHeap();
         traceWin32D3D12Init("renderer.init.ensure_srv_heap.ready");
+
+        traceWin32D3D12Init("renderer.init.frame_pacing.begin");
+        try result.ensureFramePacing();
+        traceWin32D3D12Init("renderer.init.frame_pacing.ready");
     }
     result.has_native_draw_path = result.has_native_present_path and result.d3d12_device != null;
     traceWin32D3D12Init("renderer.init.ready");
@@ -703,7 +742,10 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !D3D12 {
 }
 
 pub fn deinit(self: *D3D12) void {
+    self.flushPendingCompletions(true);
     self.flushDeferredBufferReleases();
+    self.pending_completions.deinit(self.alloc);
+    self.releaseFramePacing();
     self.free_srv_indices.deinit(self.alloc);
     self.deferred_buffer_releases.deinit(self.alloc);
     self.* = undefined;
@@ -712,12 +754,23 @@ pub fn deinit(self: *D3D12) void {
 pub fn surfaceInit(_: *apprt.Surface) !void {}
 pub fn finalizeSurfaceInit(_: *const D3D12, _: *apprt.Surface) !void {}
 pub fn threadEnter(_: *const D3D12, _: *apprt.Surface) !void {}
-pub fn threadExit(_: *const D3D12) void {}
+pub fn threadExit(self: *D3D12) void {
+    // Renderer shutdown must not leave swapchain frame semaphores held.
+    self.flushPendingCompletions(true);
+}
 pub fn loopEnter(_: *D3D12) void {}
 pub fn loopExit(_: *D3D12) void {}
 pub fn displayRealized(_: *const D3D12) void {}
-pub fn displayUnrealized(_: *const D3D12) void {}
-pub fn drawFrameStart(_: *D3D12) void {}
+pub fn displayUnrealized(self: *D3D12) void {
+    // Ensure the swapchain semaphore isn't held by in-flight frames when the
+    // surface is torn down (otherwise swap_chain.deinit can deadlock).
+    self.flushPendingCompletions(true);
+}
+pub fn drawFrameStart(self: *D3D12) void {
+    // Retire any completed GPU work before the renderer attempts to grab the
+    // next swapchain frame state (which uses a semaphore).
+    self.flushPendingCompletions(false);
+}
 pub fn drawFrameEnd(_: *D3D12) void {}
 
 pub fn initShaders(
@@ -747,7 +800,7 @@ pub fn initTarget(self: *const D3D12, width: usize, height: usize) !Target {
     return try Target.init(@constCast(self), width, height);
 }
 
-pub fn present(self: *D3D12, target: Target) !void {
+pub fn present(self: *D3D12, target: Target) !u64 {
     if (!self.command_recording_active) {
         _ = try self.beginCommandRecording();
     }
@@ -758,24 +811,32 @@ pub fn present(self: *D3D12, target: Target) !void {
 
     const sc = self.currentSwapChain() orelse return error.Unexpected;
     if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) {
+        if (self.currentDevice()) |d| logDeviceRemovedReason(d, "swapchain present");
         return error.Unexpected;
     }
 
-    try self.waitForGpuIdle();
-    self.flushDeferredBufferReleases();
+    const fence_value = try self.signalFence("present");
     self.updateCurrentFrameIndex(sc);
     self.last_present_generation +%= 1;
+    self.markCurrentContextInFlight(fence_value);
+    return fence_value;
 }
 
 pub fn presentLastTarget(self: *D3D12) !void {
     if (self.last_target) |target| {
-        try self.present(target);
+        const fence_value = try self.present(target);
+        self.enqueueCompletion(.{
+            .fence_value = fence_value,
+        });
         return;
     }
 
     const sc = self.currentSwapChain() orelse return error.Unexpected;
     if (sc.lpVtbl[0].Present.?(sc, 1, 0) != winos.S_OK) return error.Unexpected;
-    try self.waitForGpuIdle();
+    const fence_value = try self.signalFence("present_last_target");
+    self.enqueueCompletion(.{
+        .fence_value = fence_value,
+    });
     self.updateCurrentFrameIndex(sc);
 }
 
@@ -853,7 +914,9 @@ pub fn publishSoftwareFrame(
     );
 
     try self.executeRecordedCommands();
-    try self.waitForGpuIdle();
+    const fence_value = try self.signalFence("publish software frame");
+    self.markCurrentContextInFlight(fence_value);
+    try self.waitForFenceValue(fence_value, "publish software frame");
     self.flushDeferredBufferReleases();
 
     var mapped: ?*anyopaque = null;
@@ -980,6 +1043,10 @@ pub fn beginFrame(
     publish_width_px: u32,
     publish_height_px: u32,
 ) !Frame {
+    // If the swapchain is fully saturated (>= frames_in_flight), `nextFrame`
+    // will block. Ensure we can always make forward progress here.
+    self.flushPendingCompletions(false);
+
     _ = try self.beginCommandRecording();
     return try Frame.begin(
         .{},
@@ -990,6 +1057,92 @@ pub fn beginFrame(
         publish_width_px,
         publish_height_px,
     );
+}
+
+fn ensureFramePacing(self: *D3D12) !void {
+    const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
+
+    if (self.fence == null) {
+        var raw_fence: ?*winos.c.ID3D12Fence = null;
+        if (device.lpVtbl[0].CreateFence.?(
+            device,
+            0,
+            winos.c.D3D12_FENCE_FLAG_NONE,
+            &winos.c.IID_ID3D12Fence,
+            @ptrCast(&raw_fence),
+        ) != winos.S_OK or raw_fence == null) {
+            logDeviceRemovedReason(device, "create frame pacing fence");
+            return error.Unexpected;
+        }
+        self.fence = raw_fence.?;
+        self.fence_value = 0;
+    }
+
+    if (self.fence_event == null) {
+        self.fence_event = winos.c.CreateEventW(null, winos.FALSE, winos.FALSE, null);
+        if (self.fence_event == null) return error.Unexpected;
+    }
+
+    for (&self.command_contexts) |*ctx| {
+        if (ctx.command_allocator == null) {
+            var raw_allocator: ?*winos.c.ID3D12CommandAllocator = null;
+            if (device.lpVtbl[0].CreateCommandAllocator.?(
+                device,
+                winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
+                &winos.c.IID_ID3D12CommandAllocator,
+                @ptrCast(&raw_allocator),
+            ) != winos.S_OK or raw_allocator == null) {
+                logDeviceRemovedReason(device, "create command allocator");
+                return error.Unexpected;
+            }
+            ctx.command_allocator = raw_allocator.?;
+        }
+
+        if (ctx.command_list == null) {
+            var raw_command_list: ?*winos.c.ID3D12GraphicsCommandList = null;
+            if (device.lpVtbl[0].CreateCommandList.?(
+                device,
+                0,
+                winos.c.D3D12_COMMAND_LIST_TYPE_DIRECT,
+                ctx.command_allocator.?,
+                null,
+                &winos.c.IID_ID3D12GraphicsCommandList,
+                @ptrCast(&raw_command_list),
+            ) != winos.S_OK or raw_command_list == null) {
+                logDeviceRemovedReason(device, "create command list");
+                return error.Unexpected;
+            }
+            ctx.command_list = raw_command_list.?;
+            if (ctx.command_list.?.lpVtbl[0].Close.?(ctx.command_list.?) != winos.S_OK) {
+                logDeviceRemovedReason(device, "close command list");
+                return error.Unexpected;
+            }
+        }
+    }
+}
+
+fn releaseFramePacing(self: *D3D12) void {
+    for (&self.command_contexts) |*ctx| {
+        if (ctx.command_list) |cl| {
+            winos.graphics.release(@ptrCast(cl));
+            ctx.command_list = null;
+        }
+        if (ctx.command_allocator) |ca| {
+            winos.graphics.release(@ptrCast(ca));
+            ctx.command_allocator = null;
+        }
+        ctx.fence_value = 0;
+    }
+
+    if (self.fence) |f| {
+        winos.graphics.release(@ptrCast(f));
+        self.fence = null;
+    }
+    if (self.fence_event) |ev| {
+        _ = winos.CloseHandle(ev);
+        self.fence_event = null;
+    }
+    self.fence_value = 0;
 }
 
 fn ensureSrvHeap(self: *D3D12) !void {
@@ -1416,7 +1569,9 @@ fn uploadTextureRegion(
     );
 
     try self.executeRecordedCommands();
-    try self.waitForGpuIdle();
+    const fence_value = try self.signalFence("upload texture region");
+    self.markCurrentContextInFlight(fence_value);
+    try self.waitForFenceValue(fence_value, "upload texture region");
     self.flushDeferredBufferReleases();
 }
 
@@ -1519,7 +1674,9 @@ fn beginCommandRecording(self: *D3D12) !*winos.c.ID3D12GraphicsCommandList {
         return self.currentCommandList() orelse error.Unexpected;
     }
 
-    try self.waitForGpuIdle();
+    try self.ensureFramePacing();
+    self.recording_context_index = self.next_context_index;
+    try self.waitForContextIdle(@intCast(self.recording_context_index));
 
     const allocator = self.currentCommandAllocator() orelse return error.Unexpected;
     const command_list = self.currentCommandList() orelse return error.Unexpected;
@@ -1550,6 +1707,249 @@ fn executeRecordedCommands(self: *D3D12) !void {
         @ptrCast(&lists),
     );
     self.command_recording_active = false;
+}
+
+const fence_wait_timeout_ms: u32 = 30_000;
+
+fn signalFence(self: *D3D12, context: []const u8) !u64 {
+    try self.ensureFramePacing();
+    const queue = self.currentQueue() orelse return error.Unexpected;
+    const fence = self.fence orelse return error.Unexpected;
+    const device = self.currentDevice();
+
+    self.fence_value += 1;
+    const value = self.fence_value;
+    if (queue.lpVtbl[0].Signal.?(
+        queue,
+        fence,
+        value,
+    ) != winos.S_OK) {
+        if (device) |d| logDeviceRemovedReason(d, context);
+        return error.Unexpected;
+    }
+
+    return value;
+}
+
+fn waitForFenceValue(self: *D3D12, value: u64, context: []const u8) !void {
+    if (value == 0) return;
+
+    try self.ensureFramePacing();
+    const fence = self.fence orelse return error.Unexpected;
+    const ev = self.fence_event orelse return error.Unexpected;
+    const device = self.currentDevice();
+
+    if (fence.lpVtbl[0].GetCompletedValue.?(fence) >= value) return;
+
+    if (fence.lpVtbl[0].SetEventOnCompletion.?(
+        fence,
+        value,
+        ev,
+    ) != winos.S_OK) {
+        if (device) |d| logDeviceRemovedReason(d, context);
+        return error.Unexpected;
+    }
+
+    const WAIT_OBJECT_0: winos.DWORD = 0;
+    const WAIT_TIMEOUT: winos.DWORD = 0x00000102;
+    const result = winos.c.WaitForSingleObject(ev, fence_wait_timeout_ms);
+    if (result == winos.WAIT_FAILED) {
+        if (device) |d| logDeviceRemovedReason(d, context);
+        return error.Unexpected;
+    }
+    if (result == WAIT_TIMEOUT) {
+        if (device) |d| logDeviceRemovedReason(d, context);
+        log.err(
+            "d3d12 fence wait timeout context={s} value={} timeout_ms={d}",
+            .{ context, value, fence_wait_timeout_ms },
+        );
+        return error.Unexpected;
+    }
+    if (result != WAIT_OBJECT_0) {
+        log.err("d3d12 fence wait unexpected result context={s} result=0x{x}", .{ context, result });
+        return error.Unexpected;
+    }
+}
+
+fn waitForContextIdle(self: *D3D12, idx: usize) !void {
+    if (idx >= self.command_contexts.len) return error.Unexpected;
+    const value = self.command_contexts[idx].fence_value;
+    if (value == 0) return;
+
+    self.waitForFenceValue(value, "wait for command context") catch |err| {
+        log.err(
+            "d3d12 command context wait failed index={d} value={} err={}",
+            .{ idx, value, err },
+        );
+        return err;
+    };
+}
+
+fn markCurrentContextInFlight(self: *D3D12, fence_value: u64) void {
+    const idx: usize = std.math.cast(usize, self.recording_context_index) orelse return;
+    if (idx >= self.command_contexts.len) return;
+    self.command_contexts[idx].fence_value = fence_value;
+    self.next_context_index = @intCast((idx + 1) % self.command_contexts.len);
+}
+
+fn enqueueCompletion(self: *D3D12, base: PendingCompletion) void {
+    if (base.renderer == null and self.deferred_buffer_releases.items.len == 0) return;
+
+    // Attach all deferred buffer releases collected since the last queue
+    // submission to this completion point.
+    var releases: std.ArrayListUnmanaged(DeferredBufferRelease) = self.deferred_buffer_releases;
+    self.deferred_buffer_releases = .empty;
+
+    var completion = base;
+    completion.deferred_buffer_releases = releases;
+    self.pending_completions.append(self.alloc, completion) catch {
+        // Last-ditch fallback: block until the fence is reached, then free.
+        self.waitForFenceValue(base.fence_value, "enqueue completion oom") catch {};
+        flushDeferredBufferReleasesList(&releases);
+        releases.deinit(self.alloc);
+        if (base.renderer) |renderer| {
+            const target: ?*const Target = if (base.target) |t| t else null;
+            renderer.frameCompleted(
+                base.health,
+                target,
+                base.publish_software_frame,
+                base.publish_width_px,
+                base.publish_height_px,
+            );
+        }
+    };
+}
+
+fn countPendingDrawFrames(self: *const D3D12) usize {
+    var count: usize = 0;
+    for (self.pending_completions.items) |c| {
+        if (c.renderer != null) count += 1;
+    }
+    return count;
+}
+
+fn flushDeferredBufferReleasesList(
+    releases: *std.ArrayListUnmanaged(DeferredBufferRelease),
+) void {
+    for (releases.items) |release| {
+        const resource = nativePtr(*winos.c.ID3D12Resource, release.buffer);
+        if (release.was_mapped) {
+            resource.lpVtbl[0].Unmap.?(
+                resource,
+                0,
+                null,
+            );
+        }
+        winos.graphics.release(@ptrCast(release.buffer));
+    }
+    releases.clearRetainingCapacity();
+}
+
+fn retireCompletedCompletions(self: *D3D12) void {
+    const fence = self.fence orelse return;
+    const completed = fence.lpVtbl[0].GetCompletedValue.?(fence);
+
+    while (self.pending_completions.items.len > 0) {
+        const next = self.pending_completions.items[0];
+        if (next.fence_value == 0 or completed < next.fence_value) break;
+
+        var entry = self.pending_completions.orderedRemove(0);
+        flushDeferredBufferReleasesList(&entry.deferred_buffer_releases);
+        entry.deferred_buffer_releases.deinit(self.alloc);
+
+        if (entry.renderer) |renderer| {
+            const target: ?*const Target = if (entry.target) |t| t else null;
+            renderer.frameCompleted(
+                entry.health,
+                target,
+                entry.publish_software_frame,
+                entry.publish_width_px,
+                entry.publish_height_px,
+            );
+        }
+    }
+}
+
+fn flushPendingCompletions(self: *D3D12, drain_all: bool) void {
+    if (self.pending_completions.items.len == 0) {
+        if (drain_all and self.deferred_buffer_releases.items.len > 0) {
+            const value = self.fence_value;
+            if (value != 0) self.waitForFenceValue(value, "drain deferred releases") catch {};
+            self.flushDeferredBufferReleases();
+        }
+        return;
+    }
+
+    // First, retire whatever is already complete without blocking.
+    self.retireCompletedCompletions();
+
+    // Ensure forward progress if swapchain buffering is saturated.
+    // If we don't do this, `swap_chain.nextFrame()` can deadlock waiting on
+    // a semaphore permit that only frameCompleted() will release.
+    while (self.countPendingDrawFrames() >= frames_in_flight and self.pending_completions.items.len > 0) {
+        const wait_value = self.pending_completions.items[0].fence_value;
+        if (wait_value == 0) break;
+        self.waitForFenceValue(wait_value, "frame pacing") catch {
+            // If we can't wait, force-complete everything to avoid deadlocks.
+            log.err(
+                "d3d12 forcing completion after fence wait failed value={}",
+                .{wait_value},
+            );
+            while (self.pending_completions.items.len > 0) {
+                var entry = self.pending_completions.orderedRemove(0);
+                flushDeferredBufferReleasesList(&entry.deferred_buffer_releases);
+                entry.deferred_buffer_releases.deinit(self.alloc);
+                if (entry.renderer) |renderer| {
+                    const target: ?*const Target = if (entry.target) |t| t else null;
+                    renderer.frameCompleted(
+                        .unhealthy,
+                        target,
+                        entry.publish_software_frame,
+                        entry.publish_width_px,
+                        entry.publish_height_px,
+                    );
+                }
+            }
+            return;
+        };
+        self.retireCompletedCompletions();
+    }
+
+    if (!drain_all) return;
+
+    while (self.pending_completions.items.len > 0) {
+        const wait_value = self.pending_completions.items[0].fence_value;
+        if (wait_value == 0) break;
+        self.waitForFenceValue(wait_value, "drain pending completions") catch {
+            // Same forcing fallback as above.
+            log.err("d3d12 forcing completion while draining value={}", .{wait_value});
+            while (self.pending_completions.items.len > 0) {
+                var entry = self.pending_completions.orderedRemove(0);
+                flushDeferredBufferReleasesList(&entry.deferred_buffer_releases);
+                entry.deferred_buffer_releases.deinit(self.alloc);
+                if (entry.renderer) |renderer| {
+                    const target: ?*const Target = if (entry.target) |t| t else null;
+                    renderer.frameCompleted(
+                        .unhealthy,
+                        target,
+                        entry.publish_software_frame,
+                        entry.publish_width_px,
+                        entry.publish_height_px,
+                    );
+                }
+            }
+            return;
+        };
+        self.retireCompletedCompletions();
+    }
+
+    // If we still have deferred releases not yet attached to a completion
+    // entry (should be rare), wait for the most recently signaled fence.
+    if (self.deferred_buffer_releases.items.len > 0) {
+        const value = self.fence_value;
+        if (value != 0) self.waitForFenceValue(value, "drain deferred releases") catch {};
+        self.flushDeferredBufferReleases();
+    }
 }
 
 fn transitionTextureState(
@@ -1643,15 +2043,15 @@ fn currentQueue(self: *const D3D12) ?*winos.c.ID3D12CommandQueue {
 }
 
 fn currentCommandAllocator(self: *const D3D12) ?*winos.c.ID3D12CommandAllocator {
-    const surface = self.rt_surface orelse return null;
-    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return surface.graphics.command_allocator;
+    const idx: usize = std.math.cast(usize, self.recording_context_index) orelse return null;
+    if (idx >= self.command_contexts.len) return null;
+    return self.command_contexts[idx].command_allocator;
 }
 
 fn currentCommandList(self: *const D3D12) ?*winos.c.ID3D12GraphicsCommandList {
-    const surface = self.rt_surface orelse return null;
-    if (!@hasField(@TypeOf(surface.*), "graphics")) return null;
-    return surface.graphics.command_list;
+    const idx: usize = std.math.cast(usize, self.recording_context_index) orelse return null;
+    if (idx >= self.command_contexts.len) return null;
+    return self.command_contexts[idx].command_list;
 }
 
 fn currentSwapChain(self: *const D3D12) ?*winos.c.IDXGISwapChain3 {
@@ -1727,18 +2127,7 @@ fn srvGpuHandleForIndex(self: *const D3D12, index: u32) !winos.c.D3D12_GPU_DESCR
 }
 
 fn flushDeferredBufferReleases(self: *D3D12) void {
-    for (self.deferred_buffer_releases.items) |release| {
-        const resource = nativePtr(*winos.c.ID3D12Resource, release.buffer);
-        if (release.was_mapped) {
-            resource.lpVtbl[0].Unmap.?(
-                resource,
-                0,
-                null,
-            );
-        }
-        winos.graphics.release(@ptrCast(release.buffer));
-    }
-    self.deferred_buffer_releases.clearRetainingCapacity();
+    flushDeferredBufferReleasesList(&self.deferred_buffer_releases);
 }
 
 fn deferReleaseBuffer(ctx: ?*anyopaque, buffer: *winos.graphics.ID3D12Resource, was_mapped: bool) void {
@@ -1754,19 +2143,6 @@ fn deferReleaseBuffer(ctx: ?*anyopaque, buffer: *winos.graphics.ID3D12Resource, 
         winos.graphics.release(@ptrCast(buffer));
         return;
     }));
-
-    if (!self.command_recording_active) {
-        const resource = nativePtr(*winos.c.ID3D12Resource, buffer);
-        if (was_mapped) {
-            resource.lpVtbl[0].Unmap.?(
-                resource,
-                0,
-                null,
-            );
-        }
-        winos.graphics.release(@ptrCast(buffer));
-        return;
-    }
 
     self.deferred_buffer_releases.append(self.alloc, .{
         .buffer = buffer,
