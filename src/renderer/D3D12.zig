@@ -172,7 +172,17 @@ pub const Texture = struct {
         }
 
         if (opts.render_target) {
+            if (shouldTraceWin32D3D12Init()) {
+                log.info("ci.win32.d3d12.texture.init_rtv.begin name={s}", .{
+                    opts.debug_name orelse "unnamed",
+                });
+            }
             try opts.owner.initTextureRtv(data);
+            if (shouldTraceWin32D3D12Init()) {
+                log.info("ci.win32.d3d12.texture.init_rtv.ready name={s}", .{
+                    opts.debug_name orelse "unnamed",
+                });
+            }
         }
 
         var texture: Texture = .{
@@ -1117,6 +1127,7 @@ fn writeTextureSrv(self: *D3D12, texture: *Texture.Data) !void {
 }
 
 fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
+    traceWin32D3D12Init("renderer.init_texture_rtv.enter");
     const device = self.currentDevice() orelse return error.D3D12DeviceUnavailable;
     const format = texture.rtv_format orelse return error.Unexpected;
 
@@ -1157,6 +1168,7 @@ fn initTextureRtv(self: *D3D12, texture: *Texture.Data) !void {
         &view_desc,
         texture.rtv_handle,
     );
+    traceWin32D3D12Init("renderer.init_texture_rtv.ready");
 }
 
 fn uploadTextureRegion(
