@@ -75,43 +75,63 @@ if [[ -x "$zig_bin" ]]; then
 fi
 
 if [[ ! -x "$zig_bin" ]]; then
-  tarball="zig-linux-x86_64-$zig_version.tar.xz"
-  url_release="https://ziglang.org/download/$zig_version/$tarball"
-  url_builds="https://ziglang.org/builds/$tarball"
-
   tmp_dir="$(mktemp -d)"
   cleanup() { rm -rf -- "$tmp_dir"; }
   trap cleanup EXIT
 
-  archive="$tmp_dir/$tarball"
+  archive=""
   download_url=""
 
-  log "download_url(primary)=$url_release"
-  if curl -fL --retry 5 --retry-delay 2 -o "$archive" "$url_release"; then
-    download_url="$url_release"
-  else
+  # ziglang 的发行包命名历史上有两种风格，先尝试新风格（arch 在前），再尝试旧风格（os 在前）。
+  tarball_candidates=(
+    "zig-x86_64-linux-$zig_version.tar.xz"
+    "zig-linux-x86_64-$zig_version.tar.xz"
+  )
+
+  for tarball in "${tarball_candidates[@]}"; do
+    archive="$tmp_dir/$tarball"
+    url_release="https://ziglang.org/download/$zig_version/$tarball"
+    url_builds="https://ziglang.org/builds/$tarball"
+
+    log "download_url(primary)=$url_release"
+    if curl -fL --retry 5 --retry-delay 2 -o "$archive" "$url_release"; then
+      download_url="$url_release"
+      break
+    fi
+
     rm -f -- "$archive"
     log "download_url(fallback)=$url_builds"
     if curl -fL --retry 5 --retry-delay 2 -o "$archive" "$url_builds"; then
       download_url="$url_builds"
-    else
-      die "failed to download Zig archive from both URLs"
+      break
     fi
+
+    rm -f -- "$archive"
+  done
+
+  if [[ -z "$download_url" ]]; then
+    die "failed to download Zig archive from all known URL patterns"
   fi
 
   log "download_url=$download_url"
 
   tar -xJf "$archive" -C "$tmp_dir"
 
-  extracted_dir="$tmp_dir/zig-linux-x86_64-$zig_version"
-  if [[ ! -d "$extracted_dir" ]]; then
-    extracted_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'zig-linux-x86_64-*' | head -n1 || true)"
+  extracted_dir=""
+  for candidate in \
+    "$tmp_dir/zig-x86_64-linux-$zig_version" \
+    "$tmp_dir/zig-linux-x86_64-$zig_version"; do
+    if [[ -d "$candidate" && -x "$candidate/zig" ]]; then
+      extracted_dir="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$extracted_dir" ]]; then
+    extracted_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'zig-*' | head -n1 || true)"
   fi
-  if [[ -z "$extracted_dir" || ! -d "$extracted_dir" ]]; then
+  if [[ -z "$extracted_dir" || ! -d "$extracted_dir" || ! -x "$extracted_dir/zig" ]]; then
     die "failed to find extracted zig directory in $tmp_dir"
-  fi
-  if [[ ! -x "$extracted_dir/zig" ]]; then
-    die "extracted zig binary not found at $extracted_dir/zig"
   fi
 
   mkdir -p -- "$(dirname -- "$install_dir")"
@@ -138,4 +158,3 @@ else
   log "GITHUB_PATH is not set; printing a sourceable export line to stdout"
   echo "export PATH=\"${install_dir}:\$PATH\""
 fi
-
