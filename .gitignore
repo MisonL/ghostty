@@ -22,6 +22,7 @@ flatpak/repo/
 # Local CI downloads/artifacts (not source)
 ci-artifacts/
 ci-logs/
+.ci-logs/
 local-logs/
 windows-smoke-artifact/
 windows-strict-artifact/
