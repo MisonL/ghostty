@@ -20,8 +20,8 @@ extern "C" {
 //-------------------------------------------------------------------
 // Macros
 
-#include <ghostty/result.h>
-#include <ghostty/input.h>
+#include "ghostty/result.h"
+#include "ghostty/input.h"
 
 //-------------------------------------------------------------------
 // Types
