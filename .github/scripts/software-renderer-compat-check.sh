@@ -43,6 +43,7 @@ Usage:
     [--expect-software-route-backend <opengl|metal>] \
     [--app-runtime <runtime>] \
     [--system <deps-path>] \
+    [--cache-dir <path>] \
     [--expected-host-os <linux|macos>] \
     [--mismatch-policy <skip|fail>] \
     [--mode <build|test>]
@@ -63,6 +64,8 @@ Notes:
   e.g. macOS 10.15 / Linux 4.19 scenarios.
   --target accepts shorthand (e.g. x86_64-macos.11, x86_64-linux.5.0) and is
   auto-normalized to <major>.<minor>.<patch> for Zig.
+  --cache-dir overrides the per-run temporary Zig build cache directory. When set,
+  the directory is not deleted on exit.
   cpu-shader-mode=safe/full currently falls back to platform route while custom
   shaders are active unless CPU custom-shader execution capability is available.
   vulkan_swiftshader loader hint precedence:
@@ -73,7 +76,7 @@ EOF
 
 option_requires_value() {
   case "$1" in
-    --mode|--transport|--test-filter|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-cpu-publish-success|--expect-software-route-backend|--app-runtime|--system|--expected-host-os|--mismatch-policy)
+    --mode|--transport|--test-filter|--target|--allow-legacy-os|--cpu-shader-mode|--cpu-shader-backend|--cpu-shader-timeout-ms|--cpu-shader-reprobe-interval-frames|--cpu-shader-enable-minimal-runtime|--inject-fake-swiftshader-hint|--cpu-frame-damage-mode|--cpu-damage-rect-cap|--cpu-publish-warning-threshold-ms|--cpu-publish-warning-consecutive-limit|--expect-cpu-effective|--expect-cpu-shader-mode|--expect-cpu-shader-backend|--expect-cpu-shader-timeout-ms|--expect-cpu-shader-reprobe-interval-frames|--expect-cpu-shader-enable-minimal-runtime|--expect-cpu-shader-capability-status|--expect-cpu-shader-capability-reason|--expect-cpu-shader-capability-hint-source|--expect-cpu-shader-capability-hint-readable|--expect-cpu-frame-damage-mode|--expect-cpu-damage-rect-cap|--expect-cpu-publish-warning-threshold-ms|--expect-cpu-publish-warning-consecutive-limit|--expect-cpu-publish-retry-reason|--expect-cpu-damage-overflow|--expect-cpu-publish-warning|--expect-cpu-publish-success|--expect-software-route-backend|--app-runtime|--system|--cache-dir|--expected-host-os|--mismatch-policy)
       return 0
       ;;
     *)
@@ -243,6 +246,8 @@ expect_cpu_publish_success=""
 expect_software_route_backend=""
 app_runtime=""
 system_path=""
+cache_dir_override=""
+cache_dir_override_set="false"
 expected_host_os=""
 mismatch_policy="skip"
 
@@ -538,6 +543,16 @@ while (($# > 0)); do
       ;;
     --system)
       system_path="${2:-}"
+      shift 2
+      ;;
+    --cache-dir=*)
+      cache_dir_override="${1#*=}"
+      cache_dir_override_set="true"
+      shift
+      ;;
+    --cache-dir)
+      cache_dir_override="${2:-}"
+      cache_dir_override_set="true"
       shift 2
       ;;
     --expected-host-os=*)
@@ -980,7 +995,23 @@ if [[ -n "$system_path" ]]; then
   cmd+=(--system "$system_path")
 fi
 
-cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
+cleanup_cache_dir="true"
+if [[ "$cache_dir_override_set" == "true" ]]; then
+  if [[ -z "$cache_dir_override" ]]; then
+    echo "invalid --cache-dir: empty path" >&2
+    usage >&2
+    exit 2
+  fi
+  cache_dir="$cache_dir_override"
+  cleanup_cache_dir="false"
+  if [[ -e "$cache_dir" && ! -d "$cache_dir" ]]; then
+    echo "invalid --cache-dir: not a directory: $cache_dir" >&2
+    exit 2
+  fi
+  mkdir -p "$cache_dir"
+else
+  cache_dir="$(mktemp -d -t ghostty-software-compat-cache.XXXXXX)"
+fi
 cmd+=(--cache-dir "$cache_dir")
 
 fake_swiftshader_hint_dir=""
@@ -1038,7 +1069,7 @@ echo "[software-compat] phase=build-command"
 print_cmd "${cmd[@]}"
 
 log_file="$(mktemp -t ghostty-software-compat.XXXXXX.log)"
-trap 'rm -f "$log_file"; rm -rf "$cache_dir"; if [[ -n "$fake_swiftshader_hint_dir" ]]; then rm -rf "$fake_swiftshader_hint_dir"; fi; if [[ "$had_prev_vk_driver_files" == "true" ]]; then export VK_DRIVER_FILES="$prev_vk_driver_files"; else unset VK_DRIVER_FILES; fi' EXIT
+trap 'rm -f "$log_file"; if [[ "$cleanup_cache_dir" == "true" ]]; then rm -rf "$cache_dir"; fi; if [[ -n "$fake_swiftshader_hint_dir" ]]; then rm -rf "$fake_swiftshader_hint_dir"; fi; if [[ "$had_prev_vk_driver_files" == "true" ]]; then export VK_DRIVER_FILES="$prev_vk_driver_files"; else unset VK_DRIVER_FILES; fi' EXIT
 
 if "${cmd[@]}" 2>&1 | tee "$log_file"; then
   echo "[software-compat] phase=options-snapshot"
