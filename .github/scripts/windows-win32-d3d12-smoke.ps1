@@ -73,9 +73,9 @@ function Write-GhosttyExeBaseAddressBestEffort {
     return
   }
 
-  $pid = $null
-  try { $pid = $Process.Id } catch { }
-  if ($null -eq $pid) {
+  $ghosttyPid = $null
+  try { $ghosttyPid = $Process.Id } catch { }
+  if ($null -eq $ghosttyPid) {
     return
   }
 
@@ -101,13 +101,13 @@ function Write-GhosttyExeBaseAddressBestEffort {
   if ($null -ne $baseAddress) {
     $addr = [UInt64]$baseAddress.ToInt64()
     $hex = "0x{0:X16}" -f $addr
-    $line = "ci.win32.ghostty_exe_base_address pid=$pid baseAddress=$hex exePath=$ExePath imagePath=$imagePath"
+    $line = "ci.win32.ghostty_exe_base_address pid=$ghosttyPid baseAddress=$hex exePath=$ExePath imagePath=$imagePath"
     Write-Host $line
     Append-LogSharedBestEffort -LogPath $LogPath -Message $line
     return
   }
 
-  $line = "ci.win32.ghostty_exe_base_address pid=$pid baseAddress=unavailable exePath=$ExePath"
+  $line = "ci.win32.ghostty_exe_base_address pid=$ghosttyPid baseAddress=unavailable exePath=$ExePath"
   Write-Host $line
   Append-LogSharedBestEffort -LogPath $LogPath -Message $line
 }
