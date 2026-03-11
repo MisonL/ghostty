@@ -24,6 +24,94 @@ function Write-Log {
   $Message | Out-File -FilePath $logPath -Append -Encoding utf8
 }
 
+function Append-LogSharedBestEffort {
+  param(
+    [string]$LogPath,
+    [string]$Message
+  )
+
+  if ([string]::IsNullOrWhiteSpace($LogPath) -or [string]::IsNullOrWhiteSpace($Message)) {
+    return
+  }
+
+  try {
+    $payload = [System.Text.Encoding]::UTF8.GetBytes($Message + [System.Environment]::NewLine)
+    $stream = [System.IO.FileStream]::new(
+      $LogPath,
+      [System.IO.FileMode]::Append,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::ReadWrite
+    )
+    try {
+      $stream.Write($payload, 0, $payload.Length)
+    } finally {
+      $stream.Dispose()
+    }
+  } catch {
+    # Best-effort fallback. This can fail if another writer has an exclusive lock.
+    try {
+      $Message | Out-File -FilePath $LogPath -Append -Encoding utf8
+    } catch {
+    }
+  }
+}
+
+function Write-GhosttyExeBaseAddressBestEffort {
+  param(
+    [System.Diagnostics.Process]$Process,
+    [string]$ExePath,
+    [string]$LogPath
+  )
+
+  # Only enable this in CI smoke environments. Local repro flows also set the
+  # GHOSTTY_CI_* vars, so key off GitHub Actions.
+  if ($env:GITHUB_ACTIONS -ne "true") {
+    return
+  }
+
+  if ($null -eq $Process) {
+    return
+  }
+
+  $pid = $null
+  try { $pid = $Process.Id } catch { }
+  if ($null -eq $pid) {
+    return
+  }
+
+  $baseAddress = $null
+  $imagePath = $null
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try {
+      $Process.Refresh()
+      if ($Process.HasExited) {
+        break
+      }
+      $module = $Process.MainModule
+      if ($null -ne $module) {
+        $baseAddress = $module.BaseAddress
+        $imagePath = $module.FileName
+        break
+      }
+    } catch {
+    }
+    Start-Sleep -Milliseconds 100
+  }
+
+  if ($null -ne $baseAddress) {
+    $addr = [UInt64]$baseAddress.ToInt64()
+    $hex = "0x{0:X16}" -f $addr
+    $line = "ci.win32.ghostty_exe_base_address pid=$pid baseAddress=$hex exePath=$ExePath imagePath=$imagePath"
+    Write-Host $line
+    Append-LogSharedBestEffort -LogPath $LogPath -Message $line
+    return
+  }
+
+  $line = "ci.win32.ghostty_exe_base_address pid=$pid baseAddress=unavailable exePath=$ExePath"
+  Write-Host $line
+  Append-LogSharedBestEffort -LogPath $LogPath -Message $line
+}
+
 Write-Log "Running Windows Win32 D3D12 smoke layer=$layer mode=$Mode requireWindow=$requireWindow"
 
 try {
@@ -146,6 +234,7 @@ if (-not $process.Start()) {
 }
 
 $logCapture = Start-GhosttyProcessLogCapture -Process $process -LogPath $logPath
+Write-GhosttyExeBaseAddressBestEffort -Process $process -ExePath $exePath -LogPath $logPath
 
 $requiredMarkers = switch ($Mode) {
   "core-draw" {

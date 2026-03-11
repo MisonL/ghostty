@@ -26,6 +26,7 @@ local-logs/
 windows-smoke-artifact/
 windows-strict-artifact/
 zig/
+_ci_artifacts/
 
 glad.zip
 /Box_test.ppm

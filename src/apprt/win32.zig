@@ -526,6 +526,17 @@ pub const App = struct {
         errdefer core_app.alloc.free(self.class_name);
         errdefer core_app.alloc.free(self.title);
 
+        if (trace_win32_init_enabled) {
+            if (self.hinstance) |hinstance| {
+                log.info(
+                    "ci.win32.ghostty_exe_base_address baseAddress=0x{x}",
+                    .{@intFromPtr(hinstance)},
+                );
+            } else {
+                log.info("ci.win32.ghostty_exe_base_address baseAddress=null", .{});
+            }
+        }
+
         self.config = if (smoke_mode != .disabled)
             try configpkg.Config.default(core_app.alloc)
         else

@@ -239,6 +239,14 @@ pub const Target = struct {
     height: u32,
 
     pub fn init(owner: *D3D12, width: usize, height: usize) Texture.Error!Target {
+        const width_u32 = std.math.cast(u32, width) orelse {
+            log.err("d3d12 target width overflow width={}", .{width});
+            return error.Unexpected;
+        };
+        const height_u32 = std.math.cast(u32, height) orelse {
+            log.err("d3d12 target height overflow height={}", .{height});
+            return error.Unexpected;
+        };
         const texture = try Texture.init(
             owner.textureOptions(),
             width,
@@ -247,8 +255,8 @@ pub const Target = struct {
         );
         return .{
             .texture = texture,
-            .width = @intCast(width),
-            .height = @intCast(height),
+            .width = width_u32,
+            .height = height_u32,
         };
     }
 
@@ -1053,7 +1061,7 @@ fn allocateSrvIndex(self: *D3D12) !u32 {
     }
     if (self.next_srv_index >= srv_heap_capacity) return error.D3D12SrvHeapExhausted;
     const index = self.next_srv_index;
-    defer self.next_srv_index += 1;
+    self.next_srv_index = std.math.add(u32, self.next_srv_index, 1) catch return error.D3D12SrvHeapExhausted;
     if (shouldTraceWin32D3D12Init()) {
         log.info(
             "ci.win32.d3d12.srv_index.alloc index={d} next={d} cap={d}",
@@ -1168,12 +1176,25 @@ fn uploadTextureRegion(
         self.flushDeferredBufferReleases();
     }
 
+    const x_u32 = std.math.cast(u32, x) orelse {
+        log.err("d3d12 upload texture region x overflow x={}", .{x});
+        return error.Unexpected;
+    };
+    const y_u32 = std.math.cast(u32, y) orelse {
+        log.err("d3d12 upload texture region y overflow y={}", .{y});
+        return error.Unexpected;
+    };
+    const height_u32 = std.math.cast(u32, height) orelse {
+        log.err("d3d12 upload texture region height overflow height={}", .{height});
+        return error.Unexpected;
+    };
+
     var footprint_desc: winos.c.D3D12_RESOURCE_DESC =
         std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
     footprint_desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     footprint_desc.Alignment = 0;
     footprint_desc.Width = width;
-    footprint_desc.Height = @intCast(height);
+    footprint_desc.Height = height_u32;
     footprint_desc.DepthOrArraySize = 1;
     footprint_desc.MipLevels = 1;
     footprint_desc.Format = texture.copy_format;
@@ -1198,6 +1219,13 @@ fn uploadTextureRegion(
         &upload_size,
     );
     const row_pitch = placed_footprint.Footprint.RowPitch;
+    const upload_size_usize = std.math.cast(usize, upload_size) orelse {
+        log.err(
+            "d3d12 upload buffer size overflow name={s} upload_size={}",
+            .{ texture.debug_name orelse "unnamed", upload_size },
+        );
+        return error.OutOfMemory;
+    };
 
     var heap_props: winos.c.D3D12_HEAP_PROPERTIES =
         std.mem.zeroes(winos.c.D3D12_HEAP_PROPERTIES);
@@ -1277,8 +1305,24 @@ fn uploadTextureRegion(
             row,
             @as(usize, row_pitch),
         ) catch return error.OutOfMemory;
-        const src_row = bytes[src_off .. src_off + src_stride];
-        const dst_row = dst[dst_off .. dst_off + src_stride];
+        const src_end = std.math.add(usize, src_off, src_stride) catch return error.OutOfMemory;
+        if (src_end > bytes.len) {
+            log.err(
+                "d3d12 upload texture region source bounds overflow name={s} src_end={} bytes_len={}",
+                .{ texture.debug_name orelse "unnamed", src_end, bytes.len },
+            );
+            return error.Unexpected;
+        }
+        const dst_end = std.math.add(usize, dst_off, src_stride) catch return error.OutOfMemory;
+        if (dst_end > upload_size_usize) {
+            log.err(
+                "d3d12 upload texture region destination bounds overflow name={s} dst_end={} upload_size={}",
+                .{ texture.debug_name orelse "unnamed", dst_end, upload_size },
+            );
+            return error.Unexpected;
+        }
+        const src_row = bytes[src_off..src_end];
+        const dst_row = dst[dst_off..dst_end];
         if (texture.swizzle_bgra_to_rgba) {
             var px: usize = 0;
             while (px < src_stride) : (px += 4) {
@@ -1291,7 +1335,15 @@ fn uploadTextureRegion(
             @memcpy(dst_row, src_row);
         }
         if (@as(usize, row_pitch) > src_stride) {
-            @memset(dst[dst_off + src_stride .. dst_off + @as(usize, row_pitch)], 0);
+            const dst_pad_end = std.math.add(usize, dst_off, @as(usize, row_pitch)) catch return error.OutOfMemory;
+            if (dst_pad_end > upload_size_usize) {
+                log.err(
+                    "d3d12 upload texture region destination padding overflow name={s} pad_end={} upload_size={}",
+                    .{ texture.debug_name orelse "unnamed", dst_pad_end, upload_size },
+                );
+                return error.Unexpected;
+            }
+            @memset(dst[dst_end..dst_pad_end], 0);
         }
     }
 
@@ -1314,8 +1366,8 @@ fn uploadTextureRegion(
     command_list.lpVtbl[0].CopyTextureRegion.?(
         command_list,
         &dst_location,
-        @intCast(x),
-        @intCast(y),
+        x_u32,
+        y_u32,
         0,
         &src_location,
         null,
@@ -1718,7 +1770,13 @@ fn createTextureResource(
     desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.Alignment = 0;
     desc.Width = width;
-    desc.Height = @intCast(height);
+    desc.Height = std.math.cast(u32, height) orelse {
+        log.err(
+            "d3d12 texture height overflow name={s} height={}",
+            .{ opts.debug_name orelse "unnamed", height },
+        );
+        return error.D3D12TextureCreateFailed;
+    };
     desc.DepthOrArraySize = 1;
     desc.MipLevels = 1;
     desc.Format = opts.resource_format;
