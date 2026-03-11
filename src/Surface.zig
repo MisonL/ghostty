@@ -575,7 +575,10 @@ pub fn init(
     // Create our terminal grid with the initial size
     const app_mailbox: App.Mailbox = .{ .rt_app = rt_app, .mailbox = &app.mailbox };
     traceWin32CoreInitStep("surface.init.renderer.begin");
-    var renderer_impl = try Renderer.init(alloc, .{
+    // Initialize the renderer directly into its final memory location.
+    // Some backends capture `self` pointers during init (e.g. D3D12 owner/ctx),
+    // so we must avoid stack temporaries + later copies.
+    self.renderer = try Renderer.init(alloc, .{
         .config = try .init(alloc, config),
         .font_grid = font_grid,
         .size = size,
@@ -584,7 +587,7 @@ pub fn init(
         .thread = &self.renderer_thread,
     });
     traceWin32CoreInitStep("surface.init.renderer.ready");
-    errdefer renderer_impl.deinit();
+    errdefer self.renderer.deinit();
 
     // The mutex used to protect our renderer state.
     const mutex = try alloc.create(std.Thread.Mutex);
@@ -616,7 +619,7 @@ pub fn init(
         .font_size = font_size,
         .font_size_adjusted = false,
         .font_metrics = font_grid.metrics,
-        .renderer = renderer_impl,
+        .renderer = self.renderer,
         .renderer_thread = render_thread,
         .renderer_state = .{
             .mutex = mutex,
@@ -729,7 +732,7 @@ pub fn init(
     // Give the renderer one more opportunity to finalize any surface
     // setup on the main thread prior to spinning up the rendering thread.
     traceWin32CoreInitStep("surface.init.finalize_surface.begin");
-    try renderer_impl.finalizeSurfaceInit(rt_surface);
+    try self.renderer.finalizeSurfaceInit(rt_surface);
     traceWin32CoreInitStep("surface.init.finalize_surface.ready");
 
     // Start our renderer thread

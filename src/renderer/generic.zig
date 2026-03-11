@@ -1612,7 +1612,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             /// the renderer is deinited after that.
             defunct: bool = false,
 
-            pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
+            pub fn init(api: *GraphicsAPI, custom_shaders: bool) !SwapChain {
                 var result: SwapChain = .{ .frames = undefined };
 
                 // Initialize all of our frame state.
@@ -1690,7 +1690,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const CellTextBuffer = Buffer(shaderpkg.CellText);
             const BgImageBuffer = Buffer(shaderpkg.BgImage);
 
-            pub fn init(api: GraphicsAPI, custom_shaders: bool) !FrameState {
+            pub fn init(api: *GraphicsAPI, custom_shaders: bool) !FrameState {
                 var grayscale_placeholder = [_]u8{0};
 
                 // Uniform buffer contains exactly 1 uniform struct. The
@@ -1764,7 +1764,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             pub fn resize(
                 self: *FrameState,
-                api: GraphicsAPI,
+                api: *GraphicsAPI,
                 width: usize,
                 height: usize,
             ) !void {
@@ -1807,7 +1807,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 std.mem.swap(Texture, &self.front_texture, &self.back_texture);
             }
 
-            pub fn init(api: GraphicsAPI) !CustomShaderState {
+            pub fn init(api: *GraphicsAPI) !CustomShaderState {
                 // Create a GPU buffer to hold our uniforms.
                 var uniforms = try UniformBuffer.init(api.uniformBufferOptions(), 1);
                 errdefer uniforms.deinit();
@@ -1849,7 +1849,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             pub fn resize(
                 self: *CustomShaderState,
-                api: GraphicsAPI,
+                api: *GraphicsAPI,
                 width: usize,
                 height: usize,
             ) !void {
@@ -2017,14 +2017,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const has_custom_shaders = options.config.custom_shaders.value.items.len > 0;
 
-            // Prepare our swap chain
-            var swap_chain = try SwapChain.init(
-                api,
-                has_custom_shaders,
-            );
-            traceWin32RendererInitStep("swap_chain.ready");
-            errdefer swap_chain.deinit();
-
             // Create the font shaper.
             var font_shaper = try font.Shaper.init(alloc, .{
                 .features = options.config.font_features.items,
@@ -2140,9 +2132,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Graphics API stuff
                 .api = api,
-                .swap_chain = swap_chain,
+                .swap_chain = undefined,
                 .display_link = display_link,
             };
+
+            // SwapChain.init needs a stable GraphicsAPI pointer (some backends
+            // capture it during resource creation), so initialize it after our
+            // final api storage location exists.
+            var swap_chain = try SwapChain.init(
+                &result.api,
+                has_custom_shaders,
+            );
+            traceWin32RendererInitStep("swap_chain.ready");
+            errdefer swap_chain.deinit();
+            result.swap_chain = swap_chain;
+
             traceWin32RendererInitStep("result.ready");
 
             traceWin32RendererInitStep("init_shaders.begin");
@@ -2519,7 +2523,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // We reinitialize our shaders and our swap chain.
             try self.initShaders();
             self.swap_chain = try SwapChain.init(
-                self.api,
+                &self.api,
                 self.has_custom_shaders,
             );
             self.reinitialize_shaders = false;
@@ -4096,9 +4100,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // if we have a state but don't need it we remove it.
             if (self.has_custom_shaders) {
                 if (frame.custom_shader_state == null) {
-                    frame.custom_shader_state = try .init(self.api);
+                    frame.custom_shader_state = try .init(&self.api);
                     try frame.custom_shader_state.?.resize(
-                        self.api,
+                        &self.api,
                         surface_size.width,
                         surface_size.height,
                     );
@@ -4116,7 +4120,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 frame.target_config_modified != self.target_config_modified)
             {
                 try frame.resize(
-                    self.api,
+                    &self.api,
                     self.size.screen.width,
                     self.size.screen.height,
                 );
@@ -7621,9 +7625,6 @@ fn initDrawFrameSmokeRenderer(
     });
     errdefer api.deinit();
 
-    var swap_chain = try DrawFrameSmokeRenderer.SwapChain.init(api, false);
-    errdefer swap_chain.deinit();
-
     var font_shaper = try font.Shaper.init(alloc, .{
         .features = &.{},
     });
@@ -7712,9 +7713,13 @@ fn initDrawFrameSmokeRenderer(
         .font_shaper_cache = font.ShaperCache.init(),
         .shaders = undefined,
         .api = api,
-        .swap_chain = swap_chain,
+        .swap_chain = undefined,
         .display_link = null,
     };
+
+    var swap_chain = try DrawFrameSmokeRenderer.SwapChain.init(&result.api, false);
+    errdefer swap_chain.deinit();
+    result.swap_chain = swap_chain;
 
     try result.initShaders();
     result.updateFontGridUniforms();
