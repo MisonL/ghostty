@@ -24,17 +24,38 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
+      - name: Cache Zig package downloads
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            ~/.cache/zig/p
+          key: zig-pkgs-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            zig-pkgs-${{ runner.os }}-
+
       - name: Build Windows smoke executable
         run: |
           mkdir -p ci-logs windows-smoke-artifact
           set -euo pipefail
-          nix --accept-flake-config develop -c zig build \
-            -Dtarget=x86_64-windows-gnu \
-            -Dfont-backend=directwrite \
-            -Dapp-runtime=win32 \
-            -Drenderer=d3d12 \
-            -Dci-windows-smoke-minimal=true \
-            -Demit-exe=true 2>&1 | tee ci-logs/windows-smoke-build.log
+          : > ci-logs/windows-smoke-build.log
+          for attempt in 1 2 3; do
+            echo "===== zig build attempt ${attempt}/3 =====" | tee -a ci-logs/windows-smoke-build.log
+            if nix --accept-flake-config develop -c zig build \
+              -Dtarget=x86_64-windows-gnu \
+              -Dfont-backend=directwrite \
+              -Dapp-runtime=win32 \
+              -Drenderer=d3d12 \
+              -Dci-windows-smoke-minimal=true \
+              -Demit-exe=true 2>&1 | tee -a ci-logs/windows-smoke-build.log; then
+              break
+            fi
+
+            rc=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$rc"
+            fi
+            sleep $((attempt * 5))
+          done
           test -f zig-out/bin/ghostty.exe
           cp zig-out/bin/ghostty.exe windows-smoke-artifact/ghostty.exe
           if compgen -G "zig-out/bin/*.pdb" > /dev/null; then
