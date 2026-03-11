@@ -179,7 +179,13 @@ function Resize-Window {
 
 function Send-Keys {
   param([string]$Text)
-  [System.Windows.Forms.SendKeys]::SendWait($Text)
+  # SendWait can hang indefinitely on hosted runners if focus/input plumbing is
+  # flaky. Use Send + a small delay instead.
+  try {
+    [System.Windows.Forms.SendKeys]::Send($Text)
+  } catch {
+    Write-Log "SendKeys failed: $($_.Exception.Message)"
+  }
   Start-Sleep -Milliseconds 300
 }
 
@@ -265,12 +271,12 @@ try {
     Focus-Window -Hwnd $secondaryHwnd
     Resize-Window -Hwnd $secondaryHwnd -Width 1040 -Height 720
     Send-Keys "echo ghostty-ci-second-window{ENTER}"
-    Send-Keys "exit{ENTER}"
+    Close-GhosttyWindowBestEffort -Hwnd $secondaryHwnd
     Wait-ForExit -Process $secondary -Label "secondary"
   }
 
   Focus-Window -Hwnd $primaryHwnd
-  Send-Keys "exit{ENTER}"
+  Close-GhosttyWindowBestEffort -Hwnd $primaryHwnd
   Wait-ForExit -Process $primary -Label "primary"
 
   Write-Log "Windows interaction passed mode=$Mode"
