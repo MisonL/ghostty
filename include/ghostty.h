@@ -20,7 +20,8 @@ extern "C" {
 //-------------------------------------------------------------------
 // Macros
 
-#define GHOSTTY_SUCCESS 0
+#include <ghostty/result.h>
+#include <ghostty/input.h>
 
 //-------------------------------------------------------------------
 // Types
@@ -98,20 +99,6 @@ typedef enum {
 typedef int ghostty_input_scroll_mods_t;
 
 typedef enum {
-  GHOSTTY_MODS_NONE = 0,
-  GHOSTTY_MODS_SHIFT = 1 << 0,
-  GHOSTTY_MODS_CTRL = 1 << 1,
-  GHOSTTY_MODS_ALT = 1 << 2,
-  GHOSTTY_MODS_SUPER = 1 << 3,
-  GHOSTTY_MODS_CAPS = 1 << 4,
-  GHOSTTY_MODS_NUM = 1 << 5,
-  GHOSTTY_MODS_SHIFT_RIGHT = 1 << 6,
-  GHOSTTY_MODS_CTRL_RIGHT = 1 << 7,
-  GHOSTTY_MODS_ALT_RIGHT = 1 << 8,
-  GHOSTTY_MODS_SUPER_RIGHT = 1 << 9,
-} ghostty_input_mods_e;
-
-typedef enum {
   GHOSTTY_BINDING_FLAGS_CONSUMED = 1 << 0,
   GHOSTTY_BINDING_FLAGS_ALL = 1 << 1,
   GHOSTTY_BINDING_FLAGS_GLOBAL = 1 << 2,
@@ -123,6 +110,9 @@ typedef enum {
   GHOSTTY_ACTION_PRESS,
   GHOSTTY_ACTION_REPEAT,
 } ghostty_input_action_e;
+
+#if 0
+// 键码常量与类型已提取至 <ghostty/input.h>。
 
 // Based on: https://www.w3.org/TR/uievents-code/
 typedef enum {
@@ -319,6 +309,7 @@ typedef enum {
   GHOSTTY_KEY_CUT,
   GHOSTTY_KEY_PASTE,
 } ghostty_input_key_e;
+#endif
 
 typedef struct {
   ghostty_input_action_e action;

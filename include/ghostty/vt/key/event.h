@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <ghostty/vt/result.h>
 #include <ghostty/vt/allocator.h>
+#include <ghostty/input.h>
 
 /**
  * Opaque handle to a key event.
@@ -55,19 +56,6 @@ typedef enum {
  */
 typedef uint16_t GhosttyMods;
 
-/** Shift key is pressed */
-#define GHOSTTY_MODS_SHIFT (1 << 0)
-/** Control key is pressed */
-#define GHOSTTY_MODS_CTRL (1 << 1)
-/** Alt/Option key is pressed */
-#define GHOSTTY_MODS_ALT (1 << 2)
-/** Super/Command/Windows key is pressed */
-#define GHOSTTY_MODS_SUPER (1 << 3)
-/** Caps Lock is active */
-#define GHOSTTY_MODS_CAPS_LOCK (1 << 4)
-/** Num Lock is active */
-#define GHOSTTY_MODS_NUM_LOCK (1 << 5)
-
 /**
  * Right shift is pressed (0 = left, 1 = right).
  * Only meaningful when GHOSTTY_MODS_SHIFT is set.
@@ -103,6 +91,9 @@ typedef uint16_t GhosttyMods;
  *
  * @ingroup key
  */
+#if 0
+// 键码常量与类型已提取至 <ghostty/input.h>（与 <ghostty.h> 共享），避免同一 TU 中
+// include 两个库头文件时重复定义。
 typedef enum {
     GHOSTTY_KEY_UNIDENTIFIED = 0,
 
@@ -297,6 +288,7 @@ typedef enum {
     GHOSTTY_KEY_CUT,
     GHOSTTY_KEY_PASTE,
 } GhosttyKey;
+#endif
 
 /**
  * Create a new key event instance.
