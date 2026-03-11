@@ -11,7 +11,10 @@ fn panicWithRawStackTrace(msg: []const u8, first_trace_addr: ?usize) noreturn {
     @branchHint(.cold);
 
     if (builtin.os.tag == .windows) {
-        const stderr = std.io.getStdErr().writer();
+        var buf: [1024]u8 = undefined;
+        const stderr = std.debug.lockStderrWriter(&buf);
+        defer std.debug.unlockStderrWriter();
+
         stderr.print(
             "ci.win32.panic.first_trace_addr=0x{x}\n",
             .{first_trace_addr orelse 0},
