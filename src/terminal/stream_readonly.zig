@@ -304,20 +304,12 @@ pub const Handler = struct {
                             self.terminal.flags.dirty.palette = true;
                             self.terminal.colors.palette.set(i, set.color);
                         },
-                        .dynamic => |dynamic| switch (dynamic) {
-                            .foreground => self.terminal.colors.foreground.set(set.color),
-                            .background => self.terminal.colors.background.set(set.color),
-                            .cursor => self.terminal.colors.cursor.set(set.color),
-                            .pointer_foreground,
-                            .pointer_background,
-                            .tektronix_foreground,
-                            .tektronix_background,
-                            .highlight_background,
-                            .tektronix_cursor,
-                            .highlight_foreground,
-                            => {},
+                        .dynamic => |dynamic| {
+                            self.terminal.colors.dynamicSlot(dynamic).set(set.color);
                         },
-                        .special => {},
+                        .special => |special| {
+                            self.terminal.colors.specialSlot(special).set(set.color);
+                        },
                     }
                 },
 
@@ -326,20 +318,12 @@ pub const Handler = struct {
                         self.terminal.flags.dirty.palette = true;
                         self.terminal.colors.palette.reset(i);
                     },
-                    .dynamic => |dynamic| switch (dynamic) {
-                        .foreground => self.terminal.colors.foreground.reset(),
-                        .background => self.terminal.colors.background.reset(),
-                        .cursor => self.terminal.colors.cursor.reset(),
-                        .pointer_foreground,
-                        .pointer_background,
-                        .tektronix_foreground,
-                        .tektronix_background,
-                        .highlight_background,
-                        .tektronix_cursor,
-                        .highlight_foreground,
-                        => {},
+                    .dynamic => |dynamic| {
+                        self.terminal.colors.dynamicSlot(dynamic).reset();
                     },
-                    .special => {},
+                    .special => |special| {
+                        self.terminal.colors.specialSlot(special).reset();
+                    },
                 },
 
                 .reset_palette => {
@@ -353,8 +337,9 @@ pub const Handler = struct {
                 },
 
                 .query,
-                .reset_special,
                 => {},
+
+                .reset_special => self.terminal.colors.special.resetAll(),
             }
         }
     }
@@ -749,6 +734,76 @@ test "OSC 12 set and reset cursor color" {
     // Reset cursor
     try s.nextSlice("\x1b]112\x1b\\");
     // After reset, cursor might be null (using default)
+}
+
+test "OSC 13 set and reset pointer foreground color" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    try testing.expect(t.colors.pointer_foreground.get() == null);
+
+    // Set pointer foreground to red.
+    try s.nextSlice("\x1b]13;rgb:ff/00/00\x1b\\");
+    const ptr_fg = t.colors.pointer_foreground.get().?;
+    try testing.expectEqual(@as(u8, 0xff), ptr_fg.r);
+    try testing.expectEqual(@as(u8, 0x00), ptr_fg.g);
+    try testing.expectEqual(@as(u8, 0x00), ptr_fg.b);
+
+    // Reset pointer foreground.
+    try s.nextSlice("\x1b]113\x1b\\");
+    try testing.expect(t.colors.pointer_foreground.get() == null);
+}
+
+test "OSC 17 set and reset highlight background color" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // Set highlight background to green.
+    try s.nextSlice("\x1b]17;rgb:00/ff/00\x1b\\");
+    const hl_bg = t.colors.highlight_background.get().?;
+    try testing.expectEqual(@as(u8, 0x00), hl_bg.r);
+    try testing.expectEqual(@as(u8, 0xff), hl_bg.g);
+    try testing.expectEqual(@as(u8, 0x00), hl_bg.b);
+
+    // Reset highlight background.
+    try s.nextSlice("\x1b]117\x1b\\");
+    try testing.expect(t.colors.highlight_background.get() == null);
+}
+
+test "OSC 5 set and OSC 105 reset xterm special colors" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // Set bold special to blue (OSC 5;0).
+    try s.nextSlice("\x1b]5;0;rgb:00/00/ff\x1b\\");
+    const bold = t.colors.special.bold.get().?;
+    try testing.expectEqual(@as(u8, 0x00), bold.r);
+    try testing.expectEqual(@as(u8, 0x00), bold.g);
+    try testing.expectEqual(@as(u8, 0xff), bold.b);
+
+    // Reset bold special (OSC 105;0).
+    try s.nextSlice("\x1b]105;0\x1b\\");
+    try testing.expect(t.colors.special.bold.get() == null);
+
+    // Set italic special via OSC 4;260 (256 + italic).
+    try s.nextSlice("\x1b]4;260;rgb:aa/bb/cc\x1b\\");
+    const italic = t.colors.special.italic.get().?;
+    try testing.expectEqual(@as(u8, 0xaa), italic.r);
+    try testing.expectEqual(@as(u8, 0xbb), italic.g);
+    try testing.expectEqual(@as(u8, 0xcc), italic.b);
+
+    // Reset all special colors (OSC 105 with no params).
+    try s.nextSlice("\x1b]105\x1b\\");
+    try testing.expect(t.colors.special.italic.get() == null);
 }
 
 test "kitty color protocol set palette" {

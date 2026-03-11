@@ -1207,9 +1207,6 @@ pub const StreamHandler = struct {
         requests: *const terminal.osc.color.List,
         terminator: terminal.osc.Terminator,
     ) !void {
-        // We'll need op one day if we ever implement reporting special colors.
-        _ = op;
-
         // return early if there is nothing to do
         if (requests.count() == 0) return;
 
@@ -1229,22 +1226,12 @@ pub const StreamHandler = struct {
                             self.terminal.flags.dirty.palette = true;
                             self.terminal.colors.palette.set(i, set.color);
                         },
-                        .dynamic => |dynamic| switch (dynamic) {
-                            .foreground => self.terminal.colors.foreground.set(set.color),
-                            .background => self.terminal.colors.background.set(set.color),
-                            .cursor => self.terminal.colors.cursor.set(set.color),
-                            .pointer_foreground,
-                            .pointer_background,
-                            .tektronix_foreground,
-                            .tektronix_background,
-                            .highlight_background,
-                            .tektronix_cursor,
-                            .highlight_foreground,
-                            => log.info("setting dynamic color {s} not implemented", .{
-                                @tagName(dynamic),
-                            }),
+                        .dynamic => |dynamic| {
+                            self.terminal.colors.dynamicSlot(dynamic).set(set.color);
                         },
-                        .special => log.info("setting special colors not implemented", .{}),
+                        .special => |special| {
+                            self.terminal.colors.specialSlot(special).set(set.color);
+                        },
                     }
 
                     // Notify the surface of the color change
@@ -1266,49 +1253,22 @@ pub const StreamHandler = struct {
                             },
                         });
                     },
-                    .dynamic => |dynamic| switch (dynamic) {
-                        .foreground => {
-                            self.terminal.colors.foreground.reset();
-
-                            if (self.terminal.colors.foreground.default) |c| {
-                                self.surfaceMessageWriter(.{ .color_change = .{
-                                    .target = target,
-                                    .color = c,
-                                } });
-                            }
-                        },
-                        .background => {
-                            self.terminal.colors.background.reset();
-
-                            if (self.terminal.colors.background.default) |c| {
-                                self.surfaceMessageWriter(.{ .color_change = .{
-                                    .target = target,
-                                    .color = c,
-                                } });
-                            }
-                        },
-                        .cursor => {
-                            self.terminal.colors.cursor.reset();
-
-                            if (self.terminal.colors.cursor.default) |c| {
-                                self.surfaceMessageWriter(.{ .color_change = .{
-                                    .target = target,
-                                    .color = c,
-                                } });
-                            }
-                        },
-                        .pointer_foreground,
-                        .pointer_background,
-                        .tektronix_foreground,
-                        .tektronix_background,
-                        .highlight_background,
-                        .tektronix_cursor,
-                        .highlight_foreground,
-                        => log.warn("resetting dynamic color {s} not implemented", .{
-                            @tagName(dynamic),
-                        }),
+                    .dynamic => |dynamic| reset_dynamic: {
+                        self.terminal.colors.dynamicSlot(dynamic).reset();
+                        const c = self.terminal.colors.dynamicValue(dynamic) orelse break :reset_dynamic;
+                        self.surfaceMessageWriter(.{ .color_change = .{
+                            .target = target,
+                            .color = c,
+                        } });
                     },
-                    .special => log.info("resetting special colors not implemented", .{}),
+                    .special => |special| reset_special: {
+                        self.terminal.colors.specialSlot(special).reset();
+                        const c = self.terminal.colors.specialValue(special) orelse break :reset_special;
+                        self.surfaceMessageWriter(.{ .color_change = .{
+                            .target = target,
+                            .color = c,
+                        } });
+                    },
                 },
 
                 .reset_palette => {
@@ -1327,40 +1287,26 @@ pub const StreamHandler = struct {
                     mask.* = .initEmpty();
                 },
 
-                .reset_special => log.warn(
-                    "resetting all special colors not implemented",
-                    .{},
-                ),
+                .reset_special => {
+                    // xterm OSC 105 with no parameters: reset all "special" colors.
+                    self.terminal.colors.special.resetAll();
+                    inline for (@typeInfo(terminal.color.Special).@"enum".fields) |field| {
+                        const kind = @field(terminal.color.Special, field.name);
+                        const c = self.terminal.colors.specialValue(kind) orelse continue;
+                        self.surfaceMessageWriter(.{ .color_change = .{
+                            .target = .{ .special = kind },
+                            .color = c,
+                        } });
+                    }
+                },
 
                 .query => |kind| report: {
                     if (self.osc_color_report_format == .none) break :report;
 
                     const color = switch (kind) {
                         .palette => |i| self.terminal.colors.palette.current[i],
-                        .dynamic => |dynamic| switch (dynamic) {
-                            .foreground => self.terminal.colors.foreground.get().?,
-                            .background => self.terminal.colors.background.get().?,
-                            .cursor => self.terminal.colors.cursor.get() orelse
-                                self.terminal.colors.foreground.get().?,
-                            .pointer_foreground,
-                            .pointer_background,
-                            .tektronix_foreground,
-                            .tektronix_background,
-                            .highlight_background,
-                            .tektronix_cursor,
-                            .highlight_foreground,
-                            => {
-                                log.info(
-                                    "reporting dynamic color {s} not implemented",
-                                    .{@tagName(dynamic)},
-                                );
-                                break :report;
-                            },
-                        },
-                        .special => {
-                            log.info("reporting special colors not implemented", .{});
-                            break :report;
-                        },
+                        .dynamic => |dynamic| self.terminal.colors.dynamicValue(dynamic) orelse break :report,
+                        .special => |special| self.terminal.colors.specialValue(special) orelse break :report,
                     };
 
                     switch (self.osc_color_report_format) {
@@ -1383,7 +1329,27 @@ pub const StreamHandler = struct {
                                     @as(u16, color.b) * 257,
                                 },
                             ),
-                            .special => unreachable,
+                            .special => |special| switch (op) {
+                                .osc_4 => try writer.print(
+                                    "\x1b]4;{d};rgb:{x:0>4}/{x:0>4}/{x:0>4}",
+                                    .{
+                                        special.osc4(),
+                                        @as(u16, color.r) * 257,
+                                        @as(u16, color.g) * 257,
+                                        @as(u16, color.b) * 257,
+                                    },
+                                ),
+                                .osc_5 => try writer.print(
+                                    "\x1b]5;{d};rgb:{x:0>4}/{x:0>4}/{x:0>4}",
+                                    .{
+                                        @intFromEnum(special),
+                                        @as(u16, color.r) * 257,
+                                        @as(u16, color.g) * 257,
+                                        @as(u16, color.b) * 257,
+                                    },
+                                ),
+                                else => break :report,
+                            },
                         },
 
                         .@"8-bit" => switch (kind) {
@@ -1405,7 +1371,27 @@ pub const StreamHandler = struct {
                                     @as(u16, color.b),
                                 },
                             ),
-                            .special => unreachable,
+                            .special => |special| switch (op) {
+                                .osc_4 => try writer.print(
+                                    "\x1b]4;{d};rgb:{x:0>2}/{x:0>2}/{x:0>2}",
+                                    .{
+                                        special.osc4(),
+                                        @as(u16, color.r),
+                                        @as(u16, color.g),
+                                        @as(u16, color.b),
+                                    },
+                                ),
+                                .osc_5 => try writer.print(
+                                    "\x1b]5;{d};rgb:{x:0>2}/{x:0>2}/{x:0>2}",
+                                    .{
+                                        @intFromEnum(special),
+                                        @as(u16, color.r),
+                                        @as(u16, color.g),
+                                        @as(u16, color.b),
+                                    },
+                                ),
+                                else => break :report,
+                            },
                         },
 
                         .none => unreachable,
@@ -1422,6 +1408,30 @@ pub const StreamHandler = struct {
             const msg = try termio.Message.writeReq(self.alloc, response.items);
             self.messageWriter(msg);
         }
+    }
+
+    test "OSC color report formatting includes special colors" {
+        const testing = std.testing;
+        const alloc = testing.allocator;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+
+        // OSC 5 query reply for bold (0)
+        try buf.writer(alloc).print(
+            "\x1b]5;{d};rgb:{x:0>2}/{x:0>2}/{x:0>2}{s}",
+            .{
+                @intFromEnum(terminal.color.Special.bold),
+                @as(u16, 0xaa),
+                @as(u16, 0xbb),
+                @as(u16, 0xcc),
+                terminal.osc.Terminator.st.string(),
+            },
+        );
+        try testing.expectEqualStrings(
+            "\x1b]5;0;rgb:aa/bb/cc\x1b\\",
+            buf.items,
+        );
     }
 
     fn showDesktopNotification(

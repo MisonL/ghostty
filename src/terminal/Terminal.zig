@@ -134,6 +134,26 @@ pub const Colors = struct {
     foreground: color.DynamicRGB,
     cursor: color.DynamicRGB,
     palette: color.DynamicPalette,
+    pointer_foreground: color.DynamicRGB = .unset,
+    pointer_background: color.DynamicRGB = .unset,
+    tektronix_foreground: color.DynamicRGB = .unset,
+    tektronix_background: color.DynamicRGB = .unset,
+    highlight_background: color.DynamicRGB = .unset,
+    tektronix_cursor: color.DynamicRGB = .unset,
+    highlight_foreground: color.DynamicRGB = .unset,
+    special: SpecialColors = .{},
+
+    pub const SpecialColors = struct {
+        bold: color.DynamicRGB = .unset,
+        underline: color.DynamicRGB = .unset,
+        blink: color.DynamicRGB = .unset,
+        reverse: color.DynamicRGB = .unset,
+        italic: color.DynamicRGB = .unset,
+
+        pub fn resetAll(self: *SpecialColors) void {
+            self.* = .{};
+        }
+    };
 
     pub const default: Colors = .{
         .background = .unset,
@@ -141,6 +161,59 @@ pub const Colors = struct {
         .cursor = .unset,
         .palette = .default,
     };
+
+    pub fn dynamicSlot(self: *Colors, kind: color.Dynamic) *color.DynamicRGB {
+        return switch (kind) {
+            .foreground => &self.foreground,
+            .background => &self.background,
+            .cursor => &self.cursor,
+            .pointer_foreground => &self.pointer_foreground,
+            .pointer_background => &self.pointer_background,
+            .tektronix_foreground => &self.tektronix_foreground,
+            .tektronix_background => &self.tektronix_background,
+            .highlight_background => &self.highlight_background,
+            .tektronix_cursor => &self.tektronix_cursor,
+            .highlight_foreground => &self.highlight_foreground,
+        };
+    }
+
+    pub fn dynamicValue(self: *const Colors, kind: color.Dynamic) ?color.RGB {
+        return switch (kind) {
+            .foreground => self.foreground.get(),
+            .background => self.background.get(),
+            .cursor => self.cursor.get() orelse self.foreground.get(),
+            .pointer_foreground => self.pointer_foreground.get() orelse self.foreground.get(),
+            .pointer_background => self.pointer_background.get() orelse self.background.get(),
+            .tektronix_foreground => self.tektronix_foreground.get() orelse self.foreground.get(),
+            .tektronix_background => self.tektronix_background.get() orelse self.background.get(),
+            .highlight_background => self.highlight_background.get() orelse self.background.get(),
+            .tektronix_cursor => self.tektronix_cursor.get() orelse self.cursor.get() orelse self.foreground.get(),
+            .highlight_foreground => self.highlight_foreground.get() orelse self.foreground.get(),
+        };
+    }
+
+    pub fn specialSlot(self: *Colors, kind: color.Special) *color.DynamicRGB {
+        return switch (kind) {
+            .bold => &self.special.bold,
+            .underline => &self.special.underline,
+            .blink => &self.special.blink,
+            .reverse => &self.special.reverse,
+            .italic => &self.special.italic,
+        };
+    }
+
+    pub fn specialValue(self: *const Colors, kind: color.Special) ?color.RGB {
+        // xterm special colors are attribute-adjacent and historically depend on
+        // terminal resources; when unset we fall back to the current foreground.
+        const slot: *const color.DynamicRGB = switch (kind) {
+            .bold => &self.special.bold,
+            .underline => &self.special.underline,
+            .blink => &self.special.blink,
+            .reverse => &self.special.reverse,
+            .italic => &self.special.italic,
+        };
+        return slot.get() orelse self.foreground.get();
+    }
 };
 
 /// This is a set of dirty flags the renderer can use to determine
