@@ -1219,10 +1219,21 @@ fn uploadTextureRegion(
         &upload_size,
     );
     const row_pitch = placed_footprint.Footprint.RowPitch;
-    const upload_size_usize = std.math.cast(usize, upload_size) orelse {
+    const upload_footprint_bytes = std.math.mul(
+        u64,
+        @as(u64, row_pitch),
+        @as(u64, num_rows),
+    ) catch return error.OutOfMemory;
+    const upload_size_needed = std.math.add(
+        u64,
+        placed_footprint.Offset,
+        upload_footprint_bytes,
+    ) catch return error.OutOfMemory;
+    const upload_size_alloc = @max(upload_size, upload_size_needed);
+    const upload_size_usize = std.math.cast(usize, upload_size_alloc) orelse {
         log.err(
-            "d3d12 upload buffer size overflow name={s} upload_size={}",
-            .{ texture.debug_name orelse "unnamed", upload_size },
+            "d3d12 upload buffer size overflow name={s} upload_size={} upload_size_needed={} row_pitch={} rows={}",
+            .{ texture.debug_name orelse "unnamed", upload_size_alloc, upload_size_needed, row_pitch, num_rows },
         );
         return error.OutOfMemory;
     };
@@ -1236,7 +1247,7 @@ fn uploadTextureRegion(
     var upload_desc: winos.c.D3D12_RESOURCE_DESC =
         std.mem.zeroes(winos.c.D3D12_RESOURCE_DESC);
     upload_desc.Dimension = winos.c.D3D12_RESOURCE_DIMENSION_BUFFER;
-    upload_desc.Width = upload_size;
+    upload_desc.Width = upload_size_alloc;
     upload_desc.Height = 1;
     upload_desc.DepthOrArraySize = 1;
     upload_desc.MipLevels = 1;
@@ -1258,7 +1269,7 @@ fn uploadTextureRegion(
         logDeviceRemovedReason(device, "create upload buffer");
         log.err(
             "failed to create d3d12 upload buffer name={s} width={} height={} upload_size={} row_pitch={} rows={}",
-            .{ texture.debug_name orelse "unnamed", width, height, upload_size, row_pitch, num_rows },
+            .{ texture.debug_name orelse "unnamed", width, height, upload_size_alloc, row_pitch, num_rows },
         );
         return error.D3D12UploadBufferCreateFailed;
     }
@@ -1275,7 +1286,7 @@ fn uploadTextureRegion(
         logDeviceRemovedReason(device, "map upload buffer");
         log.err(
             "failed to map d3d12 upload buffer name={s} width={} height={} upload_size={}",
-            .{ texture.debug_name orelse "unnamed", width, height, upload_size },
+            .{ texture.debug_name orelse "unnamed", width, height, upload_size_alloc },
         );
         return error.D3D12TextureMapFailed;
     }
@@ -1317,7 +1328,7 @@ fn uploadTextureRegion(
         if (dst_end > upload_size_usize) {
             log.err(
                 "d3d12 upload texture region destination bounds overflow name={s} dst_end={} upload_size={}",
-                .{ texture.debug_name orelse "unnamed", dst_end, upload_size },
+                .{ texture.debug_name orelse "unnamed", dst_end, upload_size_alloc },
             );
             return error.Unexpected;
         }
@@ -1339,7 +1350,7 @@ fn uploadTextureRegion(
             if (dst_pad_end > upload_size_usize) {
                 log.err(
                     "d3d12 upload texture region destination padding overflow name={s} pad_end={} upload_size={}",
-                    .{ texture.debug_name orelse "unnamed", dst_pad_end, upload_size },
+                    .{ texture.debug_name orelse "unnamed", dst_pad_end, upload_size_alloc },
                 );
                 return error.Unexpected;
             }
