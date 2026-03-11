@@ -2006,6 +2006,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         };
 
         pub fn init(alloc: Allocator, options: renderer.Options) !Self {
+            var result: Self = undefined;
+            try result.initInPlace(alloc, options);
+            return result;
+        }
+
+        /// 初始化渲染器到调用方提供的稳定内存地址。
+        ///
+        /// Windows D3D12 后端会在资源创建过程中捕获 `GraphicsAPI` 指针（例如
+        /// Texture/Buffer 的 owner/ctx），因此必须避免在 `init()` 内部用临时
+        /// 返回值地址创建资源，再在返回时发生结构体搬移。
+        pub fn initInPlace(self: *Self, alloc: Allocator, options: renderer.Options) !void {
             maybeLogSoftwareCpuRouteDiagnostic();
 
             // Initialize our graphics API wrapper, this will prepare the
@@ -2048,7 +2059,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             errdefer if (display_link) |v| v.release();
             traceWin32RendererInitStep("display_link.ready");
 
-            var result: Self = .{
+            self.* = .{
                 .alloc = alloc,
                 .config = options.config,
                 .surface_mailbox = options.surface_mailbox,
@@ -2135,35 +2146,33 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .swap_chain = undefined,
                 .display_link = display_link,
             };
+            errdefer self.* = undefined;
 
             // SwapChain.init needs a stable GraphicsAPI pointer (some backends
-            // capture it during resource creation), so initialize it after our
-            // final api storage location exists.
+            // capture it during resource creation).
             var swap_chain = try SwapChain.init(
-                &result.api,
+                &self.api,
                 has_custom_shaders,
             );
             traceWin32RendererInitStep("swap_chain.ready");
             errdefer swap_chain.deinit();
-            result.swap_chain = swap_chain;
+            self.swap_chain = swap_chain;
 
             traceWin32RendererInitStep("result.ready");
 
             traceWin32RendererInitStep("init_shaders.begin");
-            try result.initShaders();
+            try self.initShaders();
             traceWin32RendererInitStep("init_shaders.ready");
 
             // Ensure our undefined values above are correctly initialized.
-            result.updateFontGridUniforms();
+            self.updateFontGridUniforms();
             traceWin32RendererInitStep("font_grid_uniforms.ready");
-            result.updateScreenSizeUniforms();
+            self.updateScreenSizeUniforms();
             traceWin32RendererInitStep("screen_size_uniforms.ready");
-            result.updateBgImageBuffer();
+            self.updateBgImageBuffer();
             traceWin32RendererInitStep("bg_image_buffer.ready");
-            try result.prepBackgroundImage();
+            try self.prepBackgroundImage();
             traceWin32RendererInitStep("prep_background_image.ready");
-
-            return result;
         }
 
         fn maybeLogSoftwareCpuRouteDiagnostic() void {

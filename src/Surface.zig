@@ -578,7 +578,7 @@ pub fn init(
     // Initialize the renderer directly into its final memory location.
     // Some backends capture `self` pointers during init (e.g. D3D12 owner/ctx),
     // so we must avoid stack temporaries + later copies.
-    self.renderer = try Renderer.init(alloc, .{
+    try self.renderer.initInPlace(alloc, .{
         .config = try .init(alloc, config),
         .font_grid = font_grid,
         .size = size,
